@@ -1,0 +1,248 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider             = "postgresql"
+  url                  = env("DATABASE_URL")
+  directUrl            = env("DATABASE_DIRECT_URL")
+  shadowDatabaseUrl    = env("SHADOW_DATABASE_URL")
+  extensions           = [pgvector(map: "vector")]
+}
+
+enum UserRole {
+  admin
+  member
+}
+
+enum WorkspaceMemberRole {
+  owner
+  admin
+  member
+}
+
+enum MemoryType {
+  document
+  note
+  message
+  decision
+  ai_output
+  code
+  other
+  handoff_summary
+}
+
+enum MemorySource {
+  human
+  ai
+  human_ai_mixed
+}
+
+enum MemoryRelationType {
+  relates_to
+  updates
+  supersedes
+  belongs_to
+  inspired_by
+  references
+}
+
+enum ContributorType {
+  human
+  ai
+}
+
+enum EditorType {
+  human
+  ai
+}
+
+enum AccessRole {
+  owner
+  admin
+  member
+  guest
+}
+
+enum AccessLevel {
+  none
+  summary_only
+  read
+  write
+  admin
+}
+
+enum ConversationRole {
+  user
+  assistant
+  system
+  tool
+}
+
+model User {
+  id         String    @id @default(uuid())
+  email      String    @unique
+  name       String?
+  role       UserRole  @default(member)
+  password   String
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  memberships WorkspaceMember[]
+  memories    Memory[] @relation("MemoryAuthor")
+  conversations ConversationContext[]
+  refreshTokens RefreshToken[]
+}
+
+model Workspace {
+  id         String             @id @default(uuid())
+  name       String
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+  members    WorkspaceMember[]
+  projects   Project[]
+  memories   Memory[]
+  accessRules AccessControlRule[]
+  conversations ConversationContext[]
+}
+
+model WorkspaceMember {
+  id          String              @id @default(uuid())
+  userId      String
+  workspaceId String
+  role        WorkspaceMemberRole @default(member)
+  createdAt   DateTime            @default(now())
+
+  user      User      @relation(fields: [userId], references: [id])
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@unique([userId, workspaceId])
+}
+
+model Project {
+  id          String    @id @default(uuid())
+  workspaceId String
+  name        String
+  description String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+  memories  Memory[]
+  accessRules AccessControlRule[]
+  conversations ConversationContext[]
+}
+
+model Memory {
+  id             String        @id @default(uuid())
+  workspaceId    String
+  projectId      String?
+  authorUserId   String?
+  type           MemoryType
+  source         MemorySource
+  title          String?
+  content        String
+  embedding      Float[] @db.Vector(1536)
+  importanceScore Float       @default(0)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  isDeleted      Boolean      @default(false)
+  metadata       Json?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+  project   Project?  @relation(fields: [projectId], references: [id])
+  author    User?     @relation("MemoryAuthor", fields: [authorUserId], references: [id])
+  relationsFrom MemoryRelation[] @relation("RelationFrom")
+  relationsTo   MemoryRelation[] @relation("RelationTo")
+  attributions  Attribution[]
+  edits         EditHistory[]
+
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([embedding])
+}
+
+model MemoryRelation {
+  id           String             @id @default(uuid())
+  fromMemoryId String
+  toMemoryId   String
+  relationType MemoryRelationType
+  createdAt    DateTime           @default(now())
+
+  from Memory @relation("RelationFrom", fields: [fromMemoryId], references: [id])
+  to   Memory @relation("RelationTo", fields: [toMemoryId], references: [id])
+}
+
+model Attribution {
+  id                 String          @id @default(uuid())
+  memoryId           String
+  contributorType    ContributorType
+  contributorId      String
+  contributionPercent Float          @default(1)
+  notes              String?
+  createdAt          DateTime        @default(now())
+
+  memory Memory @relation(fields: [memoryId], references: [id])
+}
+
+model EditHistory {
+  id            String     @id @default(uuid())
+  memoryId      String
+  editorType    EditorType
+  editorId      String
+  deltaSummary  String?
+  previousContent String?
+  newContent    String
+  createdAt     DateTime   @default(now())
+
+  memory Memory @relation(fields: [memoryId], references: [id])
+}
+
+model AccessControlRule {
+  id          String       @id @default(uuid())
+  workspaceId String
+  projectId   String?
+  memoryId    String?
+  role        AccessRole
+  accessLevel AccessLevel
+  createdAt   DateTime     @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+  project   Project?  @relation(fields: [projectId], references: [id])
+  memory    Memory?   @relation(fields: [memoryId], references: [id])
+}
+
+model ConversationContext {
+  id               String    @id @default(uuid())
+  workspaceId      String
+  projectId        String?
+  userId           String
+  externalSessionId String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+  project   Project?  @relation(fields: [projectId], references: [id])
+  user      User      @relation(fields: [userId], references: [id])
+  messages  ConversationMessage[]
+}
+
+model ConversationMessage {
+  id                    String            @id @default(uuid())
+  conversationContextId String
+  role                  ConversationRole
+  content               String
+  metadata              Json?
+  createdAt             DateTime          @default(now())
+
+  conversation ConversationContext @relation(fields: [conversationContextId], references: [id])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
