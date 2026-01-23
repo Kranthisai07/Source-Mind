@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  db:
+    image: pgvector/pgvector:0.5.1-pg16
+    environment:
+      POSTGRES_USER: sourcemind
+      POSTGRES_PASSWORD: sourcemind
+      POSTGRES_DB: sourcemind
+    ports:
+      - "5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    command: npm run start:dev
+    env_file:
+      - ./backend/.env
+    ports:
+      - "3001:3001"
+    depends_on:
+      - db
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+
+  frontend:
+    build: ./frontend
+    command: npm run dev
+    env_file:
+      - ./frontend/.env
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+volumes:
+  db-data:
