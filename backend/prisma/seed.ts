@@ -44,7 +44,7 @@ async function main() {
       source: MemorySource.human,
       title: 'Choose OAuth 2.0',
       content: 'We should implement OAuth 2.0 for user authentication to support mobile clients.',
-      embedding: Array(1536).fill(0),
+      // embedding handled separately due to Unsupported type
       importanceScore: 0.8,
       metadata: { tags: ['auth', 'security'] },
       attributions: {
@@ -66,6 +66,12 @@ async function main() {
     },
   });
 
+  await prisma.$executeRawUnsafe(
+    `UPDATE "Memory" SET embedding = $1::vector WHERE id = $2`,
+    `[${Array(1536).fill(0).join(',')}]`,
+    m1.id
+  );
+
   const m2 = await prisma.memory.create({
     data: {
       workspaceId: workspace.id,
@@ -75,7 +81,7 @@ async function main() {
       source: MemorySource.human_ai_mixed,
       title: 'Token refresh strategy',
       content: 'Implement refresh tokens with 7-day expiry and rotate on use. AI suggested redis cache.',
-      embedding: Array(1536).fill(0),
+      // embedding handled separately due to Unsupported type
       importanceScore: 0.6,
       metadata: { tags: ['auth', 'tokens'] },
       attributions: {
@@ -97,6 +103,12 @@ async function main() {
       },
     },
   });
+
+  await prisma.$executeRawUnsafe(
+    `UPDATE "Memory" SET embedding = $1::vector WHERE id = $2`,
+    `[${Array(1536).fill(0).join(',')}]`,
+    m2.id
+  );
 
   await prisma.memoryRelation.create({
     data: {

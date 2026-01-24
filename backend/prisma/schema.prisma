@@ -1,13 +1,13 @@
 generator client {
   provider = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
-  provider             = "postgresql"
-  url                  = env("DATABASE_URL")
-  directUrl            = env("DATABASE_DIRECT_URL")
-  shadowDatabaseUrl    = env("SHADOW_DATABASE_URL")
-  extensions           = [pgvector(map: "vector")]
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DATABASE_DIRECT_URL")
+  extensions = [vector]
 }
 
 enum UserRole {
@@ -141,7 +141,7 @@ model Memory {
   source         MemorySource
   title          String?
   content        String
-  embedding      Float[] @db.Vector(1536)
+  embedding      Unsupported("vector(1536)")?
   importanceScore Float       @default(0)
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
@@ -155,11 +155,12 @@ model Memory {
   relationsTo   MemoryRelation[] @relation("RelationTo")
   attributions  Attribution[]
   edits         EditHistory[]
+  accessRules   AccessControlRule[]
 
   @@index([workspaceId])
   @@index([projectId])
-  @@index([embedding])
 }
+
 
 model MemoryRelation {
   id           String             @id @default(uuid())

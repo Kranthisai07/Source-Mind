@@ -33,7 +33,7 @@ export class MemoriesService {
     private readonly embeddingProvider: EmbeddingProvider,
     private readonly accessControl: AccessControlService,
     private readonly llmProvider: LlmProvider,
-  ) {}
+  ) { }
 
   async create(params: CreateMemoryParams): Promise<Memory> {
     const embedding = await this.embeddingProvider.embedText(params.content);
@@ -49,20 +49,20 @@ export class MemoriesService {
         source: params.source,
         title: params.title,
         content: params.content,
-        embedding,
+        // embedding handled separately due to Unsupported type
         importanceScore,
         metadata: params.metadata,
         attributions: attribution
           ? {
-              create: [
-                {
-                  contributorType: attribution.contributorType,
-                  contributorId: attribution.contributorId,
-                  contributionPercent: attribution.contributionPercent,
-                  notes: attribution.notes,
-                },
-              ],
-            }
+            create: [
+              {
+                contributorType: attribution.contributorType,
+                contributorId: attribution.contributorId,
+                contributionPercent: attribution.contributionPercent,
+                notes: attribution.notes,
+              },
+            ],
+          }
           : undefined,
         edits: {
           create: {
@@ -76,6 +76,16 @@ export class MemoriesService {
         },
       },
     });
+
+    // Update embedding
+    if (embedding) {
+      const vectorString = `[${embedding.join(',')}]`;
+      await this.prisma.$executeRawUnsafe(
+        `UPDATE "Memory" SET embedding = $1::vector WHERE id = $2`,
+        vectorString,
+        memory.id,
+      );
+    }
 
     // create relations if provided in metadata
     if ((params as any).relations?.length) {
@@ -142,9 +152,10 @@ export class MemoriesService {
     }
 
     const contentChanged = newContent !== memory.content;
+    // For now we assume if content changed we re-embed, otherwise we might need to fetch raw
     const embedding = contentChanged
       ? await this.embeddingProvider.embedText(newContent)
-      : memory.embedding;
+      : null; // Can't easily reuse existing embedding with Unsupported type without raw query
 
     const deltaSummary = contentChanged
       ? await this.summarizeDelta(memory.content, newContent)
@@ -154,7 +165,7 @@ export class MemoriesService {
       where: { id: memoryId },
       data: {
         content: newContent,
-        embedding,
+        // embedding handled separately
         metadata: metadata ?? memory.metadata,
         edits: {
           create: {
@@ -167,6 +178,15 @@ export class MemoriesService {
         },
       },
     });
+
+    if (contentChanged) {
+      const vectorString = `[${(embedding as number[]).join(',')}]`;
+      await this.prisma.$executeRawUnsafe(
+        `UPDATE "Memory" SET embedding = $1::vector WHERE id = $2`,
+        vectorString,
+        memoryId,
+      );
+    }
     if (contentChanged) {
       await this.rebalanceAttribution(memoryId, userId, memory);
     }
