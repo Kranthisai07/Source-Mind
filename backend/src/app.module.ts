@@ -35,7 +35,7 @@ import { McpModule } from './mcp/mcp.module';
     AccessControlModule,
     AnalyticsModule,
     HandoffModule,
-    McpModule,
+    // McpModule,
   ],
 })
-export class AppModule {}
+export class AppModule { }

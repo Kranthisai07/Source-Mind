@@ -2,10 +2,21 @@
 
 Production-oriented MVP combining a Supermemory-style universal memory engine with attribution intelligence and team graph features.
 
+## 📚 Documentation
+
+**[→ Full Documentation](docs/README.md)**
+
+Quick links:
+- **[Quick Start Guide](docs/setup/QUICK_START.md)** - Get started in minutes
+- **[Supabase Setup](docs/setup/SUPABASE_SETUP.md)** - Database configuration
+- **[Project Roadmap](docs/project/PROJECT_ROADMAP.md)** - Development timeline
+- **[CHANGELOG](docs/CHANGELOG.md)** - Version history
+
 ## Stack
-- Backend: NestJS + Prisma + PostgreSQL (pgvector) + OpenAI provider abstraction
-- Frontend: Next.js (App Router) + React + SWR
-- DB: Postgres with pgvector extension
+- **Backend:** NestJS + Prisma + PostgreSQL (pgvector) + Supabase
+- **Frontend:** Next.js (App Router) + React + SWR
+- **Database:** Supabase PostgreSQL with pgvector extension
+- **Auth:** JWT (access + refresh tokens)
 
 ## Run locally (docker-compose)
 1. Copy envs:

@@ -3,7 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class AttributionService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) { }
 
   async projectSummary(workspaceId: string, projectId: string) {
     const grouped = await this.prisma.attribution.groupBy({
@@ -11,17 +11,17 @@ export class AttributionService {
       where: {
         memory: { workspaceId, projectId },
       },
-      _sum: { contributionPercent: true },
       _count: { _all: true },
+      _sum: { contributionScore: true },
     });
 
-    // Map contributorId to user names if human
-    const humanContributors = grouped
-      .filter((g) => g.contributorType === 'human')
+    // Map contributorId to user names if user
+    const userContributors = grouped
+      .filter((g) => g.contributorType === 'user')
       .map((g) => g.contributorId);
 
     const users = await this.prisma.user.findMany({
-      where: { id: { in: humanContributors } },
+      where: { id: { in: userContributors } },
       select: { id: true, name: true, email: true },
     });
 
@@ -43,25 +43,25 @@ export class AttributionService {
       .slice(0, 5)
       .map(([tag, count]) => ({ tag, count }));
 
-    const totalHuman = grouped
-      .filter((g) => g.contributorType === 'human')
-      .reduce((acc, g) => acc + (g._sum.contributionPercent ?? 0), 0);
-    const totalAi = grouped
-      .filter((g) => g.contributorType === 'ai')
-      .reduce((acc, g) => acc + (g._sum.contributionPercent ?? 0), 0);
+    const totalUser = grouped
+      .filter((g) => g.contributorType === 'user')
+      .reduce((acc, g) => acc + (g._sum.contributionScore ?? 0), 0);
+    const totalTool = grouped
+      .filter((g) => g.contributorType === 'tool')
+      .reduce((acc, g) => acc + (g._count._all ?? 0), 0);
 
     return {
       contributors: grouped.map((g) => ({
         contributorId: g.contributorId,
         contributorType: g.contributorType,
-        contributionPercent: g._sum.contributionPercent ?? 0,
-        entries: g._count._all,
+        uniqueContributions: g._count._all,
+        contributionScore: g.contributorType === 'user' ? (g._sum.contributionScore ?? 0) : 0,
         user:
-          g.contributorType === 'human'
+          g.contributorType === 'user'
             ? users.find((u) => u.id === g.contributorId)
             : null,
       })),
-      totals: { human: totalHuman, ai: totalAi },
+      totals: { user: totalUser, tool: totalTool },
       topTopics,
     };
   }

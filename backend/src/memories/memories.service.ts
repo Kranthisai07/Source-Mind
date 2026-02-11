@@ -33,7 +33,7 @@ export class MemoriesService {
     private readonly embeddingProvider: EmbeddingProvider,
     private readonly accessControl: AccessControlService,
     private readonly llmProvider: LlmProvider,
-  ) {}
+  ) { }
 
   async create(params: CreateMemoryParams): Promise<Memory> {
     const embedding = await this.embeddingProvider.embedText(params.content);
@@ -49,25 +49,25 @@ export class MemoriesService {
         source: params.source,
         title: params.title,
         content: params.content,
-        embedding,
+        // embedding handled separately due to Unsupported type
         importanceScore,
         metadata: params.metadata,
         attributions: attribution
           ? {
-              create: [
-                {
-                  contributorType: attribution.contributorType,
-                  contributorId: attribution.contributorId,
-                  contributionPercent: attribution.contributionPercent,
-                  notes: attribution.notes,
-                },
-              ],
-            }
+            create: [
+              {
+                contributorType: attribution.contributorType,
+                contributorId: attribution.contributorId,
+                contributionScore: attribution.contributorType === 'user' ? 1.0 : null,
+                notes: attribution.notes,
+              },
+            ],
+          }
           : undefined,
         edits: {
           create: {
             editorType:
-              params.source === MemorySource.ai ? 'ai' : ('human' as EditHistory['editorType']),
+              params.source === MemorySource.ai ? 'tool' : ('user' as EditHistory['editorType']),
             editorId: params.authorUserId ?? params.aiProviderName ?? 'system',
             deltaSummary: 'Initial version',
             previousContent: null,
@@ -76,6 +76,16 @@ export class MemoriesService {
         },
       },
     });
+
+    // Update embedding
+    if (embedding) {
+      const vectorString = `[${embedding.join(',')}]`;
+      await this.prisma.$executeRawUnsafe(
+        `UPDATE "Memory" SET embedding = $1::vector WHERE id = $2`,
+        vectorString,
+        memory.id,
+      );
+    }
 
     // create relations if provided in metadata
     if ((params as any).relations?.length) {
@@ -94,30 +104,26 @@ export class MemoriesService {
   private buildAttribution(params: CreateMemoryParams): {
     contributorType: Attribution['contributorType'];
     contributorId: string;
-    contributionPercent: number;
     notes?: string;
   } | null {
     if (params.source === MemorySource.human && params.authorUserId) {
       return {
-        contributorType: 'human',
+        contributorType: 'user',
         contributorId: params.authorUserId,
-        contributionPercent: 1,
       };
     }
     if (params.source === MemorySource.ai) {
       return {
-        contributorType: 'ai',
+        contributorType: 'tool',
         contributorId: params.aiProviderName ?? 'ai_provider',
-        contributionPercent: 1,
       };
     }
-    if (params.source === MemorySource.human_ai_mixed && params.authorUserId) {
+    if (params.source === MemorySource.external_tool && params.authorUserId) {
       return {
-        contributorType: 'human',
+        contributorType: 'user',
         contributorId: params.authorUserId,
-        contributionPercent: 0.5,
-        notes: 'Mixed creation, default split',
-      };
+        notes: 'Imported from external tool'
+      }
     }
     return null;
   }
@@ -144,7 +150,7 @@ export class MemoriesService {
     const contentChanged = newContent !== memory.content;
     const embedding = contentChanged
       ? await this.embeddingProvider.embedText(newContent)
-      : memory.embedding;
+      : null;
 
     const deltaSummary = contentChanged
       ? await this.summarizeDelta(memory.content, newContent)
@@ -154,11 +160,10 @@ export class MemoriesService {
       where: { id: memoryId },
       data: {
         content: newContent,
-        embedding,
         metadata: metadata ?? memory.metadata,
         edits: {
           create: {
-            editorType: 'human',
+            editorType: 'user',
             editorId: userId,
             deltaSummary,
             previousContent: memory.content,
@@ -167,46 +172,94 @@ export class MemoriesService {
         },
       },
     });
+
     if (contentChanged) {
-      await this.rebalanceAttribution(memoryId, userId, memory);
+      const vectorString = `[${(embedding as number[]).join(',')}]`;
+      await this.prisma.$executeRawUnsafe(
+        `UPDATE "Memory" SET embedding = $1::vector WHERE id = $2`,
+        vectorString,
+        memoryId,
+      );
+
+      await this.rebalanceHumanAttribution(memoryId);
     }
     return updated;
   }
 
-  private async rebalanceAttribution(memoryId: string, editorId: string, memory: Memory) {
-    const attributions = await this.prisma.attribution.findMany({
+  private async rebalanceHumanAttribution(memoryId: string) {
+    const edits = await this.prisma.editHistory.findMany({
       where: { memoryId },
+      orderBy: { createdAt: 'asc' },
     });
-    if (!attributions.length) {
-      await this.prisma.attribution.create({
-        data: {
+    const memory = await this.prisma.memory.findUnique({ where: { id: memoryId } });
+
+    if (!memory) return;
+
+    let userScores: Record<string, number> = {};
+    let totalScore = 0;
+
+    // Use a simplified heuristic: Base points for author + points per edit weighted by change size
+    // Initial Author
+    if (memory.authorUserId && memory.source === 'human') {
+      const initialPoints = 100; // Base score for creating
+      userScores[memory.authorUserId] = initialPoints;
+      totalScore += initialPoints;
+    }
+
+    // Process Edits
+    for (const edit of edits) {
+      if (edit.editorType === 'user') {
+        const delta = Math.abs(edit.newContent.length - (edit.previousContent?.length || 0));
+        const points = 10 + (delta / 10); // 10 points per edit + 1 point per 10 chars changed
+        userScores[edit.editorId] = (userScores[edit.editorId] || 0) + points;
+        totalScore += points;
+      }
+      // Tools ignored for score
+    }
+
+    // Verify consistency: If no user edits/author, totalScore is 0.
+    if (totalScore === 0) return;
+
+    // Upsert Attributions
+    for (const [userId, points] of Object.entries(userScores)) {
+      const score = points / totalScore;
+      await this.prisma.attribution.upsert({
+        where: {
+          attribution_unique_idx: {
+            memoryId,
+            contributorType: 'user',
+            contributorId: userId,
+          },
+        },
+        update: { contributionScore: score },
+        create: {
           memoryId,
-          contributorType: 'human',
-          contributorId: editorId,
-          contributionPercent: 1,
-          notes: 'Inferred after edit',
+          contributorType: 'user',
+          contributorId: userId,
+          contributionScore: score,
         },
       });
-      return;
     }
-    // Simple rule: move 20% attribution to editor (human)
-    const editorAttr = attributions.find(
-      (a) => a.contributorId === editorId && a.contributorType === 'human',
-    );
-    const newPercent = Math.min(1, (editorAttr?.contributionPercent ?? 0) + 0.2);
-    if (editorAttr) {
-      await this.prisma.attribution.update({
-        where: { id: editorAttr.id },
-        data: { contributionPercent: newPercent },
-      });
-    } else {
-      await this.prisma.attribution.create({
-        data: {
+
+    // Also ensure tool editors are listed (with null score)
+    const toolEditors = new Set(edits.filter(e => e.editorType === 'tool').map(e => e.editorId));
+    if (memory.source === 'ai' && memory.authorUserId) toolEditors.add(memory.authorUserId); // memory.authorUserId stores provider name for AI
+
+    for (const toolId of toolEditors) {
+      await this.prisma.attribution.upsert({
+        where: {
+          attribution_unique_idx: {
+            memoryId,
+            contributorType: 'tool',
+            contributorId: toolId,
+          },
+        },
+        update: { contributionScore: null },
+        create: {
           memoryId,
-          contributorType: 'human',
-          contributorId: editorId,
-          contributionPercent: 0.2,
-          notes: 'Edit contribution',
+          contributorType: 'tool',
+          contributorId: toolId,
+          contributionScore: null,
         },
       });
     }
@@ -275,7 +328,11 @@ export class MemoriesService {
     workspaceId: string,
     userId: string,
     projectId?: string | null,
+    page: number = 1,
+    limit: number = 50,
   ) {
+    const skip = (page - 1) * limit;
+
     const memories = await this.prisma.memory.findMany({
       where: {
         workspaceId,
@@ -284,8 +341,12 @@ export class MemoriesService {
       },
       orderBy: { createdAt: 'desc' },
       include: { attributions: true, edits: { take: 3, orderBy: { createdAt: 'desc' } } },
+      skip,
+      take: limit,
     });
 
+    // Access control filtering (Note: This might result in fewer than 'limit' items if some are hidden)
+    // For MVP, we assume project membership grants read access to all memories in it.
     const filtered = [];
     for (const mem of memories) {
       try {

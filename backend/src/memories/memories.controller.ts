@@ -13,6 +13,7 @@ import { CreateMemoryDto } from './dto/create-memory.dto';
 import { WorkspacesService } from '../workspaces/workspaces.service';
 import { UpdateMemoryDto } from './dto/update-memory.dto';
 import { SearchDto } from './dto/search.dto';
+import { ListMemoriesDto } from './dto/list-memories.dto';
 import { AccessControlService } from '../access-control/access-control.service';
 import { AccessLevel } from '@prisma/client';
 
@@ -23,7 +24,7 @@ export class MemoriesController {
     private readonly memoriesService: MemoriesService,
     private readonly workspacesService: WorkspacesService,
     private readonly accessControl: AccessControlService,
-  ) {}
+  ) { }
 
   @Post('workspaces/:wid/memories')
   async create(
@@ -89,9 +90,10 @@ export class MemoriesController {
   async listByProject(
     @Param('wid') workspaceId: string,
     @Param('pid') projectId: string,
+    @Body() body: ListMemoriesDto,
     @CurrentUser() user: any,
   ) {
     await this.workspacesService.assertMembership(workspaceId, user.id);
-    return this.memoriesService.listByProject(workspaceId, user.id, projectId);
+    return this.memoriesService.listByProject(workspaceId, user.id, projectId, body.page, body.limit);
   }
 }
