@@ -49,14 +49,14 @@ async function main() {
       metadata: { tags: ['auth', 'security'] },
       attributions: {
         create: {
-          contributorType: 'human',
+          contributorType: 'user',
           contributorId: user.id,
-          contributionPercent: 1,
+          contributionScore: 1.0,
         },
       },
       edits: {
         create: {
-          editorType: 'human',
+          editorType: 'user',
           editorId: user.id,
           deltaSummary: 'Initial version',
           previousContent: null,
@@ -78,7 +78,7 @@ async function main() {
       projectId: project.id,
       authorUserId: user.id,
       type: MemoryType.note,
-      source: MemorySource.human_ai_mixed,
+      source: MemorySource.human,
       title: 'Token refresh strategy',
       content: 'Implement refresh tokens with 7-day expiry and rotate on use. AI suggested redis cache.',
       // embedding handled separately due to Unsupported type
@@ -87,14 +87,14 @@ async function main() {
       attributions: {
         createMany: {
           data: [
-            { contributorType: 'human', contributorId: user.id, contributionPercent: 0.7 },
-            { contributorType: 'ai', contributorId: 'openai', contributionPercent: 0.3 },
+            { contributorType: 'user', contributorId: user.id, contributionScore: 1.0 },
+            { contributorType: 'tool', contributorId: 'openai', contributionScore: null },
           ],
         },
       },
       edits: {
         create: {
-          editorType: 'human',
+          editorType: 'user',
           editorId: user.id,
           deltaSummary: 'Initial note',
           previousContent: null,

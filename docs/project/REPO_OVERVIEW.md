@@ -134,13 +134,12 @@ d:\Source Mind\
 
 #### **Attribution**
 - Tracks contribution breakdown
-- `contributorType`: human or ai
-- `contributionPercent`: Percentage of contribution (0-1)
+- `contributorType`: user or tool
 - Linked to specific memories
 
 #### **EditHistory**
 - Version control for memories
-- `editorType`: human or ai
+- `editorType`: user or tool
 - `deltaSummary`: AI-generated change description
 - Stores previous and new content
 
@@ -241,8 +240,8 @@ d:\Source Mind\
 - Clickable for details
 
 #### **AttributionBar**
-- Visual bar chart showing contribution percentages
-- Color-coded segments for human vs AI
+- Visual list of contributors
+- Color-coded segments for user vs tool
 
 #### **EditHistoryList**
 - Timeline of memory edits
@@ -266,10 +265,10 @@ d:\Source Mind\
 ## 🔑 Key Features
 
 ### 1. **Attribution Tracking**
-- **Real-time contribution analysis:** Tracks human vs AI contributions
+- **Contributor analysis:** Tracks user vs tool contributions
 - **Edit history:** Full version control with AI-generated summaries
-- **Rebalancing:** Automatically adjusts attribution percentages when memories are edited
-- **Visual dashboard:** Color-coded contribution breakdowns
+- **Maintenance:** Automatically updates attribution when memories are edited
+- **Visual dashboard:** Contributor breakdowns
 
 ### 2. **Semantic Memory Search**
 - **Vector embeddings:** Uses OpenAI embeddings (1536 dimensions)
@@ -394,33 +393,28 @@ d:\Source Mind\
 2. **Backend processes:**
    - Generates embedding using OpenAI API
    - Calculates importance score
-   - Creates attribution record (human or AI)
+   - Creates attribution record (user or tool)
    - Stores in PostgreSQL with vector
 3. **Memory is searchable** via semantic search
 4. **Edits tracked** in EditHistory table
-5. **Attribution rebalanced** on updates
+5. **Attribution updated** on updates
 
 ---
 
 ## 📊 Attribution Algorithm
 
-### Initial Attribution
-- **Human-created:** 100% human contribution
-- **AI-created:** 100% AI contribution
-- **Mixed:** Specified percentages
+### Human Contribution Meter
+- **Score Calculation:** Normalized distribution (0-1) across strictly human contributors.
+- **AI Exclusion:** AI/Tool edits are tracked in history but excluded from the percentage calculation.
+- **Metric:** Based on edit frequency and character delta magnitude.
 
-### Edit Rebalancing
+### Edit Tracking
 When a memory is edited:
-1. Calculate edit magnitude (character difference)
-2. Determine editor contribution (human or AI)
-3. Reduce existing contributors proportionally
-4. Add new attribution record
-5. Normalize to 100%
-
-Example:
-- Original: Sarah (100%)
-- AI edits (30% change): Sarah (70%), AI (30%)
-- John refines (10% change): Sarah (63%), AI (27%), John (10%)
+1. Track new content and delta
+2. Determine editor (user or tool)
+3. If user: Update contribution scores (re-normalize)
+4. If tool: Log in history, do not affect scores
+5. Update edit history
 
 ---
 
@@ -472,11 +466,10 @@ Example:
 - `updateContent()`: Edit memory, track changes
 - `search()`: Semantic vector search
 - `listByProject()`: Get all project memories
-- `rebalanceAttribution()`: Adjust contribution percentages
 
 ### **AttributionService**
 - `projectSummary()`: Aggregate contribution stats
-- Returns: Contributors, totals (human/AI), top topics
+- Returns: Contributors, totals (user/tool), top topics
 
 ### **LlmProvider**
 - `generate()`: OpenAI chat completion
@@ -503,7 +496,7 @@ Example:
 ## 📈 Future Enhancements (from README)
 
 - **Richer access control UI:** Rule editing interface
-- **Enhanced attribution:** Diff-based percent scoring
+- **Enhanced attribution:** Edit history analysis
 - **Decision views:** Supersede chains, graph visualizations
 - **Hybrid search:** Keyword + vector search
 - **Pagination & caching:** Performance optimization

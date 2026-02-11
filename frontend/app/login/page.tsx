@@ -3,78 +3,134 @@
 import { useState } from 'react';
 import api from '../../lib/api';
 import { useRouter } from 'next/navigation';
+import toast from 'react-hot-toast';
+import Spinner from '@/components/Spinner';
+import Link from 'next/link';
 
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
+    setIsLoading(true);
     try {
       const res = await api.post('/auth/login', { email, password });
-      // Backend returns { success: true, data: { accessToken, refreshToken, user } }
       localStorage.setItem('token', res.data.data.accessToken);
       localStorage.setItem('refreshToken', res.data.data.refreshToken);
+      toast.success('Welcome back!');
       router.push('/workspaces');
     } catch (err: any) {
       console.error('Login error:', err.response?.data);
-      setError(err.response?.data?.message || 'Login failed');
+      const msg = err.response?.data?.message || 'Login failed';
+      toast.error(msg);
+    } finally {
+      setIsLoading(false);
     }
   };
 
   return (
-    <main className="flex items-center justify-center min-h-screen bg-bg-secondary">
-      <div className="card w-full max-w-md p-8 shadow-lg">
-        <h1 className="text-3xl font-bold mb-6 text-center text-primary">Welcome Back</h1>
+    <main className="min-h-screen bg-neutral-50 flex items-center justify-center p-6">
+      <div className="w-full max-w-md">
+        {/* Logo */}
+        <Link href="/" className="flex items-center justify-center gap-2 mb-8">
+          <div className="w-10 h-10 bg-gradient-to-br from-primary-600 to-secondary-600 rounded-lg flex items-center justify-center">
+            <span className="text-white text-xl font-bold">S</span>
+          </div>
+          <span className="text-2xl font-semibold text-neutral-900">SourceMind</span>
+        </Link>
 
-        <form onSubmit={submit} className="space-y-5">
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-text-secondary" htmlFor="email">Email Address</label>
-            <input
-              id="email"
-              className="input w-full"
-              placeholder="name@example.com"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
+        {/* Card */}
+        <div className="bg-white rounded-2xl shadow-sm border border-neutral-200 p-8">
+          {/* Header */}
+          <div className="mb-8">
+            <h1 className="text-2xl font-bold text-neutral-900 mb-2">
+              Welcome back
+            </h1>
+            <p className="text-neutral-600">
+              Sign in to your account to continue
+            </p>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-text-secondary" htmlFor="password">Password</label>
-            <input
-              id="password"
-              className="input w-full"
-              placeholder="Enter your password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-          </div>
-
-          {error && (
-            <div className="p-3 rounded bg-red-50 text-red-600 text-sm border border-red-100">
-              {error}
+          {/* Form */}
+          <form onSubmit={submit} className="space-y-5">
+            {/* Email */}
+            <div>
+              <label htmlFor="email" className="block text-sm font-medium text-neutral-700 mb-2">
+                Email address
+              </label>
+              <input
+                id="email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-4 py-2.5 bg-white border border-neutral-300 rounded-lg text-neutral-900 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition"
+                placeholder="you@company.com"
+                required
+                disabled={isLoading}
+              />
             </div>
-          )}
 
-          <button
-            className="btn btn-primary w-full py-3 font-semibold text-lg"
-            type="submit"
+            {/* Password */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label htmlFor="password" className="block text-sm font-medium text-neutral-700">
+                  Password
+                </label>
+                <Link href="/forgot-password" className="text-sm font-medium text-primary-600 hover:text-primary-700">
+                  Forgot password?
+                </Link>
+              </div>
+              <input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-2.5 bg-white border border-neutral-300 rounded-lg text-neutral-900 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition"
+                placeholder="Enter your password"
+                required
+                disabled={isLoading}
+              />
+            </div>
+
+            {/* Submit */}
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full px-4 py-2.5 bg-neutral-900 text-white rounded-lg font-medium hover:bg-neutral-800 focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:ring-offset-2 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {isLoading && <Spinner size="sm" light />}
+              {isLoading ? 'Signing in...' : 'Sign in'}
+            </button>
+          </form>
+
+          {/* Divider */}
+          <div className="relative my-6">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-neutral-200"></div>
+            </div>
+            <div className="relative flex justify-center text-sm">
+              <span className="px-4 bg-white text-neutral-500">Don't have an account?</span>
+            </div>
+          </div>
+
+          {/* Sign up link */}
+          <Link
+            href="/register"
+            className="block w-full px-4 py-2.5 bg-white text-neutral-900 rounded-lg font-medium border border-neutral-300 hover:bg-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:ring-offset-2 transition text-center"
           >
-            Sign In
-          </button>
+            Create an account
+          </Link>
+        </div>
 
-          <p className="text-center text-sm text-text-tertiary mt-4">
-            Don't have an account?{' '}
-            <a href="/register" className="text-primary hover:underline font-medium">Sign up</a>
-          </p>
-        </form>
+        {/* Footer */}
+        <div className="mt-6 text-center">
+          <Link href="/" className="text-sm text-neutral-600 hover:text-neutral-900 transition">
+            ← Back to home
+          </Link>
+        </div>
       </div>
     </main>
   );

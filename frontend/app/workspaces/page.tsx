@@ -1,6 +1,9 @@
 "use client";
 
 import useSWR from 'swr';
+import Skeleton from '@/components/Skeleton';
+import toast from 'react-hot-toast';
+import Spinner from '@/components/Spinner';
 import api from '../../lib/api';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -28,37 +31,25 @@ export default function WorkspacesPage() {
     e.preventDefault();
     if (!newWorkspaceName.trim()) return;
 
-    console.log('Starting workspace creation...');
     setIsCreating(true);
 
     try {
       const res = await api.post('/workspaces', { name: newWorkspaceName });
-      console.log('API Response:', res);
-
-      // Axios response contents are in res.data
-      // Backend returns { success: true, data: workspace }
       const responseBody = res.data;
-      console.log('Response Body:', responseBody);
-
       const newWorkspace = responseBody.data;
-      console.log('New Workspace Object:', newWorkspace);
 
       if (newWorkspace && newWorkspace.id) {
-        console.log('Redirecting to:', `/workspaces/${newWorkspace.id}/projects`);
+        toast.success('Workspace created successfully!');
         setNewWorkspaceName('');
         setIsModalOpen(false);
-        // Force navigation
         window.location.href = `/workspaces/${newWorkspace.id}/projects`;
         return;
-      } else {
-        console.error('No ID found in new workspace object');
       }
-
       mutate();
     } catch (err: any) {
       console.error('Failed to create workspace', err);
-      console.error('Error Details:', err.response?.data);
-      alert('Failed to create workspace: ' + (err.response?.data?.message || err.message));
+      const msg = err.response?.data?.message || err.message || 'Failed to create workspace';
+      toast.error(msg);
     } finally {
       setIsCreating(false);
     }
@@ -87,6 +78,22 @@ export default function WorkspacesPage() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {/* Loading State */}
+        {!workspaces && !error && (
+          <>
+            {[1, 2, 3].map((i) => (
+              <div key={`skeleton-${i}`} className="card p-6 h-full border border-border">
+                <div className="flex justify-between items-start mb-4">
+                  <Skeleton variant="rectangular" width={40} height={40} className="rounded-lg" />
+                  <Skeleton variant="text" width={50} />
+                </div>
+                <Skeleton variant="text" width="60%" height={24} className="mb-2" />
+                <Skeleton variant="text" width="40%" height={16} />
+              </div>
+            ))}
+          </>
+        )}
+
         {workspaces?.map((ws: any) => (
           <Link
             key={ws.id}
@@ -171,7 +178,7 @@ export default function WorkspacesPage() {
                 >
                   {isCreating ? (
                     <>
-                      <span className="spinner w-4 h-4 border-2"></span>
+                      <Spinner size="sm" light className="mr-2 inline-block" />
                       Creating...
                     </>
                   ) : (

@@ -13,7 +13,7 @@ export class HandoffService {
     private readonly llm: LlmProvider,
     private readonly memories: MemoriesService,
     private readonly accessControl: AccessControlService,
-  ) {}
+  ) { }
 
   async handoff(workspaceId: string, fromUserId: string, toUserId: string) {
     const toUserMember = await this.prisma.workspaceMember.findFirst({
@@ -22,7 +22,7 @@ export class HandoffService {
     if (!toUserMember) throw new NotFoundException('Recipient not in workspace');
 
     const contributions = await this.prisma.attribution.findMany({
-      where: { contributorId: fromUserId, contributorType: 'human', memory: { workspaceId } },
+      where: { contributorId: fromUserId, contributorType: 'user', memory: { workspaceId } },
       include: { memory: true },
     });
     const memoriesByProject: Record<string, typeof contributions> = {};
@@ -38,9 +38,7 @@ export class HandoffService {
         .slice(0, 10)
         .map(
           (a) =>
-            `Memory: ${a.memory.title ?? 'Untitled'}\nContent: ${a.memory.content}\nContribution: ${
-              a.contributionPercent
-            }`,
+            `Memory: ${a.memory.title ?? 'Untitled'}\nContent: ${a.memory.content}`,
         )
         .join('\n\n');
       const summary = await this.llm.generate({

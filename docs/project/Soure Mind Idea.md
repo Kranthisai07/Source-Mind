@@ -15,7 +15,7 @@ Absolutely! Mixing **Provenance** (Idea \#1 - Attribution Tracking) and **Collab
 This solves two critical enterprise problems simultaneously:
 
 1. **Knowledge fragmentation** across team members
-2. **Attribution opacity** in AI-assisted collaboration
+2. **Attribution opacity** in collaboration
 
 ***
 
@@ -32,9 +32,10 @@ This solves two critical enterprise problems simultaneously:
 │  │  Attribution     │◄──────►│   Team Memory    │      │
 │  │  Engine          │        │   Graph          │      │
 │  │                  │        │                  │      │
-│  │ • Contribution % │        │ • Shared Spaces  │      │
-│  │ • Edit History   │        │ • Role-Based     │      │
-│  │ • AI vs Human    │        │ • Access Control │      │
+│  │ • Contributor    │        │ • Shared Spaces  │      │
+│  │   Tracking       │        │ • Role-Based     │      │
+│  │ • Edit History   │        │ • Access Control │      │
+│  │ • User vs Tool   │        │                  │      │
 │  └──────────────────┘        └──────────────────┘      │
 │           │                           │                  │
 │           └───────────┬───────────────┘                  │
@@ -77,12 +78,12 @@ Every piece of content created in the workspace gets tracked with:
   attribution: {
     author: "sarah@company.com",
     co_creators: ["ai_assistant", "john@company.com"],
-    contribution_breakdown: {
-      "sarah@company.com": 0.65,  // 65% human original idea
-      "ai_assistant": 0.25,        // 25% AI elaboration
-      "john@company.com": 0.10     // 10% refinement/edits
-    },
-    creation_type: "human_initiated_ai_assisted",
+    contributors: [
+      { id: "sarah@company.com", type: "user", role: "initiator" },
+      { id: "ai_assistant", type: "tool", role: "elaboration" },
+      { id: "john@company.com", type: "user", role: "editor" }
+    ],
+    creation_source: "user_initiated",
     edit_history: [
       {timestamp: "2025-11-20T10:30:00Z", author: "sarah", delta: "+initial draft"},
       {timestamp: "2025-11-20T10:35:00Z", author: "ai_assistant", delta: "+technical details"},
@@ -135,12 +136,12 @@ When a team member queries the system:
 
 "We should implement OAuth 2.0 for user authentication"
 
-📊 Attribution Breakdown:
-├─ Sarah Martinez (Engineering Lead) - 65% 💡 Original Idea
+📊 Contribution History:
+├─ Sarah Martinez (Engineering Lead) - 💡 Original Idea
 │  └─ Key reasoning: Scalability for mobile apps
-├─ AI Assistant - 25% 🤖 Technical Elaboration  
+├─ AI Assistant - 🤖 Technical Elaboration  
 │  └─ Added: Security best practices, implementation details
-└─ John Kim (Senior Engineer) - 10% ✏️ Refinement
+└─ John Kim (Senior Engineer) - ✏️ Refinement
    └─ Enhanced: Token refresh mechanisms
 
 🔗 Related Context:
@@ -164,27 +165,26 @@ When a team member queries the system:
 **Team Knowledge Map** (combines both ideas):
 
 ```
-Color-Coded Contribution View:
+Contribution View:
 ┌─────────────────────────────────────────┐
 │  Project: User Authentication V2         │
 ├─────────────────────────────────────────┤
 │                                          │
-│  🟦🟦🟪🟪🟪 Architecture Decision         │
-│     Sarah (60%) + AI (30%) + John (10%) │
+│  👤 Sarah, 🤖 AI, 👤 John                │
+│  Architecture Decision                   │
 │                                          │
-│  🟦🟦🟦🟦🟪 Security Requirements         │
-│     Mike (80%) + AI (20%)               │
+│  👤 Mike, 🤖 AI                          │
+│  Security Requirements                   │
 │                                          │
-│  🟪🟪🟪🟪🟦 Implementation Plan           │
-│     AI (70%) + Team Review (30%)        │
+│  🤖 AI, 👥 Team Review                   │
+│  Implementation Plan                     │
 │                                          │
 └─────────────────────────────────────────┘
 
 Legend:
-🟦 = Human contribution
-🟪 = Collaborative (Human + AI)
-🟨 = AI-generated, human-approved
-🟥 = Needs attribution review
+👤 = User contribution
+🤖 = Tool/AI contribution
+👥 = Multiple contributors
 ```
 
 
@@ -221,34 +221,25 @@ Attribution Updated:
 • Access: Sarah's personal notes archived/deleted per policy
 
 Team Alert:
-"Sarah contributed 65% of authentication architecture decisions.
+"Sarah was the primary contributor to authentication architecture decisions.
 John Kim is now primary owner. Review recommended."
 ```
 
 
-### **4. AI Collaboration Transparency**
+### **4. Collaboration Transparency**
 
 **Real-Time Attribution Tracking** (as team works):
 
 ```
 Active Document: "Q4 Product Roadmap"
 
-Live Contribution Meter:
-─────────────────────────────
-Sarah:    ████████░░ 40%
-AI:       ██████░░░░ 30%
-Mike:     ████░░░░░░ 20%
-Maria:    ██░░░░░░░░ 10%
-─────────────────────────────
-
 Recent Activity:
-🟦 Sarah: Added "Feature prioritization framework"
-🟪 AI: Expanded on "User research insights" 
-🟦 Mike: Edited "Timeline considerations"
+👤 Sarah: Added "Feature prioritization framework"
+🤖 AI: Expanded on "User research insights" 
+👤 Mike: Edited "Timeline considerations"
 
-⚠️ Attribution Alert:
-AI contribution exceeds 30% threshold. 
-Consider team review before finalizing.
+ℹ️ Attribution update:
+New contributors added to document history.
 ```
 
 
@@ -264,13 +255,13 @@ Topic: "Mobile app should support offline mode"
 Position A (Pro-Offline):
 ├─ Advocated by: Sarah (Engineering)
 ├─ Supporting memories: 3 user research insights
-├─ Attribution: 70% human reasoning, 30% AI analysis
+├─ Contributors: Sarah, AI Assistant
 └─ Confidence: High ⭐⭐⭐⭐
 
 Position B (Online-Only):
 ├─ Advocated by: Mike (Product)  
 ├─ Supporting memories: 2 cost analyses
-├─ Attribution: 90% human reasoning, 10% AI data
+├─ Contributors: Mike
 └─ Confidence: Medium ⭐⭐⭐
 
 🗳️ Resolution Options:
@@ -307,19 +298,17 @@ Compute Layer:
   API: FastAPI (Python)
     - /memory/create - Add attributed memory
     - /memory/search - Context-aware retrieval
-    - /attribution/analyze - Contribution breakdown
+    - /attribution/history - Contribution details
     - /team/handoff - Knowledge transfer
   
   Real-Time: Cloudflare Durable Objects
     - Live collaboration tracking
-    - Attribution calculation
     - Access control enforcement
 
 ML Pipeline:
   Attribution Engine:
     - Sentence-BERT for semantic similarity
-    - Edit distance algorithms (Levenshtein, Jaro-Winkler)
-    - Contribution scorer (custom trained model)
+    - Edit distance tracking
   
   Memory Processing:
     - Embedding: OpenAI text-embedding-3-large
@@ -333,7 +322,7 @@ ML Pipeline:
 ```yaml
 Web App (Next.js + React):
   - Team dashboard
-  - Attribution visualizations (D3.js)
+  - Attribution visualizations
   - Memory explorer
   - Admin console
 
@@ -345,13 +334,13 @@ Browser Extensions:
 IDE Extensions:
   - VS Code
   - Cursor
-  - Tracks code contributions with AI assist
+  - Tracks code contributions
+```
 
-Mobile Apps (React Native):
+### **Mobile Apps** (React Native):
   - iOS/Android
   - Voice memory capture
   - Quick memory search
-```
 
 
 ### **Integration Ecosystem**
@@ -450,7 +439,7 @@ Year 3:
 
 **Channels**:
 
-1. **Product Hunt Launch**: "Attribution tracking for AI collaboration"
+1. **Product Hunt Launch**: "Attribution tracking for collaboration"
 2. **Dev Communities**: Reddit (r/programming, r/MachineLearning), HackerNews, Dev.to
 3. **Twitter/X**: Target \#buildinpublic crowd, AI engineers
 4. **Direct Outreach**: 100 Y Combinator companies, tech startups
@@ -473,7 +462,7 @@ Year 3:
 
 1. **LinkedIn Ads**: Target CTOs, VPs of Engineering
 2. **Case Studies**: Publish early customer success stories
-3. **Webinars**: "Managing AI Collaboration at Scale"
+3. **Webinars**: "Managing Collaboration at Scale"
 4. **Partner Channel**: Resellers, consultants
 
 **Key Message**:
@@ -491,7 +480,7 @@ Year 3:
 4. **Content Marketing**: SEO-focused blog, whitepapers
 
 **Key Message**:
-*"The team memory platform that Fortune 500 companies trust for AI collaboration."*
+*"The team memory platform that Fortune 500 companies trust for collaboration."*
 
 ***
 
@@ -510,9 +499,9 @@ Year 3:
 
 **Unique Moats**:
 
-1. **Attribution Technology**: Patent-pending algorithm for contribution analysis
+1. **Attribution Technology**: Advanced indexing for contribution analysis
 2. **Network Effects**: More users = richer knowledge graph
-3. **Data Moat**: Proprietary dataset of human-AI collaboration patterns
+3. **Data Moat**: Proprietary dataset of collaboration patterns
 4. **Switching Costs**: Once embedded, critical for team operations
 
 ***
@@ -523,7 +512,7 @@ Year 3:
 
 ```
 ✅ Build diff-tracking system
-✅ Implement contribution scoring algorithm
+✅ Implement contribution tracking
 ✅ Create vector embedding pipeline
 ✅ Design attribution data model
 ```
@@ -567,7 +556,7 @@ Given your profile (ML/DL expertise, entrepreneurial, master's student in US):
 
 ### **Technical Leverage**:
 
-- Attribution algorithm = Your ML/DL expertise
+- Attribution tracking = Your systems expertise
 - Knowledge graphs = Research paper potential
 - RAG pipeline = Hot skill in job market
 
@@ -605,4 +594,3 @@ Would you like me to:
 5. **Map integration strategy** (Slack, Google Workspace, GitHub APIs)?
 
 Which area should we dive deeper into first?
-

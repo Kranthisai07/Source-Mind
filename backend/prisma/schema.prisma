@@ -35,7 +35,7 @@ enum MemoryType {
 enum MemorySource {
   human
   ai
-  human_ai_mixed
+  external_tool
 }
 
 enum MemoryRelationType {
@@ -48,13 +48,13 @@ enum MemoryRelationType {
 }
 
 enum ContributorType {
-  human
-  ai
+  user
+  tool
 }
 
 enum EditorType {
-  human
-  ai
+  user
+  tool
 }
 
 enum AccessRole {
@@ -178,11 +178,13 @@ model Attribution {
   memoryId           String
   contributorType    ContributorType
   contributorId      String
-  contributionPercent Float          @default(1)
+  contributionScore  Float?          // Normalized human contribution (0-1)
   notes              String?
   createdAt          DateTime        @default(now())
 
   memory Memory @relation(fields: [memoryId], references: [id])
+
+  @@unique([memoryId, contributorType, contributorId], name: "attribution_unique_idx")
 }
 
 model EditHistory {

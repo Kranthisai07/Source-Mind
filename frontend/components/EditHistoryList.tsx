@@ -3,7 +3,7 @@ import { FC } from 'react';
 type Edit = {
   id?: string;
   editorId: string;
-  editorType: 'human' | 'ai';
+  editorType: 'user' | 'tool';
   editorName?: string;
   deltaSummary?: string;
   createdAt?: string;
@@ -55,10 +55,10 @@ const EditHistoryList: FC<EditHistoryListProps> = ({ edits, showEmpty = true }) 
             <div className="flex items-center gap-2">
               {/* Editor Type Badge */}
               <span
-                className={`badge ${edit.editorType === 'human' ? 'badge-human' : 'badge-ai'
+                className={`badge ${edit.editorType === 'user' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'
                   }`}
               >
-                {edit.editorType === 'human' ? '👤 Human' : '🤖 AI'}
+                {edit.editorType === 'user' ? '👤 User' : '🛠️ Tool'}
               </span>
 
               {/* Editor Name */}
