@@ -1,0 +1,200 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────
+# SourceMind — Local Development Environment
+# Services: PostgreSQL 16 + pgvector, Redis 7.2, Neo4j 5,
+#            Redpanda (Kafka-compatible), SourceMind API
+# ─────────────────────────────────────────────────────────────
+
+x-common-env: &common-env
+  ENVIRONMENT: development
+  DATABASE_URL: postgresql+asyncpg://sourcemind:sourcemind@postgres:5432/sourcemind
+  REDIS_URL: redis://redis:6379/0
+  NEO4J_URI: bolt://neo4j:7687
+  NEO4J_AUTH: neo4j/sourcemind_dev
+  KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+
+services:
+  # ─── PostgreSQL 16 with pgvector ─────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: sm_postgres
+    environment:
+      POSTGRES_USER: sourcemind
+      POSTGRES_PASSWORD: sourcemind
+      POSTGRES_DB: sourcemind
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sourcemind -d sourcemind"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ─── Redis 7.2 ───────────────────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: sm_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # ─── Neo4j 5 with APOC ───────────────────────────────────
+  neo4j:
+    image: neo4j:5-community
+    container_name: sm_neo4j
+    environment:
+      NEO4J_AUTH: neo4j/sourcemind_dev
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_dbms_memory_heap_initial__size: 512m
+      NEO4J_dbms_memory_heap_max__size: 1G
+    ports:
+      - "7474:7474"   # HTTP browser
+      - "7687:7687"   # Bolt
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -O /dev/null -q http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+    restart: unless-stopped
+
+  # ─── Redpanda (Kafka-compatible, lighter for local dev) ──
+  redpanda:
+    image: redpandadata/redpanda:latest
+    container_name: sm_redpanda
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=512M
+      - --overprovisioned
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr=internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr=internal://redpanda:8082,external://localhost:18082
+      - --schema-registry-addr=internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr=redpanda:33145
+      - --advertise-rpc-addr=redpanda:33145
+      - --mode=dev-container
+    ports:
+      - "19092:19092"   # External Kafka
+      - "18082:18082"   # External HTTP proxy
+      - "18081:18081"   # External schema registry
+      - "19644:9644"    # Prometheus metrics
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+    restart: unless-stopped
+
+  # ─── Redpanda Console (Kafka UI) ─────────────────────────
+  redpanda-console:
+    image: redpandadata/console:latest
+    container_name: sm_redpanda_console
+    environment:
+      CONFIG_FILEPATH: /tmp/config.yml
+      CONFIG: |
+        kafka:
+          brokers: ["redpanda:9092"]
+        redpanda:
+          adminApi:
+            enabled: true
+            urls: ["http://redpanda:9644"]
+    ports:
+      - "8080:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── SourceMind API ──────────────────────────────────────
+  api:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+      target: development
+    container_name: sm_api
+    environment:
+      <<: *common-env
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-dev_placeholder}
+      CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:-dev_placeholder}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-sourcemind-dev}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../apps/api:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head && uvicorn sourcemind.main:app
+      --host 0.0.0.0 --port 8000 --reload --reload-dir /app/sourcemind"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    restart: unless-stopped
+
+  # ─── Celery Worker ───────────────────────────────────────
+  worker:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+      target: development
+    container_name: sm_worker
+    environment:
+      <<: *common-env
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    volumes:
+      - ../apps/api:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A sourcemind.workers.celery_app worker --loglevel=info --concurrency=4
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  neo4j_data:
+  neo4j_logs:
+  redpanda_data:
+
+networks:
+  default:
+    name: sourcemind_network

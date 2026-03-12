@@ -1,0 +1,421 @@
+"""
+Workspace analytics service.
+
+Endpoints it serves:
+  GET /v1/workspaces/:id/analytics/overview
+  GET /v1/workspaces/:id/analytics/contribution-map
+  GET /v1/workspaces/:id/analytics/knowledge-gaps
+
+Knowledge Health Score formula:
+  coverage_score    = 1 - (single_contributor_memories / total_memories)
+  freshness_score   = updated_in_90_days / total_important_memories
+  conflict_score    = 1 - clamp(open_conflicts / total_memories, 0, 1)
+  attribution_score = multi_contributor_memories / total_memories
+  health = 0.30*coverage + 0.30*freshness + 0.25*conflict + 0.15*attribution
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from typing import Any
+
+import structlog
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+log = structlog.get_logger(__name__)
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _compute_health_score(
+    total_memories: int,
+    single_contributor_count: int,
+    updated_in_90_days: int,
+    total_important: int,
+    open_conflicts: int,
+    multi_contributor_count: int,
+) -> float:
+    """Compute the composite health score [0.0–1.0]."""
+    if total_memories == 0:
+        return 1.0
+
+    coverage = 1.0 - (single_contributor_count / total_memories)
+    freshness = updated_in_90_days / max(total_important, 1)
+    conflict = 1.0 - _clamp(open_conflicts / total_memories, 0.0, 1.0)
+    attribution = multi_contributor_count / total_memories
+
+    score = (
+        coverage * 0.30
+        + freshness * 0.30
+        + conflict * 0.25
+        + attribution * 0.15
+    )
+    return round(_clamp(score, 0.0, 1.0), 4)
+
+
+async def get_overview(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    redis_ttl: int = 300,
+) -> dict[str, Any]:
+    """
+    Return workspace analytics overview.
+    Results are cached in Redis for 300 seconds (5 minutes).
+    """
+    from sourcemind.core.redis_client import get_redis
+    cache_key = f"analytics:overview:{workspace_id}"
+    redis = get_redis()
+
+    cached = await redis.get(cache_key)
+    if cached:
+        return json.loads(cached)
+
+    ws = str(workspace_id)
+
+    # Total memories + contributors
+    totals = await session.execute(
+        text("""
+            SELECT
+                COUNT(DISTINCT m.id) AS total_memories,
+                COUNT(DISTINCT a.user_id) AS total_contributors
+            FROM memories m
+            LEFT JOIN attributions a ON a.memory_id = m.id
+            WHERE m.workspace_id = :ws::uuid
+              AND m.current_version = TRUE
+              AND m.deleted_at IS NULL
+        """),
+        {"ws": ws},
+    )
+    row = totals.fetchone()
+    total_memories = row[0] if row else 0
+    total_contributors = row[1] if row else 0
+
+    # Memories created in last 30 days
+    recent = await session.execute(
+        text("""
+            SELECT COUNT(*) FROM memories
+            WHERE workspace_id = :ws::uuid
+              AND current_version = TRUE
+              AND deleted_at IS NULL
+              AND created_at > NOW() - INTERVAL '30 days'
+        """),
+        {"ws": ws},
+    )
+    memories_last_30 = recent.scalar() or 0
+
+    # Open conflicts
+    conflicts = await session.execute(
+        text(
+            "SELECT COUNT(*) FROM memory_conflicts "
+            "WHERE workspace_id = :ws::uuid AND status = 'open'"
+        ),
+        {"ws": ws},
+    )
+    open_conflicts = conflicts.scalar() or 0
+
+    # Single-contributor memories
+    single_contrib = await session.execute(
+        text("""
+            SELECT COUNT(*) FROM (
+                SELECT m.id FROM memories m
+                JOIN attributions a ON a.memory_id = m.id
+                WHERE m.workspace_id = :ws::uuid
+                  AND m.current_version = TRUE
+                  AND m.deleted_at IS NULL
+                GROUP BY m.id
+                HAVING COUNT(DISTINCT a.user_id) = 1
+            ) sub
+        """),
+        {"ws": ws},
+    )
+    single_contributor_count = single_contrib.scalar() or 0
+
+    # Multi-contributor memories
+    multi_contrib = await session.execute(
+        text("""
+            SELECT COUNT(*) FROM (
+                SELECT m.id FROM memories m
+                JOIN attributions a ON a.memory_id = m.id
+                WHERE m.workspace_id = :ws::uuid
+                  AND m.current_version = TRUE
+                  AND m.deleted_at IS NULL
+                GROUP BY m.id
+                HAVING COUNT(DISTINCT a.user_id) > 1
+            ) sub
+        """),
+        {"ws": ws},
+    )
+    multi_contributor_count = multi_contrib.scalar() or 0
+
+    # Updated in 90 days (important memories)
+    freshness = await session.execute(
+        text("""
+            SELECT
+                COUNT(*) FILTER (WHERE updated_at > NOW() - INTERVAL '90 days'
+                    OR created_at > NOW() - INTERVAL '90 days') AS updated,
+                COUNT(*) AS total_important
+            FROM memories
+            WHERE workspace_id = :ws::uuid
+              AND current_version = TRUE
+              AND deleted_at IS NULL
+              AND importance_score > 0.5
+        """),
+        {"ws": ws},
+    )
+    fresh_row = freshness.fetchone()
+    updated_in_90 = fresh_row[0] if fresh_row else 0
+    total_important = fresh_row[1] if fresh_row else 0
+
+    health_score = _compute_health_score(
+        total_memories=total_memories,
+        single_contributor_count=single_contributor_count,
+        updated_in_90_days=updated_in_90,
+        total_important=total_important,
+        open_conflicts=open_conflicts,
+        multi_contributor_count=multi_contributor_count,
+    )
+
+    # Top contributors
+    top_result = await session.execute(
+        text("""
+            SELECT
+                a.user_id::text,
+                COALESCE(u.display_name, u.email) AS name,
+                COUNT(DISTINCT a.memory_id) AS memory_count,
+                AVG(a.contribution_weight) AS avg_weight
+            FROM attributions a
+            JOIN users u ON u.id = a.user_id
+            JOIN memories m ON m.id = a.memory_id
+            WHERE m.workspace_id = :ws::uuid
+              AND m.current_version = TRUE
+              AND m.deleted_at IS NULL
+            GROUP BY a.user_id, u.display_name, u.email
+            ORDER BY memory_count DESC
+            LIMIT 5
+        """),
+        {"ws": ws},
+    )
+    top_contributors = [
+        {
+            "user_id": r[0],
+            "name": r[1],
+            "memory_count": r[2],
+            "avg_contribution_pct": round(float(r[3]), 4),
+            "primary_topics": [],  # Populated by tag analysis if available
+        }
+        for r in top_result.fetchall()
+    ]
+
+    # Recent activity (last 20 events)
+    activity_result = await session.execute(
+        text("""
+            SELECT
+                ae.memory_id::text,
+                ae.action_type,
+                COALESCE(u.display_name, u.email) AS name,
+                ae.created_at
+            FROM attribution_edits ae
+            JOIN users u ON u.id = ae.editor_id
+            JOIN memories m ON m.id = ae.memory_id
+            WHERE m.workspace_id = :ws::uuid
+            ORDER BY ae.created_at DESC
+            LIMIT 20
+        """),
+        {"ws": ws},
+    )
+    recent_activity = [
+        {
+            "memory_id": r[0],
+            "action": r[1],
+            "contributor_name": r[2],
+            "timestamp": str(r[3]) if r[3] else None,
+        }
+        for r in activity_result.fetchall()
+    ]
+
+    result_data: dict[str, Any] = {
+        "total_memories": total_memories,
+        "total_contributors": total_contributors,
+        "avg_memories_per_contributor": (
+            round(total_memories / total_contributors, 2) if total_contributors > 0 else 0
+        ),
+        "memories_created_last_30_days": memories_last_30,
+        "open_conflicts": open_conflicts,
+        "knowledge_health_score": health_score,
+        "top_contributors": top_contributors,
+        "recent_activity": recent_activity,
+    }
+
+    # Cache result
+    await redis.setex(cache_key, redis_ttl, json.dumps(result_data, default=str))
+    return result_data
+
+
+async def get_contribution_map(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+) -> dict[str, Any]:
+    """Return per-contributor breakdown of knowledge ownership."""
+    ws = str(workspace_id)
+
+    result = await session.execute(
+        text("""
+            SELECT
+                a.user_id::text,
+                COALESCE(u.display_name, u.email) AS name,
+                COUNT(DISTINCT m.id) FILTER (WHERE ae.edit_position = 1) AS created,
+                COUNT(DISTINCT m.id) AS influenced,
+                AVG(a.contribution_weight) AS avg_weight,
+                MAX(ae.created_at) AS last_contribution
+            FROM attributions a
+            JOIN users u ON u.id = a.user_id
+            JOIN memories m ON m.id = a.memory_id
+            LEFT JOIN attribution_edits ae ON ae.memory_id = a.memory_id
+                AND ae.editor_id = a.user_id
+            WHERE m.workspace_id = :ws::uuid
+              AND m.current_version = TRUE
+              AND m.deleted_at IS NULL
+            GROUP BY a.user_id, u.display_name, u.email
+            ORDER BY influenced DESC
+        """),
+        {"ws": ws},
+    )
+    rows = result.fetchall()
+
+    contributors = []
+    for row in rows:
+        uid, name, created, influenced, avg_weight, last_contrib = row
+
+        # Collaboration rate: % of influenced memories with >1 contributor
+        collab_result = await session.execute(
+            text("""
+                SELECT COUNT(*) FROM (
+                    SELECT m.id FROM memories m
+                    JOIN attributions a2 ON a2.memory_id = m.id AND a2.user_id = :uid::uuid
+                    WHERE m.workspace_id = :ws::uuid
+                      AND m.current_version = TRUE
+                      AND (
+                        SELECT COUNT(DISTINCT a3.user_id) FROM attributions a3
+                        WHERE a3.memory_id = m.id
+                      ) > 1
+                ) collab
+            """),
+            {"uid": uid, "ws": ws},
+        )
+        collab_count = collab_result.scalar() or 0
+        collab_rate = round(collab_count / max(influenced or 1, 1), 4)
+
+        contributors.append({
+            "user_id": uid,
+            "name": name,
+            "total_memories_created": created or 0,
+            "total_memories_influenced": influenced or 0,
+            "avg_contribution_pct": round(float(avg_weight or 0), 4),
+            "knowledge_domains": [],
+            "collaboration_rate": collab_rate,
+            "last_contribution_at": str(last_contrib) if last_contrib else None,
+        })
+
+    return {"contributors": contributors}
+
+
+async def get_knowledge_gaps(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+) -> dict[str, Any]:
+    """
+    Identify areas where knowledge is thin or at risk.
+
+    Gap types:
+      single_contributor  — one person has > 90% attribution, never edited by others
+      no_recent_update    — important memory (>0.7), version=1, older than 90 days
+      high_conflict_area  — tag cluster where >20% of memories have open conflicts
+    """
+    ws = str(workspace_id)
+    gaps = []
+
+    # single_contributor
+    single_result = await session.execute(
+        text("""
+            SELECT COUNT(*) FROM (
+                SELECT m.id FROM memories m
+                JOIN attributions a ON a.memory_id = m.id
+                WHERE m.workspace_id = :ws::uuid
+                  AND m.current_version = TRUE
+                  AND m.deleted_at IS NULL
+                GROUP BY m.id
+                HAVING COUNT(DISTINCT a.user_id) = 1
+                   AND MAX(a.contribution_weight) > 0.9
+            ) s
+        """),
+        {"ws": ws},
+    )
+    single_count = single_result.scalar() or 0
+    if single_count > 0:
+        gaps.append({
+            "gap_type": "single_contributor",
+            "description": f"{single_count} memories are owned exclusively by one person (>90% attribution) with no other contributors.",
+            "affected_memories": single_count,
+            "risk_level": "high" if single_count > 10 else "medium",
+            "recommendation": "Encourage knowledge sharing. Consider pair-editing critical memories to distribute ownership.",
+        })
+
+    # no_recent_update (important memories never updated, > 90 days old)
+    stale_result = await session.execute(
+        text("""
+            SELECT COUNT(*) FROM memories
+            WHERE workspace_id = :ws::uuid
+              AND current_version = TRUE
+              AND deleted_at IS NULL
+              AND importance_score > 0.7
+              AND version = 1
+              AND created_at < NOW() - INTERVAL '90 days'
+        """),
+        {"ws": ws},
+    )
+    stale_count = stale_result.scalar() or 0
+    if stale_count > 0:
+        gaps.append({
+            "gap_type": "no_recent_update",
+            "description": f"{stale_count} important memories (importance > 0.7) have never been updated and are older than 90 days.",
+            "affected_memories": stale_count,
+            "risk_level": "medium",
+            "recommendation": "Review and refresh stale high-importance memories to ensure accuracy.",
+        })
+
+    # high_conflict_area (tag-based, simplified)
+    conflict_result = await session.execute(
+        text("""
+            SELECT
+                unnest(m.tags) AS tag,
+                COUNT(DISTINCT m.id) AS total,
+                COUNT(DISTINCT mc.id) AS conflicts
+            FROM memories m
+            LEFT JOIN memory_conflicts mc ON
+                (mc.memory_a_id = m.id OR mc.memory_b_id = m.id)
+                AND mc.status = 'open'
+            WHERE m.workspace_id = :ws::uuid
+              AND m.current_version = TRUE
+              AND m.deleted_at IS NULL
+              AND m.tags IS NOT NULL
+            GROUP BY tag
+            HAVING COUNT(DISTINCT mc.id)::float / NULLIF(COUNT(DISTINCT m.id), 0) > 0.2
+        """),
+        {"ws": ws},
+    )
+    conflict_rows = conflict_result.fetchall()
+    for row in conflict_rows:
+        tag, total, conflicts = row
+        gaps.append({
+            "gap_type": "high_conflict_area",
+            "description": f"Tag '{tag}' has {conflicts}/{total} memories with open conflicts (>{20}% conflict rate).",
+            "affected_memories": total,
+            "risk_level": "high",
+            "recommendation": f"Resolve open conflicts in the '{tag}' knowledge area to improve consistency.",
+        })
+
+    return {"gaps": gaps}
