@@ -1,9 +1,0 @@
-node_modules
-dist
-.env
-backend/.env
-frontend/.env
-*.log
-/.next
-frontend/.next
-backend/prisma/dev.db
