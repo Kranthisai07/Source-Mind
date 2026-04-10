@@ -1,7 +1,15 @@
 import { ClerkProvider } from '@clerk/nextjs'
+import { Fraunces } from 'next/font/google'
 import type { Metadata } from 'next'
 import { Providers } from '@/lib/providers'
 import './globals.css'
+
+const fraunces = Fraunces({
+  subsets: ['latin'],
+  weight: ['300', '400', '500', '600'],
+  variable: '--font-display',
+  display: 'swap',
+})
 
 export const metadata: Metadata = {
   title: { default: 'SourceMind', template: '%s · SourceMind' },
@@ -11,7 +19,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" className={`dark ${fraunces.variable}`}>
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />

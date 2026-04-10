@@ -1,20 +1,26 @@
 'use client'
 
+import dynamic from 'next/dynamic'
 import { useUser } from '@clerk/nextjs'
-import { Brain, Users, TrendingUp, AlertTriangle } from 'lucide-react'
+import { Brain, Users, TrendingUp, AlertTriangle, ChevronRight } from 'lucide-react'
 import { TopBar } from '@/components/layout/TopBar'
 import { PageWrapper } from '@/components/layout/PageWrapper'
-import { HealthScoreGauge } from '@/components/analytics/HealthScoreGauge'
 import { ActivityFeed } from '@/components/analytics/ActivityFeed'
-import { useAnalyticsOverview } from '@/lib/queries/useAnalytics'
-import { useKnowledgeGaps } from '@/lib/queries/useAnalytics'
+import { useAnalyticsOverview, useKnowledgeGaps } from '@/lib/queries/useAnalytics'
 import { useAppStore } from '@/lib/store/useAppStore'
 import { MetricCardSkeleton, Skeleton } from '@/components/ui/SkeletonCard'
-import { cn, formatRelativeTime, riskColor, riskBg } from '@/lib/utils'
-import { BarChart, Bar, XAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
-import { CONTRIB_COLORS } from '@/lib/utils'
+import { riskColor, riskBg, CONTRIB_COLORS } from '@/lib/utils'
 import Link from 'next/link'
-import { ChevronRight } from 'lucide-react'
+
+const HealthScoreGauge = dynamic(
+  () => import('@/components/analytics/HealthScoreGauge').then((m) => m.HealthScoreGauge),
+  { ssr: false, loading: () => <Skeleton className="w-48 h-48 rounded-full mx-auto" /> }
+)
+
+const ContributorsChart = dynamic(
+  () => import('@/components/analytics/ContributorsBarChart'),
+  { ssr: false, loading: () => <Skeleton className="h-44 w-full rounded-lg" /> }
+)
 
 function MetricCard({
   icon: Icon,
@@ -133,27 +139,7 @@ export default function DashboardPage() {
                 ))}
               </div>
             ) : (
-              <ResponsiveContainer width="100%" height={180}>
-                <BarChart data={chartData} layout="vertical" margin={{ left: 0, right: 16 }}>
-                  <XAxis type="number" hide />
-                  <Tooltip
-                    cursor={{ fill: 'rgba(255,255,255,0.03)' }}
-                    contentStyle={{
-                      background: '#1A1A24',
-                      border: '1px solid #2A2A3A',
-                      borderRadius: 6,
-                      fontSize: 12,
-                      color: '#E8E8F0',
-                    }}
-                    formatter={(v: number) => [`${v} memories`, '']}
-                  />
-                  <Bar dataKey="count" radius={[0, 4, 4, 0]} maxBarSize={28}>
-                    {chartData.map((entry, i) => (
-                      <Cell key={i} fill={entry.color} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+              <ContributorsChart data={chartData} />
             )}
           </div>
 

@@ -18,7 +18,6 @@ import { cn } from '@/lib/utils'
 import { useAppStore } from '@/lib/store/useAppStore'
 import { useWorkspaces } from '@/lib/queries/useWorkspaces'
 import { useConflicts } from '@/lib/queries/useConflicts'
-import { motion, AnimatePresence } from 'framer-motion'
 import { useState } from 'react'
 
 const NAV_ITEMS = [
@@ -65,32 +64,24 @@ export function Sidebar() {
           />
         </button>
 
-        <AnimatePresence>
-          {wsOpen && workspaces && (
-            <motion.div
-              initial={{ opacity: 0, y: -4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.15 }}
-              className="mt-1 bg-elevated border border-border rounded-md overflow-hidden"
-            >
-              {workspaces.map((ws) => (
-                <button
-                  key={ws.id}
-                  onClick={() => { setActiveWorkspace(ws); setWsOpen(false) }}
-                  className={cn(
-                    'w-full text-left px-3 py-2 text-sm transition-colors',
-                    activeWorkspace?.id === ws.id
-                      ? 'text-accent-blue bg-[rgba(79,142,247,0.08)]'
-                      : 'text-secondary hover:text-primary hover:bg-[rgba(255,255,255,0.03)]'
-                  )}
-                >
-                  {ws.name}
-                </button>
-              ))}
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {wsOpen && workspaces && (
+          <div className="mt-1 bg-elevated border border-border rounded-md overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150">
+            {workspaces.map((ws) => (
+              <button
+                key={ws.id}
+                onClick={() => { setActiveWorkspace(ws); setWsOpen(false) }}
+                className={cn(
+                  'w-full text-left px-3 py-2 text-sm transition-colors',
+                  activeWorkspace?.id === ws.id
+                    ? 'text-accent-blue bg-[rgba(79,142,247,0.08)]'
+                    : 'text-secondary hover:text-primary hover:bg-[rgba(255,255,255,0.03)]'
+                )}
+              >
+                {ws.name}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Navigation */}
