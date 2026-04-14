@@ -6,7 +6,7 @@ export interface IngestBody {
   url?: string
   workspace_id: string
   tags?: string[]
-  memory_type?: string
+  source_type?: string
   idempotency_key?: string
 }
 
@@ -17,8 +17,10 @@ export interface IngestResponse {
 }
 
 export const memoriesApi = {
-  ingest: (body: IngestBody) =>
-    apiClient.post<IngestResponse>('/v1/memories', body).then((r) => r.data),
+  ingest: ({ workspace_id, ...body }: IngestBody) =>
+    apiClient
+      .post<IngestResponse>('/v1/memories', body, { params: { workspace_id } })
+      .then((r) => r.data),
 
   getJob: (jobId: string) =>
     apiClient.get<Job>(`/v1/memories/jobs/${jobId}`).then((r) => r.data),

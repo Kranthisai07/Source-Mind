@@ -292,3 +292,8 @@ async def detect_relations(
         anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 
     await RelationDetector(anthropic_client).detect(session, new_memories, workspace_id)
+
+    # Recompute importance for all newly-related memories
+    from sourcemind.services.memory.importance import recompute_importance
+    for memory in new_memories:
+        await recompute_importance(session, memory.id)

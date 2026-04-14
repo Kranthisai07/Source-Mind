@@ -9,7 +9,7 @@ export function setTokenGetter(fn: () => Promise<string | null>) {
 }
 
 export const apiClient = axios.create({
-  baseURL: typeof window !== 'undefined' ? '' : (process.env.API_URL ?? 'http://localhost:8000'),
+  baseURL: process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000',
   headers: { 'Content-Type': 'application/json' },
   timeout: 30_000,
 })

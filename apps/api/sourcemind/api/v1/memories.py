@@ -33,12 +33,12 @@ from sourcemind.core.exceptions import (
 from sourcemind.models.document import Document
 from sourcemind.models.memory import Memory
 from sourcemind.schemas.common import APIResponse, PaginatedResponse, ResponseMeta
+from sourcemind.schemas.conflict import MemoryVersionEntry, MemoryVersionsResponse
 from sourcemind.schemas.memory import (
     IngestionJobResponse,
     MemoryCreate,
     MemoryResponse,
     MemoryUpdate,
-    MemoryVersionResponse,
 )
 
 logger = structlog.get_logger(__name__)
@@ -232,6 +232,7 @@ async def update_memory(
 
     from sourcemind.services.attribution.engine import recompute_attribution
     from sourcemind.services.attribution.versioning import create_new_version
+    from sourcemind.services.memory.importance import recompute_importance
 
     version_result = await create_new_version(
         session=db,
@@ -257,6 +258,8 @@ async def update_memory(
         action_type="edit",
         idempotency_key=idempotency_key,
     )
+
+    await recompute_importance(session=db, memory_id=new_mem.id)
 
     await db.commit()
 
@@ -307,6 +310,7 @@ async def delete_memory(
 
 @router.get(
     "/{memory_id}/versions",
+    response_model=MemoryVersionsResponse,
     summary="Get full version history",
 )
 async def get_memory_versions(
@@ -314,12 +318,15 @@ async def get_memory_versions(
     db: DBSession,
     current_user: CurrentUser,
     request_id: RequestID,
-) -> dict:
+) -> MemoryVersionsResponse:
     """Return the complete version chain via recursive CTE."""
     from sourcemind.services.attribution.versioning import get_version_chain
 
     chain = await get_version_chain(db, memory_id)
-    return {"versions": chain, "total": len(chain)}
+    return MemoryVersionsResponse(
+        versions=[MemoryVersionEntry(**v) for v in chain],
+        total=len(chain),
+    )
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────

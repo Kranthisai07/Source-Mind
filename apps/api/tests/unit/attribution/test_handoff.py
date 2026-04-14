@@ -148,7 +148,12 @@ async def test_assignment_creates_attribution_record():
 
     async def execute_side_effect(stmt, params=None, **kwargs):
         r = MagicMock()
-        r.fetchone = MagicMock(return_value=(0.5,))
+        stmt_str = str(stmt)
+        if "inbound_count" in stmt_str or "importance_score" in stmt_str:
+            # recompute_importance query — return None to bail out early
+            r.fetchone = MagicMock(return_value=None)
+        else:
+            r.fetchone = MagicMock(return_value=(0.5,))
         r.fetchall = MagicMock(return_value=[])
         return r
 
@@ -184,7 +189,10 @@ async def test_original_attribution_records_unchanged_after_assignment():
         if "UPDATE attributions" in stmt_str.upper():
             update_calls.append(stmt_str)
         r = MagicMock()
-        r.fetchone = MagicMock(return_value=(0.7,))
+        if "inbound_count" in stmt_str or "importance_score" in stmt_str:
+            r.fetchone = MagicMock(return_value=None)
+        else:
+            r.fetchone = MagicMock(return_value=(0.7,))
         r.fetchall = MagicMock(return_value=[])
         return r
 

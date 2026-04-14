@@ -14,19 +14,19 @@ import { cn } from '@/lib/utils'
 const textSchema = z.object({
   content: z.string().min(10, 'Content must be at least 10 characters'),
   tags: z.string().optional(),
-  memory_type: z.string().optional(),
+  source_type: z.string().optional(),
 })
 
 const urlSchema = z.object({
   url: z.string().url('Enter a valid URL'),
   tags: z.string().optional(),
-  memory_type: z.string().optional(),
+  source_type: z.string().optional(),
 })
 
 type TextForm = z.infer<typeof textSchema>
 type UrlForm = z.infer<typeof urlSchema>
 
-const MEMORY_TYPES = ['fact', 'decision', 'constraint', 'event', 'process', 'reference']
+const SOURCE_TYPES = ['text', 'url', 'pdf', 'code']
 
 interface IngestFormProps {
   open: boolean
@@ -48,7 +48,7 @@ export function IngestForm({ open, onClose, onJobCreated }: IngestFormProps) {
       content: values.content,
       workspace_id: activeWorkspace.id,
       tags: values.tags ? values.tags.split(',').map((t) => t.trim()).filter(Boolean) : [],
-      memory_type: values.memory_type || undefined,
+      source_type: values.source_type || 'text',
     })
     onJobCreated(resp.job_id)
     onClose()
@@ -61,7 +61,7 @@ export function IngestForm({ open, onClose, onJobCreated }: IngestFormProps) {
       url: values.url,
       workspace_id: activeWorkspace.id,
       tags: values.tags ? values.tags.split(',').map((t) => t.trim()).filter(Boolean) : [],
-      memory_type: values.memory_type || undefined,
+      source_type: 'url',
     })
     onJobCreated(resp.job_id)
     onClose()
@@ -128,11 +128,11 @@ export function IngestForm({ open, onClose, onJobCreated }: IngestFormProps) {
                   Memory Type
                 </label>
                 <select
-                  {...textForm.register('memory_type')}
+                  {...textForm.register('source_type')}
                   className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm text-primary focus:border-accent-blue focus:outline-none transition-colors"
                 >
                   <option value="">Auto-detect</option>
-                  {MEMORY_TYPES.map((t) => (
+                  {SOURCE_TYPES.map((t) => (
                     <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>
                   ))}
                 </select>
@@ -179,11 +179,11 @@ export function IngestForm({ open, onClose, onJobCreated }: IngestFormProps) {
                   Memory Type
                 </label>
                 <select
-                  {...urlForm.register('memory_type')}
+                  {...urlForm.register('source_type')}
                   className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm text-primary focus:border-accent-blue focus:outline-none transition-colors"
                 >
                   <option value="">Auto-detect</option>
-                  {MEMORY_TYPES.map((t) => (
+                  {SOURCE_TYPES.map((t) => (
                     <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>
                   ))}
                 </select>

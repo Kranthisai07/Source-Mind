@@ -1,20 +1,26 @@
 """
 Workspace resource endpoints.
 
-POST /v1/workspaces              → create workspace
+GET  /v1/workspaces              → list workspaces for current user
+POST /v1/workspaces              → create workspace (auto-creates org if needed)
 GET  /v1/workspaces/:id          → get workspace details
 GET  /v1/workspaces/:id/members  → list members with roles
 GET  /v1/workspaces/:id/analytics → contribution map + knowledge gaps
 """
 
 import time
+import uuid
+from datetime import datetime, timezone
 from uuid import UUID
 
 import structlog
 from fastapi import APIRouter, status
+from sqlalchemy import func, select
 
 from sourcemind.core.dependencies import CurrentUser, DBSession, IdempotencyKey, RequestID
-from sourcemind.core.exceptions import NotImplementedFeatureError
+from sourcemind.core.exceptions import NotImplementedFeatureError, WorkspaceNotFoundError
+from sourcemind.models.organization import Organization
+from sourcemind.models.workspace import Workspace, WorkspaceMember, WorkspaceRole
 from sourcemind.schemas.common import APIResponse, PaginatedResponse, ResponseMeta
 from sourcemind.schemas.workspace import (
     WorkspaceAnalyticsResponse,
@@ -26,6 +32,44 @@ from sourcemind.schemas.workspace import (
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
+
+
+def _make_meta(request_id: str, start: float) -> ResponseMeta:
+    return ResponseMeta(
+        request_id=request_id,
+        timestamp=datetime.now(timezone.utc),
+        latency_ms=(time.perf_counter() - start) * 1000,
+    )
+
+
+@router.get(
+    "",
+    response_model=APIResponse[list[WorkspaceResponse]],
+    summary="List workspaces for current user",
+)
+async def list_workspaces(
+    db: DBSession,
+    current_user: CurrentUser,
+    request_id: RequestID,
+) -> APIResponse[list[WorkspaceResponse]]:
+    """Return all workspaces the current user is a member of."""
+    start = time.perf_counter()
+
+    result = await db.execute(
+        select(Workspace)
+        .join(WorkspaceMember, WorkspaceMember.workspace_id == Workspace.id)
+        .where(
+            WorkspaceMember.user_id == current_user.user_id,
+            Workspace.deleted_at.is_(None),
+        )
+        .order_by(Workspace.created_at.asc())
+    )
+    workspaces = result.scalars().all()
+
+    return APIResponse(
+        data=[WorkspaceResponse.model_validate(ws) for ws in workspaces],
+        meta=_make_meta(request_id, start),
+    )
 
 
 @router.post(
@@ -42,13 +86,75 @@ async def create_workspace(
     idempotency_key: IdempotencyKey,
 ) -> APIResponse[WorkspaceResponse]:
     """
-    Create a new workspace within the current user's organization.
-
+    Create a workspace. If the user has no organization, one is auto-created.
     The creating user becomes the workspace owner.
-    Raises WorkspaceSlugTakenError if slug already exists in the organization.
     """
-    raise NotImplementedFeatureError(
-        "Workspace creation will be implemented in Phase 2."
+    start = time.perf_counter()
+
+    # Find or auto-create an organization for this user
+    # Look for an org where the user already owns a workspace
+    existing_org_result = await db.execute(
+        select(Organization)
+        .join(Workspace, Workspace.organization_id == Organization.id)
+        .join(WorkspaceMember, WorkspaceMember.workspace_id == Workspace.id)
+        .where(
+            WorkspaceMember.user_id == current_user.user_id,
+            WorkspaceMember.role == WorkspaceRole.OWNER,
+            Organization.deleted_at.is_(None),
+        )
+        .limit(1)
+    )
+    org = existing_org_result.scalar_one_or_none()
+
+    if org is None:
+        # Auto-create a personal organization using the user's email prefix as slug
+        email_prefix = current_user.email.split("@")[0]
+        org_slug = f"{email_prefix}-org"
+        # Ensure slug uniqueness
+        collision = await db.execute(
+            select(Organization).where(Organization.slug == org_slug)
+        )
+        if collision.scalar_one_or_none():
+            org_slug = f"{email_prefix}-{str(uuid.uuid4())[:8]}"
+
+        org = Organization(
+            name=f"{current_user.display_name or email_prefix}'s Organization",
+            slug=org_slug,
+        )
+        db.add(org)
+        await db.flush()
+        logger.info("workspace.org_auto_created", org_id=str(org.id), slug=org_slug)
+
+    # Create the workspace
+    workspace = Workspace(
+        organization_id=org.id,
+        name=body.name,
+        slug=body.slug,
+        description=body.description,
+    )
+    db.add(workspace)
+    await db.flush()
+
+    # Add creator as owner
+    membership = WorkspaceMember(
+        workspace_id=workspace.id,
+        user_id=current_user.user_id,
+        role=WorkspaceRole.OWNER,
+    )
+    db.add(membership)
+    await db.commit()
+    await db.refresh(workspace)
+
+    logger.info(
+        "workspace.created",
+        workspace_id=str(workspace.id),
+        slug=workspace.slug,
+        user_id=str(current_user.user_id),
+    )
+
+    return APIResponse(
+        data=WorkspaceResponse.model_validate(workspace),
+        meta=_make_meta(request_id, start),
     )
 
 
@@ -64,8 +170,24 @@ async def get_workspace(
     request_id: RequestID,
 ) -> APIResponse[WorkspaceResponse]:
     """Retrieve workspace details. User must be a member."""
-    raise NotImplementedFeatureError(
-        "Workspace retrieval will be implemented in Phase 2."
+    start = time.perf_counter()
+
+    result = await db.execute(
+        select(Workspace)
+        .join(WorkspaceMember, WorkspaceMember.workspace_id == Workspace.id)
+        .where(
+            Workspace.id == workspace_id,
+            WorkspaceMember.user_id == current_user.user_id,
+            Workspace.deleted_at.is_(None),
+        )
+    )
+    workspace = result.scalar_one_or_none()
+    if workspace is None:
+        raise WorkspaceNotFoundError(str(workspace_id))
+
+    return APIResponse(
+        data=WorkspaceResponse.model_validate(workspace),
+        meta=_make_meta(request_id, start),
     )
 
 
@@ -90,11 +212,6 @@ async def list_workspace_members(
     "/{workspace_id}/analytics",
     response_model=APIResponse[WorkspaceAnalyticsResponse],
     summary="Workspace knowledge analytics",
-    description=(
-        "Returns the contribution map showing who contributed what, "
-        "plus detected knowledge gaps and team coverage metrics. "
-        "Requires owner or admin role."
-    ),
 )
 async def get_workspace_analytics(
     workspace_id: UUID,
@@ -102,15 +219,7 @@ async def get_workspace_analytics(
     current_user: CurrentUser,
     request_id: RequestID,
 ) -> APIResponse[WorkspaceAnalyticsResponse]:
-    """
-    Compute and return workspace knowledge analytics.
-
-    Phase 2 will implement:
-      - Contributor stats aggregation from attributions table
-      - Knowledge gap detection via topic clustering
-      - Active contributor count (contributions in last 30 days)
-      - Open conflict count
-    """
+    """Compute and return workspace knowledge analytics."""
     raise NotImplementedFeatureError(
         "Workspace analytics will be implemented in Phase 2."
     )

@@ -324,6 +324,11 @@ async def resolve_conflict(
         },
     )
 
+    # Recompute importance for both memories (resolution changes their status)
+    from sourcemind.services.memory.importance import recompute_importance
+    await recompute_importance(session, uuid.UUID(mem_a_id))
+    await recompute_importance(session, uuid.UUID(mem_b_id))
+
     log.info(
         "conflict_resolved",
         conflict_id=str(conflict_id),

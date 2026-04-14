@@ -11,7 +11,7 @@ from typing import Any
 
 import structlog
 from pgvector.sqlalchemy import Vector  # noqa: F401 — registers type globally
-from sqlalchemy import event, text
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -44,14 +44,25 @@ def _build_engine(settings: Any = None) -> AsyncEngine:
         else QueuePool
     )
 
+    # asyncpg does not support ?ssl=require as a query param — strip it and
+    # pass via connect_args instead.
+    # statement_cache_size=0 is required for Supabase Supavisor (session pooler):
+    # the pooler can route connections across backends, invalidating prepared
+    # statement caches and causing "prepared statement does not exist" errors.
+    db_url = settings.database_url.replace("?ssl=require", "").replace("&ssl=require", "")
+    connect_args: dict[str, Any] = {"statement_cache_size": 0}
+    if "supabase" in db_url or "pooler" in db_url:
+        connect_args["ssl"] = "require"
+
     engine = create_async_engine(
-        settings.database_url,
+        db_url,
         echo=settings.debug,
         pool_size=settings.database_pool_size,
         max_overflow=settings.database_max_overflow,
         pool_timeout=settings.database_pool_timeout,
         pool_recycle=settings.database_pool_recycle,
         pool_pre_ping=True,
+        connect_args=connect_args,
         # Use orjson for faster JSON serialization
         json_serializer=_json_serializer,
         json_deserializer=_json_deserializer,
@@ -91,15 +102,9 @@ async def init_db() -> None:
         autoflush=False,
     )
 
-    # Verify connection is reachable
-    try:
-        async with _engine.connect() as conn:
-            result = await conn.execute(text("SELECT 1"))
-            row = result.scalar()
-            logger.info("database.connected", result=row, url=_mask_url(settings.database_url))
-    except Exception as exc:
-        logger.error("database.connection_failed", error=str(exc))
-        raise
+    # Pool is initialized lazily — connections open on first request.
+    # Avoids blocking startup with a round-trip to a remote cloud DB.
+    logger.info("database.pool_ready", url=_mask_url(settings.database_url))
 
 
 async def close_db() -> None:

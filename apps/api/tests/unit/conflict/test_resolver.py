@@ -55,7 +55,7 @@ async def test_kept_a_marks_memory_b_not_latest():
         if "SELECT memory_a_id" in stmt_str:
             r.fetchone = MagicMock(return_value=(mem_a_id, mem_b_id, ws_id))
         else:
-            r.fetchone = MagicMock(return_value=(str(uuid.uuid4()),))
+            r.fetchone = MagicMock(return_value=None)
         return r
 
     mock_session = AsyncMock()
@@ -96,7 +96,7 @@ async def test_kept_b_marks_memory_a_not_latest():
         if "SELECT memory_a_id" in stmt_str:
             r.fetchone = MagicMock(return_value=(mem_a_id, mem_b_id, ws_id))
         else:
-            r.fetchone = MagicMock(return_value=(str(uuid.uuid4()),))
+            r.fetchone = MagicMock(return_value=None)
         return r
 
     mock_session = AsyncMock()
@@ -172,7 +172,7 @@ async def test_split_adds_tags_to_both_memories():
             tag_update_params.append(dict(params))
             r.fetchone = MagicMock(return_value=None)
         else:
-            r.fetchone = MagicMock(return_value=(str(uuid.uuid4()),))
+            r.fetchone = MagicMock(return_value=None)
         return r
 
     mock_session = AsyncMock()
@@ -213,7 +213,7 @@ async def test_merged_deprecates_both_creates_new():
         if "SELECT memory_a_id" in stmt_str:
             r.fetchone = MagicMock(return_value=(mem_a_id, mem_b_id, ws_id))
         else:
-            r.fetchone = MagicMock(return_value=(str(uuid.uuid4()),))
+            r.fetchone = MagicMock(return_value=None)
         return r
 
     mock_session = AsyncMock()

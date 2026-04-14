@@ -6,13 +6,11 @@ Uses the async SQLAlchemy engine to support asyncpg driver.
 Database URL is loaded from environment — never hardcoded.
 """
 
-import asyncio
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool, text
+from sqlalchemy import create_engine, pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # Import all models so that Base.metadata is fully populated
 # This is required for autogenerate to detect all tables
@@ -31,7 +29,8 @@ target_metadata = Base.metadata
 
 # Load database URL from environment (never from alembic.ini)
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# configparser uses % for interpolation — escape literal % chars in the URL
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
 
 def include_object(object: object, name: str, type_: str, reflected: bool, compare_to: object) -> bool:
@@ -81,23 +80,22 @@ def do_run_migrations(connection: Connection) -> None:
         context.run_migrations()
 
 
-async def run_async_migrations() -> None:
-    """Async entry point for online migrations."""
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,  # Don't pool connections during migrations
+def run_migrations_online() -> None:
+    """Run migrations against a live database using synchronous psycopg2 driver."""
+    # Swap asyncpg → psycopg2 for the migration runner only.
+    # The app still uses asyncpg at runtime.
+    url = settings.database_url.replace(
+        "postgresql+asyncpg://", "postgresql+psycopg2://"
+    ).replace("?ssl=require", "")
+
+    connectable = create_engine(
+        url,
+        poolclass=pool.NullPool,
+        connect_args={"sslmode": "require"},
     )
 
-    async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
-
-    await connectable.dispose()
-
-
-def run_migrations_online() -> None:
-    """Run migrations against a live database (standard invocation)."""
-    asyncio.run(run_async_migrations())
+    with connectable.connect() as connection:
+        do_run_migrations(connection)
 
 
 if context.is_offline_mode():

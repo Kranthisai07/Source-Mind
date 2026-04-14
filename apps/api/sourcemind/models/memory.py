@@ -132,6 +132,11 @@ class Memory(Base, TimestampMixin, SoftDeleteMixin):
         nullable=True,
         comment="LLM confidence in fact extraction (0.0–1.0)",
     )
+    importance_score: Mapped[float] = mapped_column(
+        nullable=False,
+        server_default="0.0",
+        comment="Computed importance weight [0.0–1.0]; recalculated on edit, relation creation, conflict resolution, and handoff",
+    )
 
     # ── Relationships ─────────────────────────────────────────────
     workspace: Mapped["Workspace"] = relationship(  # type: ignore[name-defined]

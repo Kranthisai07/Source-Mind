@@ -278,6 +278,10 @@ async def assign_memory(
         transfer_amount=transfer_amount,
     )
 
+    # Recompute importance now that ownership has transferred
+    from sourcemind.services.memory.importance import recompute_importance
+    await recompute_importance(session, memory_id)
+
     # Return updated attribution breakdown
     updated_result = await session.execute(
         text("""

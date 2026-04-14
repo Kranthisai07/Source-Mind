@@ -18,13 +18,20 @@ from fastapi import APIRouter, Query, status
 from sqlalchemy import text
 
 from sourcemind.core.dependencies import AnthropicClient, CurrentUser, DBSession, RequestID
+from sourcemind.schemas.conflict import (
+    ConflictDetail,
+    ConflictListResponse,
+    ConflictResolveResponse,
+    ConflictReviewResponse,
+    ConflictSummary,
+)
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(tags=["conflicts"])
 
 
-@router.get("/workspaces/{workspace_id}/conflicts")
+@router.get("/workspaces/{workspace_id}/conflicts", response_model=ConflictListResponse)
 async def list_workspace_conflicts(
     workspace_id: uuid.UUID,
     db: DBSession,
@@ -33,7 +40,7 @@ async def list_workspace_conflicts(
     conflict_status: str | None = Query(default=None, alias="status"),
     limit: int = Query(default=20, ge=1, le=100),
     cursor: str | None = Query(default=None),
-) -> dict[str, Any]:
+) -> ConflictListResponse:
     """
     List conflicts for a workspace, ordered by similarity_score DESC.
     """
@@ -68,34 +75,34 @@ async def list_workspace_conflicts(
     rows = result.fetchall()
 
     conflicts = [
-        {
-            "id": row[0],
-            "status": row[1],
-            "conflict_type": row[2],
-            "severity": row[3],
-            "similarity_score": row[4],
-            "explanation": row[5],
-            "memory_a_id": row[6],
-            "memory_a_content": row[7][:200] + "..." if len(row[7]) > 200 else row[7],
-            "memory_b_id": row[8],
-            "memory_b_content": row[9][:200] + "..." if len(row[9]) > 200 else row[9],
-            "created_at": str(row[10]) if row[10] else None,
-        }
+        ConflictSummary(
+            id=row[0],
+            status=row[1],
+            conflict_type=row[2],
+            severity=row[3],
+            similarity_score=row[4],
+            explanation=row[5],
+            memory_a_id=row[6],
+            memory_a_content=row[7][:200] + "..." if len(row[7]) > 200 else row[7],
+            memory_b_id=row[8],
+            memory_b_content=row[9][:200] + "..." if len(row[9]) > 200 else row[9],
+            created_at=row[10],
+        )
         for row in rows
     ]
 
     next_cursor = str(rows[-1][4]) if rows else None
-    return {"conflicts": conflicts, "total": len(conflicts), "next_cursor": next_cursor}
+    return ConflictListResponse(conflicts=conflicts, total=len(conflicts), next_cursor=next_cursor)
 
 
-@router.get("/conflicts/{conflict_id}")
+@router.get("/conflicts/{conflict_id}", response_model=ConflictDetail)
 async def get_conflict(
     conflict_id: uuid.UUID,
     db: DBSession,
     current_user: CurrentUser,
     request_id: RequestID,
     anthropic_client: AnthropicClient,
-) -> dict[str, Any]:
+) -> ConflictDetail:
     """
     Full conflict detail including both memory contents, attribution, and AI suggestion.
     If no AI suggestion exists, one is generated and stored.
@@ -107,39 +114,40 @@ async def get_conflict(
         from sourcemind.core.exceptions import SourceMindError
         raise SourceMindError(f"Conflict {conflict_id} not found.", code="SM040")
 
-    return {
-        "id": detail.conflict_id,
-        "status": detail.status,
-        "conflict_type": detail.conflict_type,
-        "severity": detail.severity,
-        "similarity_score": detail.similarity_score,
-        "explanation": detail.explanation,
-        "memory_a": {"id": detail.memory_a_id, "content": detail.memory_a_content},
-        "memory_b": {"id": detail.memory_b_id, "content": detail.memory_b_content},
-        "suggested_resolution": detail.suggested_resolution,
-        "reviewed_by": detail.reviewed_by,
-        "reviewed_at": str(detail.reviewed_at) if detail.reviewed_at else None,
-        "revisit_at": str(detail.revisit_at) if detail.revisit_at else None,
-        "created_at": str(detail.created_at) if detail.created_at else None,
-    }
+    from sourcemind.schemas.conflict import MemoryRef
+    return ConflictDetail(
+        id=detail.conflict_id,
+        status=detail.status,
+        conflict_type=detail.conflict_type,
+        severity=detail.severity,
+        similarity_score=detail.similarity_score,
+        explanation=detail.explanation,
+        memory_a=MemoryRef(id=detail.memory_a_id, content=detail.memory_a_content),
+        memory_b=MemoryRef(id=detail.memory_b_id, content=detail.memory_b_content),
+        suggested_resolution=detail.suggested_resolution,
+        reviewed_by=detail.reviewed_by,
+        reviewed_at=str(detail.reviewed_at) if detail.reviewed_at else None,
+        revisit_at=str(detail.revisit_at) if detail.revisit_at else None,
+        created_at=str(detail.created_at) if detail.created_at else None,
+    )
 
 
-@router.post("/conflicts/{conflict_id}/review", status_code=status.HTTP_200_OK)
+@router.post("/conflicts/{conflict_id}/review", status_code=status.HTTP_200_OK, response_model=ConflictReviewResponse)
 async def review_conflict(
     conflict_id: uuid.UUID,
     db: DBSession,
     current_user: CurrentUser,
     request_id: RequestID,
-) -> dict[str, str]:
+) -> ConflictReviewResponse:
     """Transition conflict from open → under_review."""
     from sourcemind.services.conflict.resolver import mark_under_review
 
     ok = await mark_under_review(db, conflict_id, current_user.user_id)
     if not ok:
-        return {"status": "no_change", "message": "Conflict not in 'open' state or not found."}
+        return ConflictReviewResponse(status="no_change", conflict_id=str(conflict_id))
 
     await db.commit()
-    return {"status": "under_review", "conflict_id": str(conflict_id)}
+    return ConflictReviewResponse(status="under_review", conflict_id=str(conflict_id))
 
 
 class ResolveRequest:
@@ -159,14 +167,14 @@ class ResolveBody(BaseModel):
     tag_b: str | None = None
 
 
-@router.post("/conflicts/{conflict_id}/resolve", status_code=status.HTTP_200_OK)
+@router.post("/conflicts/{conflict_id}/resolve", status_code=status.HTTP_200_OK, response_model=ConflictResolveResponse)
 async def resolve_conflict_endpoint(
     conflict_id: uuid.UUID,
     body: ResolveBody,
     db: DBSession,
     current_user: CurrentUser,
     request_id: RequestID,
-) -> dict[str, str]:
+) -> ConflictResolveResponse:
     """Apply a resolution decision to a conflict."""
     from sourcemind.services.conflict.resolver import resolve_conflict
 
@@ -187,4 +195,4 @@ async def resolve_conflict_endpoint(
         raise SourceMindError(f"Conflict {conflict_id} not found.", code="SM040")
 
     await db.commit()
-    return {"status": "ok", "resolution_type": body.resolution_type}
+    return ConflictResolveResponse(status="ok", resolution_type=body.resolution_type)

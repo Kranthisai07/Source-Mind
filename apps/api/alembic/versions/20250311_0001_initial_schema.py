@@ -448,9 +448,11 @@ def upgrade() -> None:
     # m=16: number of bidirectional links per layer (higher = better recall, more memory)
     # ef_construction=64: size of candidate list during construction (higher = better quality)
     # vector_cosine_ops: use cosine distance (appropriate for normalized embeddings)
+    # pgvector HNSW supports max 2000 dims for vector type.
+    # Cast to halfvec(3072) for HNSW on 3072-dim embeddings (requires pgvector >= 0.7.0).
     op.execute("""
         CREATE INDEX ix_memories_embedding_hnsw ON memories
-        USING hnsw (embedding vector_cosine_ops)
+        USING hnsw ((embedding::halfvec(3072)) halfvec_cosine_ops)
         WITH (m = 16, ef_construction = 64)
     """)
 

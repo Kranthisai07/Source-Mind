@@ -5,21 +5,49 @@ Signals (weights):
   1. Character diff     0.35  — how much was changed relative to content length
   2. Semantic similarity 0.30  — how much of contributor's phrasing survived (SBERT)
   3. Temporal primacy   0.15  — first author benefits most (0.8^(pos-1))
-  4. Structural         0.10  — how many new named entities were introduced (spaCy)
+  4. Structural         0.10  — how many new named entities were introduced
   5. Explicit approval  0.10  — action type indicates explicit review/approval
 
-See ADR-007 for design rationale.
+Signal 4 uses spaCy NER when available. On Python 3.14+ where spaCy is
+incompatible, a regex fallback extracts technical identifiers (CamelCase,
+ALLCAPS, version strings, known tech keywords). See ADR-007.
 """
 
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 import structlog
 
 log = structlog.get_logger(__name__)
+
+# ─── Signal 4: NER backend selection ─────────────────────────────────────────
+
+try:
+    import spacy as _spacy
+    _spacy_nlp = _spacy.load("en_core_web_sm")
+    SPACY_AVAILABLE = True
+    log.info("ner.backend", backend="spacy", model="en_core_web_sm")
+except Exception:
+    _spacy_nlp = None
+    SPACY_AVAILABLE = False
+    log.info("ner.backend", backend="regex_fallback", reason="spacy_unavailable")
+
+# Regex: CamelCase words | ALLCAPS (2+ chars) | version strings | known tech keywords
+_TECH_PATTERN = re.compile(
+    r'\b('
+    r'[A-Z][a-z]+(?:[A-Z][a-z]+)+'          # CamelCase (e.g. PostgreSQL, GraphQL)
+    r'|[A-Z]{2,}'                             # ALLCAPS (e.g. API, JWT, AWS, SQL)
+    r'|v\d+(?:\.\d+)+'                        # version strings (e.g. v1.0, v2.3.1)
+    r'|(?:OAuth|JWT|API|SQL|REST|gRPC'
+    r'|S3|EC2|RDS|Redis|Kafka|Docker'
+    r'|Kubernetes|PostgreSQL|Neo4j|Supabase'
+    r'|Clerk|Celery|Alembic|FastAPI|Pydantic)'
+    r')\b'
+)
 
 # Signal weights (must sum to 1.0)
 _W1 = 0.35  # character diff
@@ -78,6 +106,19 @@ class NormalizedAttribution:
     approval_score: float | None
 
 
+def _extract_entities(text: str) -> set[str]:
+    """
+    Extract named entities from text.
+
+    Uses spaCy NER when available; falls back to regex-based extraction of
+    technical identifiers (CamelCase, ALLCAPS, version strings, known tech terms)
+    when spaCy is not installed or incompatible with the current Python version.
+    """
+    if SPACY_AVAILABLE and _spacy_nlp is not None:
+        return {ent.text for ent in _spacy_nlp(text).ents}
+    return set(_TECH_PATTERN.findall(text))
+
+
 # ─── Signal computation ───────────────────────────────────────────────────────
 
 def _signal1_char_diff(before: str | None, after: str) -> float:
@@ -131,20 +172,18 @@ def _signal3_temporal(edit_position: int) -> float:
     return 0.8 ** (edit_position - 1)
 
 
-def _signal4_structural(before: str | None, after: str, nlp_model: Any) -> float:
+def _signal4_structural(before: str | None, after: str) -> float:
     """
     Signal 4: Fraction of entities in 'after' that were NOT in 'before'.
 
     Rewards contributors who introduced new named concepts.
+    Uses spaCy NER when available; regex fallback otherwise.
     """
     try:
-        entities_after = {ent.text for ent in nlp_model(after).ents}
+        entities_after = _extract_entities(after)
         if not entities_after:
             return 0.0
-        if before:
-            entities_before = {ent.text for ent in nlp_model(before).ents}
-        else:
-            entities_before = set()
+        entities_before = _extract_entities(before) if before else set()
         new_entities = entities_after - entities_before
         return len(new_entities) / len(entities_after)
     except Exception as exc:
@@ -171,24 +210,12 @@ class AttributionScorer:
 
     def __init__(self) -> None:
         self._sbert: Any = None
-        self._nlp: Any = None
 
     def _get_sbert(self) -> Any:
         if self._sbert is None:
             from sentence_transformers import SentenceTransformer
             self._sbert = SentenceTransformer("all-MiniLM-L6-v2")
         return self._sbert
-
-    def _get_nlp(self) -> Any:
-        if self._nlp is None:
-            import spacy
-            try:
-                self._nlp = spacy.load("en_core_web_sm")
-            except OSError:
-                # Minimal fallback if model not installed
-                self._nlp = spacy.blank("en")
-                log.warning("spacy_model_not_found", model="en_core_web_sm")
-        return self._nlp
 
     def compute_scores(self, edits: list[EditEvent]) -> list[NormalizedAttribution]:
         """
@@ -201,7 +228,6 @@ class AttributionScorer:
             return []
 
         sbert = self._get_sbert()
-        nlp = self._get_nlp()
 
         contributor_map: dict[str, ContributorScore] = {}
 
@@ -219,7 +245,7 @@ class AttributionScorer:
                 sbert,
             )
             s3 = _signal3_temporal(edit.edit_position)
-            s4 = _signal4_structural(edit.content_before, edit.content_after, nlp)
+            s4 = _signal4_structural(edit.content_before, edit.content_after)
             s5 = _signal5_approval(edit.action_type)
 
             weighted = s1 * _W1 + s2 * _W2 + s3 * _W3 + s4 * _W4 + s5 * _W5

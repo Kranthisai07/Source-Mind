@@ -89,7 +89,11 @@ async def test_full_conflict_lifecycle():
         call_count[0] += 1
         if call_count[0] == 1:
             return conflict_row
-        return resolve_result
+        # recompute_importance queries return None to bail out early
+        r = MagicMock()
+        r.fetchone = MagicMock(return_value=None)
+        r.rowcount = 1
+        return r
 
     mock_session2.execute = AsyncMock(side_effect=execute_side)
 
@@ -131,9 +135,14 @@ async def test_merged_resolution_creates_new_memory():
         execute_calls.append(str(query))
         mock_result = MagicMock()
         mock_result.rowcount = 1
-        mock_result.fetchone = MagicMock(return_value=(
-            str(memory_a_id), str(memory_b_id), str(uuid.uuid4()),
-        ))
+        query_str = str(query)
+        if "inbound_count" in query_str or "importance_score" in query_str:
+            # recompute_importance query — return None to bail out early
+            mock_result.fetchone = MagicMock(return_value=None)
+        else:
+            mock_result.fetchone = MagicMock(return_value=(
+                str(memory_a_id), str(memory_b_id), str(uuid.uuid4()),
+            ))
         mock_result.scalar_one_or_none = MagicMock(return_value=None)
         return mock_result
 

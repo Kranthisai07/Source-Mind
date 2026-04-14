@@ -8,32 +8,25 @@ from sourcemind.services.attribution.scorer import (
     AttributionScorer,
     EditEvent,
     NormalizedAttribution,
+    _extract_entities,
     _signal1_char_diff,
     _signal3_temporal,
+    _signal4_structural,
     _signal5_approval,
 )
 
 
-def _make_scorer(sbert_similarity: float = 0.9, nlp_new_entities: int = 0) -> AttributionScorer:
-    """Create a scorer with mocked SBERT and spaCy."""
+def _make_scorer(sbert_similarity: float = 0.9) -> AttributionScorer:
+    """Create a scorer with mocked SBERT. Signal 4 uses module-level _extract_entities (no mock needed)."""
     scorer = AttributionScorer()
 
     # Mock SBERT
     sbert_mock = MagicMock()
     import numpy as np
-    # encode() returns two vectors whose dot product = sbert_similarity
     v1 = np.array([sbert_similarity, 0.0])
     v2 = np.array([1.0, 0.0])
     sbert_mock.encode = MagicMock(return_value=np.array([v1, v2]))
     scorer._sbert = sbert_mock
-
-    # Mock spaCy NLP
-    nlp_mock = MagicMock()
-    doc_mock = MagicMock()
-    # Simulate named entities
-    doc_mock.ents = [MagicMock(text=f"Entity{i}") for i in range(nlp_new_entities)]
-    nlp_mock.return_value = doc_mock
-    scorer._nlp = nlp_mock
 
     return scorer
 
@@ -81,11 +74,38 @@ def test_signal3_temporal_fourth_author_scores_point_51():
 
 @pytest.mark.unit
 def test_signal4_structural_new_entities_increase_score():
-    scorer = _make_scorer(nlp_new_entities=3)
-    nlp = scorer._get_nlp()
-    from sourcemind.services.attribution.scorer import _signal4_structural
-    score = _signal4_structural(None, "AWS deployed to us-east-1 by Alice at 3PM", nlp)
+    """New entities introduced by a contributor should yield a positive score."""
+    score = _signal4_structural(None, "AWS deployed Redis and Kafka to PostgreSQL cluster")
     assert score > 0
+
+
+@pytest.mark.unit
+def test_signal4_structural_no_new_entities_scores_zero():
+    """When 'after' introduces no new entities beyond 'before', score is 0.0."""
+    text = "AWS deployed Redis and Kafka"
+    score = _signal4_structural(text, text)
+    assert score == 0.0
+
+
+@pytest.mark.unit
+def test_signal4_extract_entities_camel_case():
+    """CamelCase words should be recognized as entities."""
+    entities = _extract_entities("We migrated from GraphQL to PostgreSQL using FastAPI")
+    assert "GraphQL" in entities or "PostgreSQL" in entities or "FastAPI" in entities
+
+
+@pytest.mark.unit
+def test_signal4_extract_entities_allcaps():
+    """ALLCAPS abbreviations should be recognized as entities."""
+    entities = _extract_entities("The JWT token is validated via OAuth using the API")
+    assert any(e in entities for e in ("JWT", "OAuth", "API"))
+
+
+@pytest.mark.unit
+def test_signal4_extract_entities_version_string():
+    """Version strings like v2.3.1 should be recognized."""
+    entities = _extract_entities("Upgraded to v2.3.1 from v1.0")
+    assert any("v2" in e or "v1" in e for e in entities)
 
 
 @pytest.mark.unit

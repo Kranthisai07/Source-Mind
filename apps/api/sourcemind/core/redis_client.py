@@ -39,13 +39,9 @@ async def init_redis() -> None:
     )
     _client = Redis(connection_pool=_pool)
 
-    # Verify connectivity
-    try:
-        pong = await _client.ping()
-        logger.info("redis.connected", ping_ok=pong, url=_mask_url(settings.redis_url))
-    except Exception as exc:
-        logger.error("redis.connection_failed", error=str(exc))
-        raise
+    # Pool is initialized lazily — connection opens on first command.
+    # Avoids blocking startup with a TLS round-trip to a remote Redis host.
+    logger.info("redis.pool_ready", url=_mask_url(settings.redis_url))
 
 
 async def close_redis() -> None:
