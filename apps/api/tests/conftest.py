@@ -8,7 +8,6 @@ All fixtures guarded by `pg_available` skip gracefully when pg_ctl is absent.
 from __future__ import annotations
 
 import shutil
-import subprocess
 
 import pytest
 
@@ -27,6 +26,9 @@ pg_available = pytest.mark.skipif(
 
 
 # ─── Real-DB fixture (pytest-postgresql) ─────────────────────────────────────
+# pytest-postgresql is only used when pg_ctl is present AND the package
+# can be successfully imported. psycopg (its dependency) requires libpq
+# which may not be present on Windows dev machines.
 
 if _pg_ctl_available():
     try:
@@ -47,8 +49,8 @@ if _pg_ctl_available():
             """Yield a psycopg3 connection to the test PostgreSQL instance."""
             return _postgresql
 
-    except ImportError:
-        pass  # pytest-postgresql not installed — fixtures not defined
+    except (ImportError, Exception):
+        pass  # pytest-postgresql not installed or psycopg/libpq unavailable
 
 
 # ─── SQLAlchemy async session fixture ────────────────────────────────────────

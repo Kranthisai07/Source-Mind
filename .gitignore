@@ -4,6 +4,8 @@
 
 # ── Secrets (NEVER commit these) ──────────────────────────────
 .env
+.env.*
+!.env.example
 .env.local
 .env.production
 .env.staging

@@ -23,6 +23,7 @@ app = Celery(
     include=[
         "sourcemind.workers.ingestion",
         "sourcemind.workers.attribution",
+        "sourcemind.workers.connector_tasks",
     ],
 )
 
@@ -49,6 +50,7 @@ app.conf.update(
     task_routes={
         "sourcemind.workers.ingestion.*": {"queue": "ingestion"},
         "sourcemind.workers.attribution.*": {"queue": "attribution"},
+        "sourcemind.workers.connector_tasks.*": {"queue": "connectors"},
     },
     task_default_queue="default",
 )

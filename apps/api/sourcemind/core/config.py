@@ -118,6 +118,13 @@ class Settings(BaseSettings):
     sentry_dsn: Annotated[str, Field(repr=False)] = ""
     sentry_traces_sample_rate: float = 0.1
 
+    # ── GitHub App ────────────────────────────────────────────────
+    github_app_id: str = Field(default="", repr=False)
+    github_app_installation_id: str = Field(default="", repr=False)
+    github_app_private_key_path: str = Field(default="", repr=False)
+    github_webhook_secret: str = Field(default="sourcemind_research", repr=False)
+    github_research_pat: str = Field(default="", repr=False)
+
     @field_validator("debug", mode="before")
     @classmethod
     def set_debug_from_environment(cls, v: bool, info: object) -> bool:
@@ -157,6 +164,15 @@ class Settings(BaseSettings):
     def neo4j_password(self) -> str:
         """Extract Neo4j password from auth string 'user/password'."""
         return self.neo4j_auth.split("/", 1)[1]
+
+    @property
+    def github_app_private_key(self) -> str:
+        """Read PEM file content at startup."""
+        from pathlib import Path
+        pem_path = Path(self.github_app_private_key_path)
+        if not pem_path.exists():
+            raise ValueError(f"GitHub App private key not found: {pem_path}")
+        return pem_path.read_text()
 
 
 @lru_cache(maxsize=1)
