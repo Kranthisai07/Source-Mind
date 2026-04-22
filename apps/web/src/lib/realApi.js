@@ -208,6 +208,19 @@ export const realApi = {
     listHandoffs: (wsId = DEFAULT_WS) =>
         request(`/v1/workspaces/${wsPath(wsId)}/handoffs`),
 
+    // GET /v1/workspaces/:id/analytics/who-would-know?q=<query>
+    whoWouldKnow: async (wsId = DEFAULT_WS, { q = "", limit = 5 } = {}) => {
+        const r = await request(`/v1/workspaces/${wsPath(wsId)}/analytics/who-would-know`, {
+            params: { q, limit },
+        });
+        // Attach colors not returned by the backend
+        const experts = (r.experts || []).map((e, i) => ({
+            ...e,
+            avatarColor: colorFor(e.user_id || e.login, i),
+        }));
+        return { ...r, experts };
+    },
+
     // ----- team / contributors -----
     listTeamMembers: (wsId = DEFAULT_WS) =>
         request(`/v1/workspaces/${wsPath(wsId)}/members`),

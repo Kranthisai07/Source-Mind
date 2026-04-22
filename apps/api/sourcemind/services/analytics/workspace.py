@@ -448,3 +448,100 @@ async def get_knowledge_gaps(
         })
 
     return {"gaps": gaps}
+
+
+async def who_would_know(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    query: str,
+    limit: int = 5,
+) -> dict[str, Any]:
+    """
+    Given a free-text query, return the contributors most likely to know about it.
+
+    Algorithm:
+      1. BM25 text search (content_tsv) to find up to 30 matching memories,
+         scored by ts_rank_cd.
+      2. Join with attributions, weight each contributor's score by
+         (attribution_score × memory_rank).
+      3. Return top-N contributors sorted by weighted expertise score,
+         including their top matching memory snippets.
+    """
+    ws = str(workspace_id)
+
+    result = await session.execute(
+        text("""
+            WITH matching AS (
+                SELECT
+                    m.id,
+                    LEFT(m.content, 120)                                   AS preview,
+                    m.category,
+                    ts_rank_cd(m.content_tsv, plainto_tsquery('english', :q)) AS rank
+                FROM memories m
+                WHERE m.workspace_id = :ws::uuid
+                  AND m.current_version = TRUE
+                  AND m.deleted_at IS NULL
+                  AND m.content_tsv @@ plainto_tsquery('english', :q)
+                ORDER BY rank DESC
+                LIMIT 30
+            ),
+            scored AS (
+                SELECT
+                    a.attributed_to_user_id                                   AS uid,
+                    SUM(a.attribution_score * mm.rank)                        AS weighted_score,
+                    COUNT(DISTINCT a.memory_id)                               AS memory_count,
+                    -- best-ranked memory for this contributor
+                    (array_agg(mm.id       ORDER BY mm.rank DESC))[1]         AS top_memory_id,
+                    (array_agg(mm.preview  ORDER BY mm.rank DESC))[1]         AS top_preview,
+                    (array_agg(mm.category ORDER BY mm.rank DESC))[1]         AS top_category,
+                    MAX(a.attribution_score)                                   AS peak_attribution
+                FROM attributions a
+                JOIN matching mm ON mm.id = a.memory_id
+                WHERE a.attribution_score > 0.05
+                GROUP BY a.attributed_to_user_id
+            )
+            SELECT
+                s.uid::text,
+                COALESCE(u.display_name, u.email)    AS name,
+                u.email,
+                s.weighted_score,
+                s.memory_count,
+                s.top_memory_id::text,
+                s.top_preview,
+                s.top_category,
+                s.peak_attribution
+            FROM scored s
+            JOIN users u ON u.id = s.uid
+            ORDER BY s.weighted_score DESC
+            LIMIT :lim
+        """),
+        {"ws": ws, "q": query, "lim": limit},
+    )
+    rows = result.fetchall()
+
+    if not rows:
+        return {"query": query, "experts": []}
+
+    # Normalise weighted_score to [0, 1] confidence relative to top scorer
+    top_score = float(rows[0][3]) if rows else 1.0
+
+    experts = []
+    for row in rows:
+        uid, name, email, w_score, mem_count, top_mid, top_prev, top_cat, peak_attr = row
+        login = email.split("@")[0] if email else (name or "").lower().replace(" ", ".")
+        confidence = round(min(float(w_score) / max(top_score, 1e-9), 1.0), 3)
+        experts.append({
+            "user_id": uid,
+            "name": name,
+            "login": login,
+            "confidence": confidence,
+            "memory_count": int(mem_count),
+            "peak_attribution": round(float(peak_attr), 3),
+            "top_memory": {
+                "id": top_mid,
+                "preview": (top_prev or "").strip(),
+                "category": top_cat or "general",
+            },
+        })
+
+    return {"query": query, "experts": experts}

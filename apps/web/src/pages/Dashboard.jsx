@@ -5,6 +5,7 @@ import TopBar from "../components/layout/TopBar";
 import MetricCard from "../components/widgets/MetricCard";
 import HealthGauge from "../components/widgets/HealthGauge";
 import RiskBadge from "../components/widgets/RiskBadge";
+import WhoWouldKnow from "../components/widgets/WhoWouldKnow";
 import api from "../lib/api";
 import { relativeTime } from "../lib/format";
 
@@ -115,7 +116,10 @@ export default function Dashboard() {
                     </section>
                 </div>
 
-                {/* Row 3 — top contributors + knowledge gaps */}
+                {/* Row 3 — who would know */}
+                <WhoWouldKnow workspaceId="ws_acme_platform" />
+
+                {/* Row 4 — top contributors + knowledge gaps */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                     <section className="sm-card p-6">
                         <div className="flex items-center justify-between mb-5">

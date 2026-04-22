@@ -176,6 +176,39 @@ export const mockApi = {
         };
     }, { min: 500, max: 900 }),
 
+    // GET /v1/workspaces/:id/analytics/who-would-know?q=<query>
+    whoWouldKnow: (_wsId, { q = "" } = {}) => request(() => {
+        const ql = q.trim().toLowerCase();
+        // Score each contributor by how much their memories match the query
+        const scored = CONTRIBUTORS.map(c => {
+            const matched = MEMORIES.filter(m => {
+                const isAuthor = m.attribution[0]?.author === c.login;
+                const relevant = !ql || m.content.toLowerCase().includes(ql)
+                    || m.tags.some(t => t.includes(ql))
+                    || m.category.includes(ql);
+                return isAuthor && relevant;
+            });
+            return { c, matched, score: matched.length * c.score };
+        }).filter(x => x.score > 0).sort((a, b) => b.score - a.score).slice(0, 5);
+        const topScore = scored[0]?.score || 1;
+        return {
+            query: q,
+            experts: scored.map(({ c, matched, score }) => ({
+                user_id:         c.id,
+                name:            c.name,
+                login:           c.login,
+                confidence:      Math.round((score / topScore) * 100) / 100,
+                memory_count:    matched.length || 1,
+                peak_attribution: c.score,
+                top_memory: matched[0] ? {
+                    id:       matched[0].memory_id,
+                    preview:  matched[0].content.replace(/[#*`]/g, "").slice(0, 110).trim(),
+                    category: matched[0].category,
+                } : { id: "", preview: "No preview", category: c.top_category },
+            })),
+        };
+    }, { min: 100, max: 280 }),
+
     // Analytics extras
     getMemoriesOverTime: () => request(() => ({ series: MEMORIES_OVER_TIME })),
     getSearchActivity:   () => request(() => ({ series: SEARCH_ACTIVITY })),
