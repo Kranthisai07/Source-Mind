@@ -123,8 +123,8 @@ async def test_contribution_map_includes_all_active_contributors():
 
     # Main result: 2 contributors
     contributor_rows = [
-        (uid1, "Alice", 10, 15, 0.6, "2025-03-10"),
-        (uid2, "Bob", 5, 8, 0.4, "2025-03-08"),
+        (uid1, "Alice", "alice@acme.dev", 10, 15, 0.6, "2025-03-10"),
+        (uid2, "Bob", "bob@acme.dev", 5, 8, 0.4, "2025-03-08"),
     ]
 
     call_index = [0]

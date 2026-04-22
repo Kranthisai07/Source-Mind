@@ -217,7 +217,8 @@ async def get_overview(
                 ae.memory_id::text,
                 ae.action_type,
                 COALESCE(u.display_name, u.email) AS name,
-                ae.created_at
+                ae.created_at,
+                LEFT(m.content, 60) AS content_preview
             FROM attribution_edits ae
             JOIN users u ON u.id = ae.editor_id
             JOIN memories m ON m.id = ae.memory_id
@@ -227,15 +228,34 @@ async def get_overview(
         """),
         {"ws": ws},
     )
+
+    _action_labels = {
+        "memory_created": "created",
+        "memory_updated": "edited",
+        "conflict_opened": "conflict detected on",
+        "conflict_resolved": "resolved conflict on",
+        "handoff_initiated": "initiated handoff for",
+        "connector_synced": "synced",
+    }
     recent_activity = [
         {
             "memory_id": r[0],
             "action": r[1],
             "contributor_name": r[2],
             "timestamp": str(r[3]) if r[3] else None,
+            "description": (
+                f"{r[2]} {_action_labels.get(r[1], r[1])} "
+                f"'{(r[4] or '').strip()[:50]}'"
+            ),
         }
         for r in activity_result.fetchall()
     ]
+
+    # Compute individual breakdown scores for the UI health gauge
+    coverage_score = round(1.0 - (single_contributor_count / max(total_memories, 1)), 4)
+    freshness_score = round(updated_in_90 / max(total_important, 1), 4)
+    conflict_score = round(1.0 - _clamp(open_conflicts / max(total_memories, 1), 0.0, 1.0), 4)
+    attribution_score = round(multi_contributor_count / max(total_memories, 1), 4)
 
     result_data: dict[str, Any] = {
         "total_memories": total_memories,
@@ -246,6 +266,12 @@ async def get_overview(
         "memories_created_last_30_days": memories_last_30,
         "open_conflicts": open_conflicts,
         "knowledge_health_score": health_score,
+        "health_breakdown": {
+            "coverage": coverage_score,
+            "freshness": freshness_score,
+            "conflict_ratio": conflict_score,
+            "attribution": attribution_score,
+        },
         "top_contributors": top_contributors,
         "recent_activity": recent_activity,
     }
@@ -267,6 +293,7 @@ async def get_contribution_map(
             SELECT
                 a.user_id::text,
                 COALESCE(u.display_name, u.email) AS name,
+                u.email,
                 COUNT(DISTINCT m.id) FILTER (WHERE ae.edit_position = 1) AS created,
                 COUNT(DISTINCT m.id) AS influenced,
                 AVG(a.contribution_weight) AS avg_weight,
@@ -288,7 +315,8 @@ async def get_contribution_map(
 
     contributors = []
     for row in rows:
-        uid, name, created, influenced, avg_weight, last_contrib = row
+        uid, name, email, created, influenced, avg_weight, last_contrib = row
+        login = email.split("@")[0] if email else name.lower().replace(" ", ".")
 
         # Collaboration rate: % of influenced memories with >1 contributor
         collab_result = await session.execute(
@@ -312,6 +340,7 @@ async def get_contribution_map(
         contributors.append({
             "user_id": uid,
             "name": name,
+            "login": login,
             "total_memories_created": created or 0,
             "total_memories_influenced": influenced or 0,
             "avg_contribution_pct": round(float(avg_weight or 0), 4),

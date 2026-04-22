@@ -123,6 +123,78 @@ class GitHubClient:
             if "pull_request" not in item:
                 yield item
 
+    # ── PR enrichment endpoints ───────────────────────────────────────────────
+
+    async def get_pr_comments(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        per_page: int = _DEFAULT_PER_PAGE,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield issue-thread comments on a pull request.
+
+        Uses the Issues comments endpoint (``/issues/{number}/comments``), which
+        returns the top-level conversation comments — distinct from inline review
+        comments returned by :meth:`get_pr_review_comments`.
+
+        Args:
+            owner: Repository owner login.
+            repo: Repository name.
+            pr_number: Pull request number.
+            per_page: Page size (max 100).
+        """
+        async for item in self._paginate(
+            f"{_API_BASE}/repos/{owner}/{repo}/issues/{pr_number}/comments",
+            {"per_page": per_page},
+        ):
+            yield item
+
+    async def get_pr_reviews(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        per_page: int = _DEFAULT_PER_PAGE,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield review objects (APPROVED, CHANGES_REQUESTED, COMMENTED, etc.).
+
+        Args:
+            owner: Repository owner login.
+            repo: Repository name.
+            pr_number: Pull request number.
+            per_page: Page size (max 100).
+        """
+        async for item in self._paginate(
+            f"{_API_BASE}/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
+            {"per_page": per_page},
+        ):
+            yield item
+
+    async def get_pr_review_comments(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        per_page: int = _DEFAULT_PER_PAGE,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield inline diff/review comments on a pull request.
+
+        These are the line-level comments attached to specific code hunks,
+        distinct from top-level issue comments returned by :meth:`get_pr_comments`.
+
+        Args:
+            owner: Repository owner login.
+            repo: Repository name.
+            pr_number: Pull request number.
+            per_page: Page size (max 100).
+        """
+        async for item in self._paginate(
+            f"{_API_BASE}/repos/{owner}/{repo}/pulls/{pr_number}/comments",
+            {"per_page": per_page},
+        ):
+            yield item
+
     # ── Discussions (GraphQL) ─────────────────────────────────────────────────
 
     async def get_discussions(

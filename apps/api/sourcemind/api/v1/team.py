@@ -18,7 +18,7 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from sourcemind.core.dependencies import CurrentUser, DBSession, IdempotencyKey, RequestID
 from sourcemind.core.exceptions import UserNotFoundError
@@ -72,6 +72,86 @@ async def get_current_user_profile(
 
 
 # ─── Handoff endpoints ────────────────────────────────────────────────────────
+
+
+@handoff_router.get(
+    "/workspaces/{workspace_id}/handoffs",
+    summary="List handoff records for a workspace",
+)
+async def list_handoffs(
+    workspace_id: uuid.UUID,
+    db: DBSession,
+    current_user: CurrentUser,
+    request_id: RequestID,
+) -> dict:
+    """Return all handoff records for the workspace, newest first."""
+    result = await db.execute(
+        text("""
+            SELECT
+                hr.id::text,
+                hr.departing_user_id::text,
+                COALESCE(u_dep.display_name, u_dep.email) AS departing_name,
+                hr.initiated_by::text,
+                COALESCE(u_init.display_name, u_init.email) AS initiated_by_name,
+                hr.tier_1_count,
+                hr.tier_2_count,
+                hr.tier_3_count,
+                hr.assigned_count,
+                hr.status,
+                hr.created_at,
+                hr.expires_at,
+                hr.completed_at,
+                -- Most-assigned receiving user for this handoff record
+                (
+                    SELECT ha.new_owner_id::text
+                    FROM handoff_assignments ha
+                    WHERE ha.handoff_id = hr.id
+                      AND ha.new_owner_id IS NOT NULL
+                    GROUP BY ha.new_owner_id
+                    ORDER BY COUNT(*) DESC
+                    LIMIT 1
+                ) AS receiving_user_id,
+                (
+                    SELECT COALESCE(u_recv.display_name, u_recv.email)
+                    FROM handoff_assignments ha
+                    JOIN users u_recv ON u_recv.id = ha.new_owner_id
+                    WHERE ha.handoff_id = hr.id
+                      AND ha.new_owner_id IS NOT NULL
+                    GROUP BY ha.new_owner_id, u_recv.display_name, u_recv.email
+                    ORDER BY COUNT(*) DESC
+                    LIMIT 1
+                ) AS receiving_user_name
+            FROM handoff_records hr
+            LEFT JOIN users u_dep ON u_dep.id = hr.departing_user_id
+            LEFT JOIN users u_init ON u_init.id = hr.initiated_by
+            WHERE hr.workspace_id = :ws::uuid
+            ORDER BY hr.created_at DESC
+        """),
+        {"ws": str(workspace_id)},
+    )
+    rows = result.fetchall()
+    return {
+        "handoffs": [
+            {
+                "id": r[0],
+                "departing_user_id": r[1],
+                "departing_user_name": r[2],
+                "initiated_by": r[3],
+                "initiated_by_name": r[4],
+                "tier_1_count": r[5],
+                "tier_2_count": r[6],
+                "tier_3_count": r[7],
+                "assigned_count": r[8],
+                "status": r[9],
+                "created_at": str(r[10]) if r[10] else None,
+                "expires_at": str(r[11]) if r[11] else None,
+                "completed_at": str(r[12]) if r[12] else None,
+                "receiving_user_id": r[13],
+                "receiving_user_name": r[14],
+            }
+            for r in rows
+        ]
+    }
 
 
 class InitiateHandoffBody(BaseModel):

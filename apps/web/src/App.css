@@ -1,0 +1,4 @@
+/* Reset CRA defaults — SourceMind uses its own system. */
+.App {
+    min-height: 100vh;
+}
