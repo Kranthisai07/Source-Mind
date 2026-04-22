@@ -1,0 +1,39 @@
+display_information:
+  name: SourceMind
+  description: AI-powered knowledge memory for engineering teams. Ask questions, get instant answers from your team's collective memory.
+  background_color: "#0A0A0F"
+  long_description: "SourceMind surfaces the right knowledge at the right time — in Slack. Use /sourcemind to search your team's memory, or ask \"who knows about X\" to find the right person."
+
+features:
+  bot_user:
+    display_name: SourceMind
+    always_online: true
+  slash_commands:
+    - command: /sourcemind
+      url: https://YOUR_DOMAIN/v1/slack/events
+      description: Search team knowledge or find who knows about a topic
+      usage_hint: "<query> | who knows <topic> | help"
+      should_escape: false
+
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - channels:history
+      - chat:write
+      - commands
+      - im:history
+      - im:write
+
+settings:
+  event_subscriptions:
+    request_url: https://YOUR_DOMAIN/v1/slack/events
+    bot_events:
+      - app_mention
+      - message.im
+  interactivity:
+    is_enabled: true
+    request_url: https://YOUR_DOMAIN/v1/slack/events
+  org_deploy_enabled: false
+  socket_mode_enabled: true   # set to false for HTTP mode production
+  token_rotation_enabled: false

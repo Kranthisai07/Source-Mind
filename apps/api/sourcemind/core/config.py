@@ -125,6 +125,15 @@ class Settings(BaseSettings):
     github_webhook_secret: str = Field(default="sourcemind_research", repr=False)
     github_research_pat: str = Field(default="", repr=False)
 
+    # ── Slack ─────────────────────────────────────────────────────
+    slack_bot_token: Annotated[str, Field(repr=False)] = Field(default="", alias="SLACK_BOT_TOKEN")
+    slack_signing_secret: Annotated[str, Field(repr=False)] = Field(default="", alias="SLACK_SIGNING_SECRET")
+    slack_app_token: Annotated[str, Field(repr=False)] = Field(default="", alias="SLACK_APP_TOKEN")
+    slack_default_workspace_id: str = Field(default="", alias="SLACK_DEFAULT_WORKSPACE_ID")
+
+    # ── App URLs ──────────────────────────────────────────────────
+    sourcemind_app_url: str = Field(default="https://app.sourcemind.ai", alias="SOURCEMIND_APP_URL")
+
     @field_validator("debug", mode="before")
     @classmethod
     def set_debug_from_environment(cls, v: bool, info: object) -> bool:

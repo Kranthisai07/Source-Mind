@@ -15,6 +15,7 @@ from sourcemind.api.v1 import (
     health,
     memories,
     search,
+    slack,
     team,
     workspaces,
 )
@@ -36,3 +37,4 @@ api_router.include_router(team.handoff_router, prefix=_v1_prefix)
 api_router.include_router(conflicts.router, prefix=_v1_prefix)
 api_router.include_router(analytics.router, prefix=_v1_prefix)
 api_router.include_router(connectors.router, prefix=_v1_prefix)
+api_router.include_router(slack.router, prefix=_v1_prefix)
