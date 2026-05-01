@@ -34,7 +34,7 @@ export default function Sidebar({ collapsed, onToggle }) {
                     title={WORKSPACE.name}
                 >
                     <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-sm-blue to-sm-purple flex items-center justify-center shrink-0 shadow-[0_0_0_1px_rgba(79,126,255,0.35)_inset]">
-                        <Brain className="w-4.5 h-4.5 text-white" strokeWidth={2.5} />
+                        <Brain className="w-[18px] h-[18px] text-white" strokeWidth={2.5} />
                     </div>
                     {!collapsed && (
                         <div className="flex-1 text-left overflow-hidden">

@@ -54,11 +54,16 @@ export const mockApi = {
             const q = query.trim().toLowerCase();
             let results = MEMORIES;
             if (q) {
-                results = MEMORIES.filter(m =>
-                    m.content.toLowerCase().includes(q) ||
-                    m.tags.some(t => t.toLowerCase().includes(q)) ||
-                    m.category.toLowerCase().includes(q)
-                );
+                // Tokenize — match if any word of length >=3 appears anywhere.
+                const tokens = q.split(/\s+/).filter(w => w.length >= 3);
+                results = MEMORIES.filter(m => {
+                    const haystack = (
+                        m.content + " " + m.tags.join(" ") + " " + m.category
+                    ).toLowerCase();
+                    return tokens.length === 0
+                        ? haystack.includes(q)
+                        : tokens.some(t => haystack.includes(t));
+                });
             }
             return {
                 results: results.slice(0, limit),
@@ -179,15 +184,25 @@ export const mockApi = {
     // GET /v1/workspaces/:id/analytics/who-would-know?q=<query>
     whoWouldKnow: (_wsId, { q = "" } = {}) => request(() => {
         const ql = q.trim().toLowerCase();
-        // Score each contributor by how much their memories match the query
+        // Tokenize query — match if ANY word appears in content/tags/category.
+        // This mirrors real BM25 behavior: "database migrations" matches
+        // memories containing "database" OR "migrations" OR "migration".
+        const tokens = ql.split(/\s+/).filter(w => w.length >= 3);
+        const matchMemory = (m) => {
+            if (!ql) return true;
+            const haystack = (
+                m.content + " " + (m.tags || []).join(" ") + " " + m.category
+            ).toLowerCase();
+            return tokens.some(t => haystack.includes(t));
+        };
+        // Score each contributor by how much their memories match, weighted
+        // by (token-match count × contributor base score).
         const scored = CONTRIBUTORS.map(c => {
-            const matched = MEMORIES.filter(m => {
-                const isAuthor = m.attribution[0]?.author === c.login;
-                const relevant = !ql || m.content.toLowerCase().includes(ql)
-                    || m.tags.some(t => t.includes(ql))
-                    || m.category.includes(ql);
-                return isAuthor && relevant;
-            });
+            const authored = MEMORIES.filter(m =>
+                m.attribution[0]?.author === c.login
+                || m.attribution.some(a => a.author === c.login)
+            );
+            const matched = authored.filter(matchMemory);
             return { c, matched, score: matched.length * c.score };
         }).filter(x => x.score > 0).sort((a, b) => b.score - a.score).slice(0, 5);
         const topScore = scored[0]?.score || 1;

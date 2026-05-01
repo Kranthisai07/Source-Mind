@@ -191,6 +191,59 @@ Sweet spot for our **2.4M embedding corpus**:
         primary: "priya.nair",
         co: [["lina.chen", 0.25]],
     },
+    {
+        content: `## Database migrations — Alembic policy
+
+All schema changes go through **Alembic**. Migrations are additive-only in the default path — never \`DROP COLUMN\` in the same migration that adds a replacement.
+
+### Rules
+- **Forward-only in prod.** Rollbacks happen via a new forward migration, not \`alembic downgrade\`.
+- Every migration has an explicit \`depends_on\` chain — never implicit ordering.
+- Large data backfills run as **separate** migrations (schema first, data second) so schema locks don't hold for minutes.
+
+### Review
+- Migration PRs require 2 approvals (one from @lina.chen or @dmitry.volk).
+- Staging applies migrations automatically on every deploy; prod waits for a human-triggered apply job.`,
+        tags: ["database", "migrations", "alembic", "postgres"],
+        category: "decision",
+        primary: "lina.chen",
+        co: [["dmitry.volk", 0.28], ["priya.nair", 0.12]],
+    },
+    {
+        content: `## Auth middleware — Clerk JWT + RLS session context
+
+Every authenticated request flows through a **two-layer middleware**:
+
+1. **Clerk JWT verification** — validates the \`Authorization: Bearer <token>\` against Clerk's JWKS. Cached in Redis for 5 minutes.
+2. **RLS session setter** — reads \`workspace_id\` from the verified claims and runs \`SET LOCAL app.workspace_id = '...'\` on the DB connection before the request handler sees it.
+
+### Why two layers
+Separation of concerns: auth answers "who is this user?", RLS answers "what can they see?". Keeping them separate means we can unit-test each independently and swap Clerk for something else without touching RLS.`,
+        tags: ["auth", "middleware", "clerk", "rls"],
+        category: "architecture",
+        primary: "sara.hofmann",
+        co: [["lina.chen", 0.22], ["marcus.okafor", 0.10]],
+    },
+    {
+        content: `## Deployment pipeline
+
+We ship via **GitHub Actions → Railway**. Each PR gets a preview environment spun up automatically on merge to \`main\`.
+
+### Stages
+1. \`test\` — unit + integration (8 min)
+2. \`build\` — Docker image to GHCR
+3. \`migrate\` — Alembic migration to staging DB
+4. \`deploy-staging\` — auto
+5. \`deploy-prod\` — manual gate, one-click from Slack
+
+### Rollback
+- Railway keeps the last 5 deploys hot.
+- \`/sourcemind rollback\` in Slack triggers a rollback to the previous green deploy. Takes ~45 seconds.`,
+        tags: ["deployment", "pipeline", "railway", "ci"],
+        category: "architecture",
+        primary: "noah.rivera",
+        co: [["dmitry.volk", 0.24], ["lina.chen", 0.14]],
+    },
 ];
 
 const TIME_OFFSETS_HOURS = [1, 3, 5, 8, 14, 22, 30, 48, 72, 96, 120, 168, 240, 336, 480, 720, 960];

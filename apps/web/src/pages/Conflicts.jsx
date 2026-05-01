@@ -34,7 +34,7 @@ export default function Conflicts() {
         <>
             <TopBar
                 title="Conflicts"
-                subtitle={`${conflicts.length} ${status !== "all" ? status.replace("_", " ") : ""} conflict${conflicts.length === 1 ? "" : "s"}`}
+                subtitle={`${conflicts.length} ${status !== "all" ? status.replace("_", " ") + " " : ""}conflict${conflicts.length === 1 ? "" : "s"}`}
             />
             <div className="flex-1 px-8 py-6 space-y-5">
                 <div className="flex items-center gap-1 bg-sm-surface border border-sm-border rounded-lg p-1 w-fit" data-testid="conflicts-tabs">

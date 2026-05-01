@@ -34,6 +34,10 @@ from sourcemind.services.slack.formatter import (
     format_help,
 )
 
+
+def _get_bot_factory():
+    return get_session_factory()
+
 log = structlog.get_logger(__name__)
 
 _WHO_KNOWS_RE = re.compile(
@@ -52,12 +56,14 @@ def _build_app(settings: Any = None) -> AsyncApp:
 
 
 async def _do_search(query: str, workspace_id: str, app_url: str) -> list[dict]:
-    """Run hybrid search and return formatted Slack blocks."""
+    """Run keyword search and return formatted Slack blocks.
+
+    """
     from sourcemind.services.search.hybrid import hybrid_search
 
     ws_uuid = _parse_workspace_id(workspace_id)
-    factory = get_session_factory()
-    async with factory() as session:
+    session = _get_bot_factory()()
+    try:
         result = await hybrid_search(
             session=session,
             query=query,
@@ -68,6 +74,12 @@ async def _do_search(query: str, workspace_id: str, app_url: str) -> list[dict]:
             user_role="member",
             include_attribution=True,
         )
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
     results = result.get("results") or []
     return format_search_results(query, results, workspace_id, app_url)
 
@@ -77,9 +89,15 @@ async def _do_who_knows(query: str, workspace_id: str, app_url: str) -> list[dic
     from sourcemind.services.analytics.workspace import who_would_know
 
     ws_uuid = _parse_workspace_id(workspace_id)
-    factory = get_session_factory()
-    async with factory() as session:
+    session = _get_bot_factory()()
+    try:
         result = await who_would_know(session, ws_uuid, query, limit=5)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
     return format_experts(query, result.get("experts") or [], app_url)
 
 

@@ -93,14 +93,14 @@ async def _semantic_search(
             SELECT
                 id::text,
                 content,
-                1 - (embedding <=> :emb::vector) AS score
+                1 - (embedding <=> (:emb)::vector) AS score
             FROM memories
-            WHERE workspace_id = :ws_id::uuid
+            WHERE workspace_id = (:ws_id)::uuid
               AND current_version = TRUE
               AND deleted_at IS NULL
               AND embedding IS NOT NULL
-              AND 1 - (embedding <=> :emb::vector) >= :min_sim
-            ORDER BY embedding <=> :emb::vector
+              AND 1 - (embedding <=> (:emb)::vector) >= :min_sim
+            ORDER BY embedding <=> (:emb)::vector
             LIMIT :limit
         """),
         {
@@ -135,7 +135,7 @@ async def _keyword_search(
                 content,
                 ts_rank(content_tsv, plainto_tsquery('english', :query)) AS score
             FROM memories
-            WHERE workspace_id = :ws_id::uuid
+            WHERE workspace_id = (:ws_id)::uuid
               AND current_version = TRUE
               AND deleted_at IS NULL
               AND content_tsv @@ plainto_tsquery('english', :query)
@@ -208,7 +208,7 @@ async def _fetch_attributions(
                 a.contribution_weight
             FROM attributions a
             JOIN users u ON u.id = a.user_id
-            WHERE a.memory_id = ANY(:ids::uuid[])
+            WHERE a.memory_id = ANY((:ids)::uuid[])
             ORDER BY a.contribution_weight DESC
         """),
         {"ids": memory_ids},
@@ -253,11 +253,9 @@ async def hybrid_search(
     elif mode == "keyword":
         semantic = []
         keyword = await _keyword_search(session, query, workspace_id, _MAX_CANDIDATES)
-    else:  # hybrid
-        semantic, keyword = await asyncio.gather(
-            _semantic_search(session, embedding, workspace_id, _MAX_CANDIDATES, min_similarity),
-            _keyword_search(session, query, workspace_id, _MAX_CANDIDATES),
-        )
+    else:  # hybrid — run sequentially; AsyncSession is not concurrency-safe
+        semantic = await _semantic_search(session, embedding, workspace_id, _MAX_CANDIDATES, min_similarity)
+        keyword  = await _keyword_search(session, query, workspace_id, _MAX_CANDIDATES)
 
     # Step 3: Merge via RRF
     merged = _rrf_merge(semantic, keyword)
