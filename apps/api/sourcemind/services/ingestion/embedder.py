@@ -39,6 +39,8 @@ _CACHE_TTL = 60 * 60 * 24 * 30  # 30 days
 
 @dataclass
 class EmbeddingResult:
+    """A single fact + its embedding vector, with a cache-hit indicator."""
+
     content: str
     embedding: list[float]
     token_count: int
@@ -81,7 +83,7 @@ async def _embed_batch(client: object, texts: list[str], retries: int = 3) -> li
             else:
                 raise
 
-    return []  # unreachable
+    raise RuntimeError("unreachable: retry loop must either return or raise")
 
 
 class EmbeddingService:

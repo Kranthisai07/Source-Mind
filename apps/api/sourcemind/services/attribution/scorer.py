@@ -229,6 +229,11 @@ class AttributionScorer:
 
         sbert = self._get_sbert()
 
+        # Signal 2 measures how much of each contributor's phrasing survived
+        # into the latest version of the memory, so we always compare against
+        # the most recent edit's content (the canonical "final").
+        final_content = edits[-1].content_after
+
         contributor_map: dict[str, ContributorScore] = {}
 
         for edit in edits:
@@ -240,9 +245,9 @@ class AttributionScorer:
 
             s1 = _signal1_char_diff(edit.content_before, edit.content_after)
             s2 = _signal2_semantic(
-                edit.content_after if not edit.content_before else edit.content_before,
-                edit.content_after,
-                sbert,
+                contributor_input=edit.content_after,
+                final_content=final_content,
+                sbert_model=sbert,
             )
             s3 = _signal3_temporal(edit.edit_position)
             s4 = _signal4_structural(edit.content_before, edit.content_after)

@@ -121,26 +121,18 @@ async def test_contribution_map_includes_all_active_contributors():
     ws_id = uuid.uuid4()
     uid1, uid2 = str(uuid.uuid4()), str(uuid.uuid4())
 
-    # Main result: 2 contributors
+    # Main result: 2 contributors. Trailing column is collab_count, now
+    # rolled into the same query instead of an N+1 per-contributor lookup.
     contributor_rows = [
-        (uid1, "Alice", "alice@acme.dev", 10, 15, 0.6, "2025-03-10"),
-        (uid2, "Bob", "bob@acme.dev", 5, 8, 0.4, "2025-03-08"),
+        (uid1, "Alice", "alice@acme.dev", 10, 15, 0.6, "2025-03-10", 3),
+        (uid2, "Bob", "bob@acme.dev", 5, 8, 0.4, "2025-03-08", 3),
     ]
 
-    call_index = [0]
-
-    async def execute_side_effect(stmt, params=None, **kwargs):
-        call_index[0] += 1
-        r = MagicMock()
-        if call_index[0] == 1:
-            r.fetchall = MagicMock(return_value=contributor_rows)
-        else:
-            # Collaboration rate queries
-            r.scalar = MagicMock(return_value=3)
-        return r
+    mock_result = MagicMock()
+    mock_result.fetchall = MagicMock(return_value=contributor_rows)
 
     mock_session = AsyncMock()
-    mock_session.execute = AsyncMock(side_effect=execute_side_effect)
+    mock_session.execute = AsyncMock(return_value=mock_result)
 
     result = await get_contribution_map(mock_session, ws_id)
     assert len(result["contributors"]) == 2

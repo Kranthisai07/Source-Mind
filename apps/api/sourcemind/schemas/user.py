@@ -3,25 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field, HttpUrl, model_validator
-
-
-class UserCreate(BaseModel):
-    """
-    Input schema for user provisioning (called by Clerk webhook on signup).
-    Not directly exposed to end users.
-    """
-
-    clerk_id: str = Field(min_length=1, max_length=255, description="Clerk user ID")
-    email: EmailStr = Field(description="Primary email address")
-    display_name: str | None = Field(
-        default=None, max_length=255, description="User's preferred display name"
-    )
-    avatar_url: str | None = Field(
-        default=None, max_length=2048, description="Profile picture URL"
-    )
-
-    model_config = {"str_strip_whitespace": True}
+from pydantic import BaseModel, EmailStr
 
 
 class UserResponse(BaseModel):

@@ -38,15 +38,6 @@ class WorkspaceCreate(BaseModel):
         return v
 
 
-class WorkspaceUpdate(BaseModel):
-    """Partial update schema for workspace metadata."""
-
-    name: str | None = Field(default=None, min_length=2, max_length=255)
-    description: str | None = Field(default=None, max_length=1000)
-
-    model_config = {"str_strip_whitespace": True}
-
-
 class WorkspaceResponse(BaseModel):
     """Full workspace representation returned to API consumers."""
 

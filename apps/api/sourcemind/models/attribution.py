@@ -8,9 +8,10 @@ This guarantees a tamper-proof provenance chain for every memory.
 """
 
 import uuid
+from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy import DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -35,7 +36,7 @@ class AttributionActionType(StrEnum):
     MERGE = "merge"
 
 
-class Attribution(Base, TimestampMixin):
+class Attribution(Base):
     """
     Attribution record — who owns how much of a memory at a point in time.
 
@@ -44,7 +45,8 @@ class Attribution(Base, TimestampMixin):
 
     APPEND-ONLY: the PostgreSQL trigger `attribution_append_only` prevents
     any UPDATE or DELETE on this table. Enforced at the database level,
-    not just application level.
+    not just application level. Because UPDATE is impossible, we do not
+    inherit TimestampMixin (no `updated_at` column exists on this table).
 
     Weight semantics:
       contribution_weight: normalized share of total attribution (0.0–1.0)
@@ -117,6 +119,15 @@ class Attribution(Base, TimestampMixin):
         ForeignKey("attribution_edits.id", ondelete="SET NULL"),
         nullable=True,
         comment="The edit that caused this recomputation",
+    )
+
+    # ── Timestamps (created_at only — table is append-only) ───────
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        index=True,
+        comment="Computation time of this attribution snapshot",
     )
 
     # ── Relationships ─────────────────────────────────────────────

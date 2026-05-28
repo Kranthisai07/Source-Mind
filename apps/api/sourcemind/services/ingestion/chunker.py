@@ -28,6 +28,8 @@ MAX_TABLE_TOKENS = 1024  # hard cap for table chunks
 
 @dataclass
 class ChunkResult:
+    """One chunk produced by Stage 3, ready for fact extraction."""
+
     content: str
     token_count: int
     chunk_index: int
@@ -275,8 +277,13 @@ def _split_code_chunks(
         from tree_sitter import Parser
 
         lang = tree_sitter_languages.get_language(language)
-        parser = Parser()
-        parser.set_language(lang)
+        # tree-sitter ≥0.22 takes the Language directly; older builds need
+        # the deprecated set_language. Try the new API first, fall back.
+        try:
+            parser = Parser(lang)
+        except TypeError:
+            parser = Parser()
+            parser.set_language(lang)  # type: ignore[attr-defined]
         tree = parser.parse(bytes(content, "utf8"))
         root = tree.root_node
 

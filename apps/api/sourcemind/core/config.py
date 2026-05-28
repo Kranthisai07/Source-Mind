@@ -9,7 +9,7 @@ from enum import StrEnum
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import Field, PostgresDsn, RedisDsn, field_validator, model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -105,9 +105,11 @@ class Settings(BaseSettings):
     s3_bucket_name: str = "sourcemind-dev"
 
     # ── Feature Flags ─────────────────────────────────────────────
+    # Default off for optional infra (Neo4j, Kafka/Redpanda) so a missing
+    # .env doesn't accidentally try to talk to services that aren't running.
     ff_conflict_detection: bool = True
-    ff_neo4j_attribution: bool = True
-    ff_kafka_events: bool = True
+    ff_neo4j_attribution: bool = False
+    ff_kafka_events: bool = False
 
     # ── Rate Limiting ─────────────────────────────────────────────
     rate_limit_free: int = 100       # requests per minute
@@ -122,7 +124,7 @@ class Settings(BaseSettings):
     github_app_id: str = Field(default="", repr=False)
     github_app_installation_id: str = Field(default="", repr=False)
     github_app_private_key_path: str = Field(default="", repr=False)
-    github_webhook_secret: str = Field(default="sourcemind_research", repr=False)
+    github_webhook_secret: str = Field(default="", repr=False)
     github_research_pat: str = Field(default="", repr=False)
 
     # ── Slack ─────────────────────────────────────────────────────
@@ -133,12 +135,6 @@ class Settings(BaseSettings):
 
     # ── App URLs ──────────────────────────────────────────────────
     sourcemind_app_url: str = Field(default="https://app.sourcemind.ai", alias="SOURCEMIND_APP_URL")
-
-    @field_validator("debug", mode="before")
-    @classmethod
-    def set_debug_from_environment(cls, v: bool, info: object) -> bool:
-        """Auto-enable debug mode in development."""
-        return v
 
     @model_validator(mode="after")
     def validate_production_settings(self) -> "Settings":
@@ -174,14 +170,25 @@ class Settings(BaseSettings):
         """Extract Neo4j password from auth string 'user/password'."""
         return self.neo4j_auth.split("/", 1)[1]
 
+    # Cached PEM content — populated lazily on first access by
+    # `github_app_private_key`. Kept off the model schema with `exclude=True`.
+    _github_app_private_key_cache: str | None = None
+
     @property
     def github_app_private_key(self) -> str:
-        """Read PEM file content at startup."""
+        """Read and cache the GitHub App private key from disk."""
+        cached = self._github_app_private_key_cache
+        if cached is not None:
+            return cached
         from pathlib import Path
         pem_path = Path(self.github_app_private_key_path)
         if not pem_path.exists():
             raise ValueError(f"GitHub App private key not found: {pem_path}")
-        return pem_path.read_text()
+        pem = pem_path.read_text()
+        # Bypass Pydantic's frozen-instance check since this is purely a
+        # memoization cache, not part of the settings schema.
+        object.__setattr__(self, "_github_app_private_key_cache", pem)
+        return pem
 
 
 @lru_cache(maxsize=1)

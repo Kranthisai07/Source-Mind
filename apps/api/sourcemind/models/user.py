@@ -1,8 +1,9 @@
 """User model — linked to Clerk for authentication."""
 
 import uuid
+from datetime import datetime
 
-from sqlalchemy import String, UniqueConstraint
+from sqlalchemy import DateTime, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -56,14 +57,20 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
         nullable=True,
         comment="Profile picture URL",
     )
-    last_seen_at: Mapped[str | None] = mapped_column(
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
         nullable=True,
         comment="Timestamp of last API request",
     )
     clerk_data: Mapped[dict] = mapped_column(
+        "metadata",
         nullable=False,
         server_default="'{}'::jsonb",
-        comment="Additional profile data synced from Clerk (maps to DB column 'clerk_data')",
+        comment=(
+            "Additional profile data synced from Clerk. ORM attribute is "
+            "`clerk_data` (since SQLAlchemy reserves `metadata`); the actual "
+            "DB column is `metadata` per migration 0001."
+        ),
     )
 
     # ── Relationships ─────────────────────────────────────────────

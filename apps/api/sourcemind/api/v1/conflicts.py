@@ -126,9 +126,9 @@ async def get_conflict(
         memory_b=MemoryRef(id=detail.memory_b_id, content=detail.memory_b_content),
         suggested_resolution=detail.suggested_resolution,
         reviewed_by=detail.reviewed_by,
-        reviewed_at=str(detail.reviewed_at) if detail.reviewed_at else None,
-        revisit_at=str(detail.revisit_at) if detail.revisit_at else None,
-        created_at=str(detail.created_at) if detail.created_at else None,
+        reviewed_at=detail.reviewed_at,
+        revisit_at=detail.revisit_at,
+        created_at=detail.created_at,
     )
 
 
@@ -144,15 +144,10 @@ async def review_conflict(
 
     ok = await mark_under_review(db, conflict_id, current_user.user_id)
     if not ok:
-        return ConflictReviewResponse(status="no_change", conflict_id=str(conflict_id))
+        return ConflictReviewResponse(status="no_change", conflict_id=conflict_id)
 
     await db.commit()
-    return ConflictReviewResponse(status="under_review", conflict_id=str(conflict_id))
-
-
-class ResolveRequest:
-    """Pydantic model for resolve body."""
-    pass
+    return ConflictReviewResponse(status="under_review", conflict_id=conflict_id)
 
 
 from pydantic import BaseModel

@@ -57,8 +57,8 @@ def _attribution_line(attributions: list[dict]) -> str:
         return ""
     parts = []
     for a in attributions[:3]:
-        name  = a.get("contributor_name") or a.get("name") or "unknown"
-        score = a.get("attribution_score") or a.get("score") or 0
+        name  = a.get("contributor") or a.get("name") or "unknown"
+        score = a.get("contribution_weight") or a.get("score") or 0
         pct   = round(float(score) * 100)
         parts.append(f"{name} ({pct}%)")
     line = ", ".join(parts)

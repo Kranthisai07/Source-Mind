@@ -67,28 +67,6 @@ class ContributionBreakdown(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class AttributionResponse(BaseModel):
-    """
-    Full attribution record as stored in the database.
-
-    Includes the raw computed scores and the triggering action.
-    """
-
-    id: UUID
-    memory_id: UUID
-    user: UserSummary
-    contribution_weight: float
-    trigger_action: str
-    char_diff_score: float | None
-    semantic_score: float | None
-    temporal_score: float | None
-    structural_score: float | None
-    approval_score: float | None
-    computed_at: datetime
-
-    model_config = {"from_attributes": True}
-
-
 class AttributionEditResponse(BaseModel):
     """A single edit record from a memory's edit history."""
 

@@ -229,13 +229,13 @@ async def get_overview(
         {"ws": ws},
     )
 
+    # Keys match AttributionActionType enum values stored in attribution_edits.
     _action_labels = {
-        "memory_created": "created",
-        "memory_updated": "edited",
-        "conflict_opened": "conflict detected on",
-        "conflict_resolved": "resolved conflict on",
-        "handoff_initiated": "initiated handoff for",
-        "connector_synced": "synced",
+        "create": "created",
+        "edit": "edited",
+        "approve": "approved",
+        "reject": "rejected",
+        "merge": "merged",
     }
     recent_activity = [
         {
@@ -285,27 +285,43 @@ async def get_contribution_map(
     session: AsyncSession,
     workspace_id: uuid.UUID,
 ) -> dict[str, Any]:
-    """Return per-contributor breakdown of knowledge ownership."""
+    """Return per-contributor breakdown of knowledge ownership.
+
+    Resolved in a single query: the `mem_contributor_counts` CTE pre-computes
+    how many contributors each memory has, which lets us roll up collaboration
+    rate per user without an N+1 loop.
+    """
     ws = str(workspace_id)
 
     result = await session.execute(
         text("""
+            WITH workspace_memories AS (
+                SELECT id FROM memories
+                WHERE workspace_id = :ws::uuid
+                  AND current_version = TRUE
+                  AND deleted_at IS NULL
+            ),
+            mem_contributor_counts AS (
+                SELECT a.memory_id, COUNT(DISTINCT a.user_id) AS contributor_count
+                FROM attributions a
+                JOIN workspace_memories wm ON wm.id = a.memory_id
+                GROUP BY a.memory_id
+            )
             SELECT
-                a.user_id::text,
-                COALESCE(u.display_name, u.email) AS name,
-                u.email,
-                COUNT(DISTINCT m.id) FILTER (WHERE ae.edit_position = 1) AS created,
-                COUNT(DISTINCT m.id) AS influenced,
-                AVG(a.contribution_weight) AS avg_weight,
-                MAX(ae.created_at) AS last_contribution
+                a.user_id::text                                                         AS uid,
+                COALESCE(u.display_name, u.email)                                       AS name,
+                u.email                                                                 AS email,
+                COUNT(DISTINCT m.id) FILTER (WHERE ae.edit_position = 1)                AS created,
+                COUNT(DISTINCT m.id)                                                    AS influenced,
+                AVG(a.contribution_weight)                                              AS avg_weight,
+                MAX(ae.created_at)                                                      AS last_contribution,
+                COUNT(DISTINCT m.id) FILTER (WHERE mcc.contributor_count > 1)           AS collab_count
             FROM attributions a
             JOIN users u ON u.id = a.user_id
-            JOIN memories m ON m.id = a.memory_id
+            JOIN workspace_memories m ON m.id = a.memory_id
             LEFT JOIN attribution_edits ae ON ae.memory_id = a.memory_id
                 AND ae.editor_id = a.user_id
-            WHERE m.workspace_id = :ws::uuid
-              AND m.current_version = TRUE
-              AND m.deleted_at IS NULL
+            LEFT JOIN mem_contributor_counts mcc ON mcc.memory_id = m.id
             GROUP BY a.user_id, u.display_name, u.email
             ORDER BY influenced DESC
         """),
@@ -315,27 +331,9 @@ async def get_contribution_map(
 
     contributors = []
     for row in rows:
-        uid, name, email, created, influenced, avg_weight, last_contrib = row
+        uid, name, email, created, influenced, avg_weight, last_contrib, collab_count = row
         login = email.split("@")[0] if email else name.lower().replace(" ", ".")
-
-        # Collaboration rate: % of influenced memories with >1 contributor
-        collab_result = await session.execute(
-            text("""
-                SELECT COUNT(*) FROM (
-                    SELECT m.id FROM memories m
-                    JOIN attributions a2 ON a2.memory_id = m.id AND a2.user_id = :uid::uuid
-                    WHERE m.workspace_id = :ws::uuid
-                      AND m.current_version = TRUE
-                      AND (
-                        SELECT COUNT(DISTINCT a3.user_id) FROM attributions a3
-                        WHERE a3.memory_id = m.id
-                      ) > 1
-                ) collab
-            """),
-            {"uid": uid, "ws": ws},
-        )
-        collab_count = collab_result.scalar() or 0
-        collab_rate = round(collab_count / max(influenced or 1, 1), 4)
+        collab_rate = round((collab_count or 0) / max(influenced or 1, 1), 4)
 
         contributors.append({
             "user_id": uid,
@@ -487,18 +485,18 @@ async def who_would_know(
             ),
             scored AS (
                 SELECT
-                    a.attributed_to_user_id                                   AS uid,
-                    SUM(a.attribution_score * mm.rank)                        AS weighted_score,
-                    COUNT(DISTINCT a.memory_id)                               AS memory_count,
+                    a.user_id                                                  AS uid,
+                    SUM(a.contribution_weight * mm.rank)                       AS weighted_score,
+                    COUNT(DISTINCT a.memory_id)                                AS memory_count,
                     -- best-ranked memory for this contributor
-                    (array_agg(mm.id       ORDER BY mm.rank DESC))[1]         AS top_memory_id,
-                    (array_agg(mm.preview  ORDER BY mm.rank DESC))[1]         AS top_preview,
-                    (array_agg(mm.category ORDER BY mm.rank DESC))[1]         AS top_category,
-                    MAX(a.attribution_score)                                   AS peak_attribution
+                    (array_agg(mm.id       ORDER BY mm.rank DESC))[1]          AS top_memory_id,
+                    (array_agg(mm.preview  ORDER BY mm.rank DESC))[1]          AS top_preview,
+                    (array_agg(mm.category ORDER BY mm.rank DESC))[1]          AS top_category,
+                    MAX(a.contribution_weight)                                 AS peak_attribution
                 FROM attributions a
                 JOIN matching mm ON mm.id = a.memory_id
-                WHERE a.attribution_score > 0.05
-                GROUP BY a.attributed_to_user_id
+                WHERE a.contribution_weight > 0.05
+                GROUP BY a.user_id
             )
             SELECT
                 s.uid::text,

@@ -30,6 +30,7 @@ import uuid
 
 import structlog
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sourcemind.models.memory import Memory
@@ -235,27 +236,30 @@ class RelationDetector:
                     )
 
                     if relation_type != "unrelated" and confidence >= _MIN_CONFIDENCE:
+                        # Savepoint isolates the duplicate-edge case so we don't
+                        # roll back unrelated rows already flushed in this transaction.
                         try:
-                            relation = MemoryRelation(
-                                source_memory_id=memory.id,
-                                target_memory_id=cand_id,
-                                relation_type=relation_type,
-                                confidence=confidence,
-                                similarity_score=1.0 - distance,
-                                detected_by="pipeline",
-                            )
-                            session.add(relation)
-                            await session.flush()
-
-                            # If new memory supersedes existing: retire existing
-                            if relation_type == RelationType.UPDATES:
-                                await session.execute(
-                                    text(
-                                        "UPDATE memories SET current_version = FALSE "
-                                        "WHERE id = :id::uuid"
-                                    ),
-                                    {"id": cand_id_str},
+                            async with session.begin_nested():
+                                relation = MemoryRelation(
+                                    source_memory_id=memory.id,
+                                    target_memory_id=cand_id,
+                                    relation_type=relation_type,
+                                    confidence=confidence,
+                                    similarity_score=1.0 - distance,
+                                    detected_by="pipeline",
                                 )
+                                session.add(relation)
+                                await session.flush()
+
+                                # If new memory supersedes existing: retire existing
+                                if relation_type == RelationType.UPDATES:
+                                    await session.execute(
+                                        text(
+                                            "UPDATE memories SET current_version = FALSE "
+                                            "WHERE id = :id::uuid"
+                                        ),
+                                        {"id": cand_id_str},
+                                    )
 
                             log.info(
                                 "relation_detected",
@@ -265,10 +269,9 @@ class RelationDetector:
                                 confidence=confidence,
                                 distance=distance,
                             )
-                        except Exception as exc:
-                            # Ignore duplicate key (UniqueConstraint on edge)
+                        except IntegrityError as exc:
+                            # Duplicate edge (UniqueConstraint) — savepoint already rolled back.
                             log.debug("relation_insert_skipped", error=str(exc))
-                            await session.rollback()
 
                 if distance <= _CONFLICT_RADIUS:
                     await _maybe_create_conflict(session, self._client, memory, cand_id, cand_content, distance)

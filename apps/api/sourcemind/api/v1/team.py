@@ -208,8 +208,8 @@ async def initiate_handoff(
     summary.handoff_record_id = str(handoff_id)
 
     return HandoffInitiateResponse(
-        handoff_record_id=str(handoff_id),
-        departing_user_id=str(summary.departing_user_id),
+        handoff_record_id=handoff_id,
+        departing_user_id=summary.departing_user_id,
         departing_user_name=summary.departing_user_name,
         total_memories=summary.total_memories_with_attribution,
         tier_1_critical=[

@@ -119,19 +119,29 @@ async def _extract_from_chunk(
         return []
 
 
+# Module-level cache for the SBERT dedup model. Loading it costs 2–5s,
+# so we keep one instance for the lifetime of the worker process.
+_sbert_model: Any = None
+
+
+def _get_sbert_model() -> Any:
+    """Lazily load and cache the SBERT model used for fact deduplication."""
+    global _sbert_model
+    if _sbert_model is None:
+        from sentence_transformers import SentenceTransformer
+        _sbert_model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _sbert_model
+
+
 async def _deduplicate_facts(facts: list[str]) -> list[str]:
-    """
-    Remove near-duplicate facts using SBERT cosine similarity.
-    Uses all-MiniLM-L6-v2 — fast, small, good for sentence-level similarity.
-    """
+    """Remove near-duplicate facts via SBERT cosine similarity."""
     if len(facts) <= 1:
         return facts
 
     try:
         import numpy as np
-        from sentence_transformers import SentenceTransformer
 
-        model = SentenceTransformer("all-MiniLM-L6-v2")
+        model = _get_sbert_model()
         embeddings = model.encode(facts, normalize_embeddings=True, show_progress_bar=False)
 
         unique_facts: list[str] = [facts[0]]

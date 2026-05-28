@@ -22,17 +22,12 @@ from sourcemind.core.dependencies import (
     DBSession,
     IdempotencyKey,
     OpenAIClient,
-    PaginationDep,
     RequestID,
 )
-from sourcemind.core.exceptions import (
-    JobNotFoundError,
-    MemoryNotFoundError,
-    NotImplementedFeatureError,
-)
+from sourcemind.core.exceptions import JobNotFoundError, MemoryNotFoundError
 from sourcemind.models.document import Document
 from sourcemind.models.memory import Memory
-from sourcemind.schemas.common import APIResponse, PaginatedResponse, ResponseMeta
+from sourcemind.schemas.common import APIResponse, ResponseMeta
 from sourcemind.schemas.conflict import MemoryVersionEntry, MemoryVersionsResponse
 from sourcemind.schemas.memory import (
     IngestionJobResponse,
@@ -306,6 +301,7 @@ async def delete_memory(
         text("UPDATE memories SET deleted_at = NOW() WHERE id = :id::uuid"),
         {"id": str(memory_id)},
     )
+    await db.commit()
 
 
 @router.get(

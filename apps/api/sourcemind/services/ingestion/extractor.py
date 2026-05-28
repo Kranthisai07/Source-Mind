@@ -37,6 +37,7 @@ class TextExtractor:
     """Passthrough normalizer for raw text and markdown."""
 
     async def extract(self, content: str) -> ExtractionResult:
+        """Normalize line endings and collapse blank lines."""
         content = content.replace("\r\n", "\n").replace("\r", "\n")
         # Collapse excessive blank lines
         content = re.sub(r"\n{4,}", "\n\n\n", content).strip()
@@ -58,6 +59,7 @@ class URLExtractor:
     """Playwright + readability-lxml for URL content extraction."""
 
     async def extract(self, url: str) -> ExtractionResult:
+        """Fetch a URL with headless Chromium and return cleaned article text."""
         from playwright.async_api import async_playwright
 
         html = ""
@@ -158,6 +160,7 @@ class PDFExtractor:
     """PyMuPDF layout-aware PDF text extraction."""
 
     async def extract(self, file_bytes: bytes, filename: str = "") -> ExtractionResult:
+        """Extract per-page text from a PDF, skipping pages that look scanned."""
         import fitz  # PyMuPDF
 
         pages: list[str] = []
@@ -220,6 +223,7 @@ class CodeExtractor:
     """Language-aware code extractor using tree-sitter AST."""
 
     async def extract(self, content: str, filename: str = "") -> ExtractionResult:
+        """Normalize source and tag with its detected programming language."""
         import os
 
         ext = os.path.splitext(filename)[1].lower()

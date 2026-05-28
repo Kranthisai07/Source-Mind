@@ -114,6 +114,7 @@ def register_handlers(app: AsyncApp, workspace_id: str, app_url: str) -> None:
 
     @app.command("/sourcemind")
     async def handle_slash_command(ack, body, respond):
+        """Route /sourcemind into search, who-knows, or help."""
         await ack()
 
         text = (body.get("text") or "").strip()
@@ -149,6 +150,7 @@ def register_handlers(app: AsyncApp, workspace_id: str, app_url: str) -> None:
 
     @app.event("app_mention")
     async def handle_mention(event, say):
+        """Treat @SourceMind mentions the same as the slash command."""
         # Strip the bot mention from the text: "<@U123> who knows about X"
         raw  = event.get("text") or ""
         text = re.sub(r"<@[A-Z0-9]+>", "", raw).strip()

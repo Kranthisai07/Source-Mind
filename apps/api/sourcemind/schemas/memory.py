@@ -10,13 +10,21 @@ Includes:
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from sourcemind.models.document import DocumentSourceType
-from sourcemind.schemas.attribution import AttributionResponse, ContributionBreakdown
+from sourcemind.schemas.attribution import ContributionBreakdown
+
+IngestionStatusLiteral = Literal[
+    "queued", "extracting", "chunking", "extracting_facts",
+    "embedding", "attributing", "indexing", "completed", "failed",
+]
+MatchTypeLiteral = Literal[
+    "semantic", "keyword", "semantic+keyword", "hybrid",
+]
 
 
 class SearchMode(StrEnum):
@@ -104,7 +112,7 @@ class IngestionJobResponse(BaseModel):
 
     job_id: str = Field(description="Celery task ID. Use with GET /v1/memories/jobs/:id")
     document_id: UUID = Field(description="Document record created for this ingestion")
-    status: str = Field(description="IngestionStatus enum value")
+    status: IngestionStatusLiteral = Field(description="IngestionStatus enum value")
     message: str = Field(description="Human-readable status message")
     # Populated once ingestion is complete
     memory_ids: list[UUID] = Field(
@@ -120,19 +128,6 @@ class IngestionJobResponse(BaseModel):
     error: str | None = Field(
         default=None, description="Error message if status=failed"
     )
-
-
-class MemoryVersionResponse(BaseModel):
-    """A single version entry in a memory's version history."""
-
-    id: UUID
-    version: int
-    content: str
-    created_at: datetime
-    editor: "UserSummaryInline"
-    is_current: bool
-
-    model_config = {"from_attributes": True}
 
 
 class MemoryResponse(BaseModel):
@@ -231,8 +226,8 @@ class SearchResultItem(BaseModel):
     memory: MemoryResponse
     score: float = Field(description="Relevance score [0.0–1.0]. Higher = more relevant.")
     rank: int = Field(description="1-indexed result rank")
-    match_type: str = Field(
-        description="How this result was matched: 'semantic' | 'keyword' | 'hybrid'"
+    match_type: MatchTypeLiteral = Field(
+        description="How this result was matched: 'semantic' | 'keyword' | 'semantic+keyword'"
     )
     highlight: str | None = Field(
         default=None,
@@ -250,16 +245,3 @@ class SearchResponse(BaseModel):
     latency_ms: float
 
 
-# ─── Forward reference resolution ─────────────────────────────────────────────
-
-class UserSummaryInline(BaseModel):
-    """Minimal user info for embedding in memory version history."""
-
-    id: UUID
-    display_name: str | None
-    avatar_url: str | None
-
-    model_config = {"from_attributes": True}
-
-
-MemoryVersionResponse.model_rebuild()

@@ -36,6 +36,8 @@ _HANDOFF_WINDOW_DAYS = 30
 
 @dataclass
 class MemoryHandoffItem:
+    """One memory in a departing user's handoff with its tier and successor."""
+
     memory_id: str
     content: str
     importance_score: float
@@ -47,6 +49,8 @@ class MemoryHandoffItem:
 
 @dataclass
 class HandoffSummary:
+    """Tier-bucketed summary of all memories owned by a departing user."""
+
     departing_user_id: str
     departing_user_name: str
     total_memories_with_attribution: int
@@ -312,8 +316,6 @@ async def create_handoff_record(
     summary: HandoffSummary,
 ) -> uuid.UUID:
     """Create a handoff_records row and seed handoff_assignments for tier 1+2."""
-    from datetime import datetime, timedelta, timezone
-
     expires_at = datetime.now(timezone.utc) + timedelta(days=_HANDOFF_WINDOW_DAYS)
 
     # Insert handoff_records

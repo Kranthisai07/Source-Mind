@@ -136,9 +136,9 @@ async def recompute_importance(session: AsyncSession, memory_id: UUID) -> float:
             ) ir ON ir.target_memory_id = m.id
             LEFT JOIN (
                 SELECT memory_id, COUNT(*) AS approval_count
-                FROM attribution_records
+                FROM attribution_edits
                 WHERE memory_id = :mid::uuid
-                  AND action_type IN ('approved', 'merged', 'accepted')
+                  AND action_type IN ('approve', 'merge')
                 GROUP BY memory_id
             ) ap ON ap.memory_id = m.id
             LEFT JOIN (

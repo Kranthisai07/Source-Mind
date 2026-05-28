@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+from sourcemind.schemas.common import ItemList
+
+ConnectorTypeLiteral = Literal["github", "discord", "slack", "notion"]
+ConnectorStatusLiteral = Literal["active", "paused", "error"]
+SyncTypeLiteral = Literal["full", "incremental"]
+SyncStatusLiteral = Literal["running", "completed", "failed"]
 
 
 # ─── Request schemas ──────────────────────────────────────────────────────────
@@ -13,23 +21,27 @@ from pydantic import BaseModel, Field
 class ConnectorCreateRequest(BaseModel):
     """Payload for creating a new connector configuration."""
 
-    connector_type: str = Field(description="e.g. 'github' or 'discord'")
+    connector_type: ConnectorTypeLiteral = Field(description="e.g. 'github' or 'discord'")
     display_name: str = Field(min_length=1, max_length=255)
-    config: dict = Field(default_factory=dict, description="Connector-specific settings")
+    config: dict[str, Any] = Field(
+        default_factory=dict, description="Connector-specific settings"
+    )
 
 
 class ConnectorUpdateRequest(BaseModel):
     """Payload for updating a connector configuration."""
 
     display_name: str | None = Field(default=None, min_length=1, max_length=255)
-    config: dict | None = Field(default=None)
-    status: str | None = Field(default=None)
+    config: dict[str, Any] | None = Field(default=None)
+    status: ConnectorStatusLiteral | None = Field(default=None)
 
 
 class SyncTriggerRequest(BaseModel):
     """Payload for manually triggering a connector sync."""
 
-    sync_type: str = Field(default="incremental", description="'full' or 'incremental'")
+    sync_type: SyncTypeLiteral = Field(
+        default="incremental", description="'full' or 'incremental'"
+    )
 
 
 # ─── Response schemas ─────────────────────────────────────────────────────────
@@ -39,10 +51,10 @@ class ConnectorResponse(BaseModel):
 
     id: UUID
     workspace_id: UUID
-    connector_type: str
+    connector_type: ConnectorTypeLiteral
     display_name: str
-    config: dict
-    status: str
+    config: dict[str, Any]
+    status: ConnectorStatusLiteral
     last_sync_at: datetime | None
     next_sync_at: datetime | None
     created_at: datetime
@@ -50,11 +62,8 @@ class ConnectorResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ConnectorListResponse(BaseModel):
+class ConnectorListResponse(ItemList[ConnectorResponse]):
     """List of connectors for a workspace."""
-
-    items: list[ConnectorResponse]
-    total: int
 
 
 class SyncLogResponse(BaseModel):
@@ -62,8 +71,8 @@ class SyncLogResponse(BaseModel):
 
     id: UUID
     connector_id: UUID
-    sync_type: str
-    status: str
+    sync_type: SyncTypeLiteral
+    status: SyncStatusLiteral
     artifacts_found: int
     artifacts_new: int
     artifacts_skipped: int
@@ -79,12 +88,9 @@ class SyncTriggerResponse(BaseModel):
 
     task_id: str
     connector_id: UUID
-    sync_type: str
+    sync_type: SyncTypeLiteral
     message: str
 
 
-class SyncLogsResponse(BaseModel):
+class SyncLogsResponse(ItemList[SyncLogResponse]):
     """Paginated sync logs for a connector."""
-
-    items: list[SyncLogResponse]
-    total: int

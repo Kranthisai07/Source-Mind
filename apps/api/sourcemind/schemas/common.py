@@ -12,9 +12,8 @@ request tracing, timing, and pagination cursors.
 
 from datetime import datetime
 from typing import Any, Generic, TypeVar
-from uuid import UUID
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field
 
 T = TypeVar("T")
 
@@ -63,10 +62,22 @@ class APIResponse(BaseModel, Generic[T]):
 
 
 class PaginatedResponse(BaseModel, Generic[T]):
-    """Standard paginated list response envelope."""
+    """Standard paginated list response envelope (data + cursor metadata)."""
 
     data: list[T]
     meta: PaginationMeta
+
+
+class ItemList(BaseModel, Generic[T]):
+    """
+    Lightweight `{items, total}` envelope used by simple list endpoints
+    that do not need cursor-based pagination metadata.
+
+    Prefer PaginatedResponse[T] for endpoints that support keyset pagination.
+    """
+
+    items: list[T]
+    total: int
 
 
 class ErrorDetail(BaseModel):
@@ -81,11 +92,6 @@ class ErrorDetail(BaseModel):
 
     code: str = Field(description="SM-prefixed error code, e.g. 'SM020'")
     message: str = Field(description="Human-readable error description")
-    details: Any | None = Field(default=None)
+    details: dict[str, Any] | None = Field(default=None)
     request_id: str = Field(description="Correlation ID for support lookup")
 
-
-class ErrorResponse(BaseModel):
-    """Standard error response envelope."""
-
-    error: ErrorDetail

@@ -9,7 +9,6 @@ from fastapi import APIRouter
 
 from sourcemind.api.v1 import (
     analytics,
-    attribution,
     conflicts,
     connectors,
     health,
@@ -31,7 +30,6 @@ _v1_prefix = "/v1"
 api_router.include_router(memories.router, prefix=_v1_prefix)
 api_router.include_router(search.router, prefix=_v1_prefix)
 api_router.include_router(workspaces.router, prefix=_v1_prefix)
-api_router.include_router(attribution.router, prefix=_v1_prefix)
 api_router.include_router(team.router, prefix=_v1_prefix)
 api_router.include_router(team.handoff_router, prefix=_v1_prefix)
 api_router.include_router(conflicts.router, prefix=_v1_prefix)

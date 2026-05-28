@@ -15,15 +15,16 @@ from uuid import UUID
 
 import structlog
 from fastapi import APIRouter, status
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from sourcemind.core.dependencies import CurrentUser, DBSession, IdempotencyKey, RequestID
-from sourcemind.core.exceptions import NotImplementedFeatureError, WorkspaceNotFoundError
+from sourcemind.core.exceptions import WorkspaceNotFoundError
 from sourcemind.models.organization import Organization
+from sourcemind.models.user import User
 from sourcemind.models.workspace import Workspace, WorkspaceMember, WorkspaceRole
-from sourcemind.schemas.common import APIResponse, PaginatedResponse, ResponseMeta
+from sourcemind.schemas.common import APIResponse, ResponseMeta
+from sourcemind.schemas.user import UserSummary
 from sourcemind.schemas.workspace import (
-    WorkspaceAnalyticsResponse,
     WorkspaceCreate,
     WorkspaceMemberResponse,
     WorkspaceResponse,
@@ -193,7 +194,7 @@ async def get_workspace(
 
 @router.get(
     "/{workspace_id}/members",
-    response_model=PaginatedResponse[WorkspaceMemberResponse],
+    response_model=APIResponse[list[WorkspaceMemberResponse]],
     summary="List workspace members",
 )
 async def list_workspace_members(
@@ -201,25 +202,33 @@ async def list_workspace_members(
     db: DBSession,
     current_user: CurrentUser,
     request_id: RequestID,
-) -> PaginatedResponse[WorkspaceMemberResponse]:
+) -> APIResponse[list[WorkspaceMemberResponse]]:
     """List all members of a workspace with their roles."""
-    raise NotImplementedFeatureError(
-        "Member listing will be implemented in Phase 2."
-    )
+    start = time.perf_counter()
 
-
-@router.get(
-    "/{workspace_id}/analytics",
-    response_model=APIResponse[WorkspaceAnalyticsResponse],
-    summary="Workspace knowledge analytics",
-)
-async def get_workspace_analytics(
-    workspace_id: UUID,
-    db: DBSession,
-    current_user: CurrentUser,
-    request_id: RequestID,
-) -> APIResponse[WorkspaceAnalyticsResponse]:
-    """Compute and return workspace knowledge analytics."""
-    raise NotImplementedFeatureError(
-        "Workspace analytics will be implemented in Phase 2."
+    # Caller must be a member of the workspace
+    access_check = await db.execute(
+        select(WorkspaceMember.id).where(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.user_id == current_user.user_id,
+        )
     )
+    if access_check.scalar_one_or_none() is None:
+        raise WorkspaceNotFoundError(str(workspace_id))
+
+    result = await db.execute(
+        select(WorkspaceMember, User)
+        .join(User, User.id == WorkspaceMember.user_id)
+        .where(WorkspaceMember.workspace_id == workspace_id)
+        .order_by(WorkspaceMember.created_at.asc())
+    )
+    members = [
+        WorkspaceMemberResponse(
+            user=UserSummary.model_validate(user),
+            role=WorkspaceRole(member.role),
+            joined_at=member.created_at,
+        )
+        for member, user in result.all()
+    ]
+
+    return APIResponse(data=members, meta=_make_meta(request_id, start))
