@@ -83,7 +83,7 @@ EXPOSE 8000
 
 # Production: run Alembic migrations then start server
 # In Kubernetes: migrations run as an init container, not here
-CMD ["sh", "-c", "alembic upgrade head && uvicorn sourcemind.main:app --host 0.0.0.0 --port 8000 --workers 4 --no-access-log"]
+CMD ["sh", "-c", "alembic upgrade head && uvicorn sourcemind.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 4 --no-access-log"]
 
 # Health check for Docker / ECS
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
