@@ -18,7 +18,7 @@ import Settings      from "@/pages/Settings";
 export default function App() {
     return (
         <div className="App min-h-screen bg-sm-bg text-sm-text">
-            <BrowserRouter>
+            <BrowserRouter basename={process.env.PUBLIC_URL}>
                 <Routes>
                     <Route path="/" element={<Landing />} />
                     <Route path="/sign-in" element={<AuthPage mode="sign-in" />} />
