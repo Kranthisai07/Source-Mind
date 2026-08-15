@@ -105,7 +105,7 @@ async def get_conflict_detail(
             LEFT JOIN attributions ab ON ab.memory_id = mc.memory_b_id
                 AND ab.created_at = (SELECT MAX(a3.created_at) FROM attributions a3 WHERE a3.memory_id = mc.memory_b_id)
             LEFT JOIN users ub ON ub.id = ab.user_id
-            WHERE mc.id = :cid::uuid
+            WHERE mc.id = CAST(:cid AS uuid)
         """),
         {"cid": str(conflict_id)},
     )
@@ -173,8 +173,8 @@ async def _generate_suggestion(
         # Store in DB
         await session.execute(
             text(
-                "UPDATE memory_conflicts SET suggested_resolution = :s::jsonb "
-                "WHERE id = :cid::uuid"
+                "UPDATE memory_conflicts SET suggested_resolution = CAST(:s AS jsonb) "
+                "WHERE id = CAST(:cid AS uuid)"
             ),
             {"s": json.dumps(suggestion), "cid": str(conflict_id)},
         )
@@ -194,8 +194,8 @@ async def mark_under_review(
     result = await session.execute(
         text(
             "UPDATE memory_conflicts "
-            "SET status = 'under_review', reviewed_by = :uid::uuid, reviewed_at = NOW() "
-            "WHERE id = :cid::uuid AND status = 'open' "
+            "SET status = 'under_review', reviewed_by = CAST(:uid AS uuid), reviewed_at = NOW() "
+            "WHERE id = CAST(:cid AS uuid) AND status = 'open' "
             "RETURNING id"
         ),
         {"cid": str(conflict_id), "uid": str(reviewer_id)},
@@ -223,7 +223,7 @@ async def resolve_conflict(
     result = await session.execute(
         text("""
             SELECT memory_a_id::text, memory_b_id::text, workspace_id::text
-            FROM memory_conflicts WHERE id = :cid::uuid
+            FROM memory_conflicts WHERE id = CAST(:cid AS uuid)
         """),
         {"cid": str(conflict_id)},
     )
@@ -235,14 +235,14 @@ async def resolve_conflict(
 
     if resolution_type == "kept_a":
         await session.execute(
-            text("UPDATE memories SET current_version = FALSE WHERE id = :id::uuid"),
+            text("UPDATE memories SET current_version = FALSE WHERE id = CAST(:id AS uuid)"),
             {"id": mem_b_id},
         )
         new_status = "resolved"
 
     elif resolution_type == "kept_b":
         await session.execute(
-            text("UPDATE memories SET current_version = FALSE WHERE id = :id::uuid"),
+            text("UPDATE memories SET current_version = FALSE WHERE id = CAST(:id AS uuid)"),
             {"id": mem_a_id},
         )
         new_status = "resolved"
@@ -252,7 +252,7 @@ async def resolve_conflict(
             raise ValueError("merged_content required for resolution_type='merged'")
         # Deprecate both
         await session.execute(
-            text("UPDATE memories SET current_version = FALSE WHERE id = ANY(ARRAY[:a::uuid, :b::uuid])"),
+            text("UPDATE memories SET current_version = FALSE WHERE id = ANY(ARRAY[CAST(:a AS uuid), CAST(:b AS uuid)])"),
             {"a": mem_a_id, "b": mem_b_id},
         )
         # Create merged memory — 50/50 attribution handled by separate process
@@ -275,14 +275,14 @@ async def resolve_conflict(
         await session.execute(
             text("""
                 UPDATE memories SET tags = array_append(COALESCE(tags, ARRAY[]::text[]), :tag)
-                WHERE id = :id::uuid
+                WHERE id = CAST(:id AS uuid)
             """),
             {"tag": tag_a, "id": mem_a_id},
         )
         await session.execute(
             text("""
                 UPDATE memories SET tags = array_append(COALESCE(tags, ARRAY[]::text[]), :tag)
-                WHERE id = :id::uuid
+                WHERE id = CAST(:id AS uuid)
             """),
             {"tag": tag_b, "id": mem_b_id},
         )
@@ -295,7 +295,7 @@ async def resolve_conflict(
             text(
                 "UPDATE memory_conflicts "
                 "SET status = 'deferred', revisit_at = :rat "
-                "WHERE id = :cid::uuid "
+                "WHERE id = CAST(:cid AS uuid) "
                 "RETURNING id"
             ),
             {"rat": revisit_at.isoformat(), "cid": str(conflict_id)},
@@ -311,10 +311,10 @@ async def resolve_conflict(
         text("""
             UPDATE memory_conflicts
             SET status = :status,
-                resolver_id = :rid::uuid,
+                resolver_id = CAST(:rid AS uuid),
                 resolved_at = NOW(),
                 resolution_note = :note
-            WHERE id = :cid::uuid
+            WHERE id = CAST(:cid AS uuid)
         """),
         {
             "status": new_status,

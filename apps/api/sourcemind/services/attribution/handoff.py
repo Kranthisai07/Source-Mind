@@ -71,7 +71,7 @@ async def classify_memories(
     """
     # Get departing user info
     user_result = await session.execute(
-        text("SELECT display_name, email FROM users WHERE id = :uid::uuid"),
+        text("SELECT display_name, email FROM users WHERE id = CAST(:uid AS uuid)"),
         {"uid": str(departing_user_id)},
     )
     user_row = user_result.fetchone()
@@ -88,7 +88,7 @@ async def classify_memories(
                 (
                     SELECT COUNT(*) FROM attributions a2
                     WHERE a2.memory_id = m.id
-                    AND a2.user_id != :uid::uuid
+                    AND a2.user_id != CAST(:uid AS uuid)
                     AND a2.contribution_weight > :solo_threshold
                     AND a2.created_at = (
                         SELECT MAX(a3.created_at) FROM attributions a3
@@ -103,8 +103,8 @@ async def classify_memories(
                 ) AS incoming_references
             FROM memories m
             JOIN attributions a ON a.memory_id = m.id
-                AND a.user_id = :uid::uuid
-            WHERE m.workspace_id = :ws_id::uuid
+                AND a.user_id = CAST(:uid AS uuid)
+            WHERE m.workspace_id = CAST(:ws_id AS uuid)
               AND m.current_version = TRUE
               AND m.deleted_at IS NULL
         """),
@@ -185,7 +185,7 @@ async def _find_successor(
             JOIN attributions a ON a.memory_id = m2.id
                 AND a.user_id::text != :dep_uid
             JOIN users u ON u.id = a.user_id
-            WHERE (mr.source_memory_id = :mid::uuid OR mr.target_memory_id = :mid::uuid)
+            WHERE (mr.source_memory_id = CAST(:mid AS uuid) OR mr.target_memory_id = CAST(:mid AS uuid))
               AND m2.id::text != :mid
               AND m2.current_version = TRUE
               AND m2.deleted_at IS NULL
@@ -223,7 +223,7 @@ async def assign_memory(
     attr_result = await session.execute(
         text("""
             SELECT contribution_weight FROM attributions
-            WHERE memory_id = :mid::uuid AND user_id = :uid::uuid
+            WHERE memory_id = CAST(:mid AS uuid) AND user_id = CAST(:uid AS uuid)
             ORDER BY created_at DESC LIMIT 1
         """),
         {"mid": str(memory_id), "uid": str(departing_user_id)},
@@ -253,8 +253,8 @@ async def assign_memory(
     await session.execute(
         text("""
             UPDATE handoff_assignments
-            SET new_owner_id = :owner::uuid, assigned_at = NOW(), note = :note
-            WHERE handoff_id = :hid::uuid AND memory_id = :mid::uuid
+            SET new_owner_id = CAST(:owner AS uuid), assigned_at = NOW(), note = :note
+            WHERE handoff_id = CAST(:hid AS uuid) AND memory_id = CAST(:mid AS uuid)
         """),
         {
             "owner": str(new_owner_id),
@@ -268,7 +268,7 @@ async def assign_memory(
     await session.execute(
         text(
             "UPDATE handoff_records SET assigned_count = assigned_count + 1 "
-            "WHERE id = :hid::uuid"
+            "WHERE id = CAST(:hid AS uuid)"
         ),
         {"hid": str(handoff_record_id)},
     )
@@ -292,10 +292,10 @@ async def assign_memory(
             SELECT a.user_id::text, COALESCE(u.display_name, u.email), a.contribution_weight
             FROM attributions a
             JOIN users u ON u.id = a.user_id
-            WHERE a.memory_id = :mid::uuid
+            WHERE a.memory_id = CAST(:mid AS uuid)
               AND a.created_at = (
                 SELECT MAX(a2.created_at) FROM attributions a2
-                WHERE a2.memory_id = :mid::uuid AND a2.user_id = a.user_id
+                WHERE a2.memory_id = CAST(:mid AS uuid) AND a2.user_id = a.user_id
               )
             ORDER BY a.contribution_weight DESC
         """),
@@ -325,7 +325,7 @@ async def create_handoff_record(
                 (workspace_id, departing_user_id, initiated_by,
                  tier_1_count, tier_2_count, tier_3_count, expires_at)
             VALUES
-                (:ws::uuid, :dep::uuid, :init::uuid,
+                (CAST(:ws AS uuid), CAST(:dep AS uuid), CAST(:init AS uuid),
                  :t1, :t2, :t3, :exp)
             RETURNING id::text
         """),
@@ -347,7 +347,7 @@ async def create_handoff_record(
         await session.execute(
             text("""
                 INSERT INTO handoff_assignments (handoff_id, memory_id, tier)
-                VALUES (:hid::uuid, :mid::uuid, :tier)
+                VALUES (CAST(:hid AS uuid), CAST(:mid AS uuid), :tier)
                 ON CONFLICT DO NOTHING
             """),
             {"hid": str(handoff_id), "mid": item.memory_id, "tier": item.tier},
@@ -357,7 +357,7 @@ async def create_handoff_record(
     await session.execute(
         text(
             "UPDATE workspace_members SET status = 'departing' "
-            "WHERE workspace_id = :ws::uuid AND user_id = :uid::uuid"
+            "WHERE workspace_id = CAST(:ws AS uuid) AND user_id = CAST(:uid AS uuid)"
         ),
         {"ws": str(workspace_id), "uid": str(departing_user_id)},
     )
@@ -379,7 +379,7 @@ async def complete_handoff(
     unassigned_result = await session.execute(
         text("""
             SELECT COUNT(*) FROM handoff_assignments
-            WHERE handoff_id = :hid::uuid AND tier = 1 AND new_owner_id IS NULL
+            WHERE handoff_id = CAST(:hid AS uuid) AND tier = 1 AND new_owner_id IS NULL
         """),
         {"hid": str(handoff_record_id)},
     )
@@ -390,7 +390,7 @@ async def complete_handoff(
         text(
             "UPDATE workspace_members "
             "SET status = 'departed', departed_at = NOW() "
-            "WHERE workspace_id = :ws::uuid AND user_id = :uid::uuid"
+            "WHERE workspace_id = CAST(:ws AS uuid) AND user_id = CAST(:uid AS uuid)"
         ),
         {"ws": str(workspace_id), "uid": str(departing_user_id)},
     )
@@ -399,7 +399,7 @@ async def complete_handoff(
     await session.execute(
         text(
             "UPDATE handoff_records SET status = 'completed', completed_at = NOW() "
-            "WHERE id = :hid::uuid"
+            "WHERE id = CAST(:hid AS uuid)"
         ),
         {"hid": str(handoff_record_id)},
     )

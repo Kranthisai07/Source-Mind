@@ -19,6 +19,10 @@ from sourcemind.models.document import DocumentSourceType
 from sourcemind.schemas.attribution import ContributionBreakdown
 
 IngestionStatusLiteral = Literal[
+    # IngestionStatus enum values (models/document.py) — returned by
+    # receiver.receive() and as the jobs-endpoint fallback.
+    "pending", "processing", "duplicate",
+    # pipeline_data.current_stage values written by workers/ingestion.py.
     "queued", "extracting", "chunking", "extracting_facts",
     "embedding", "attributing", "indexing", "completed", "failed",
 ]

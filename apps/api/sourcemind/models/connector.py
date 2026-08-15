@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -39,10 +39,10 @@ class ConnectorConfig(Base):
     status: Mapped[str] = mapped_column(
         Text(), nullable=False, server_default="active",
     )
-    last_sync_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    next_sync_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default="NOW()",
+        DateTime(timezone=True), nullable=False, server_default="NOW()",
     )
 
     sync_logs: Mapped[list["ConnectorSyncLog"]] = relationship(
@@ -83,9 +83,9 @@ class ConnectorSyncLog(Base):
     )
     error_message: Mapped[str | None] = mapped_column(Text(), nullable=True)
     started_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default="NOW()",
+        DateTime(timezone=True), nullable=False, server_default="NOW()",
     )
-    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     connector: Mapped["ConnectorConfig"] = relationship(
         "ConnectorConfig", back_populates="sync_logs", lazy="noload",
@@ -100,8 +100,11 @@ class ArtifactLink(Base):
 
     __tablename__ = "artifact_links"
     __table_args__ = (
+        # One row per (artifact, memory) — a document yields many memories.
+        # See migration 20250816_0004 for the full rationale.
         UniqueConstraint("workspace_id", "source_tool", "source_type", "source_id",
-                         name="uq_artifact_links_ws_tool_type_id"),
+                         "memory_id",
+                         name="uq_artifact_links_ws_tool_type_id_memory"),
         {"comment": "Maps memories to their originating external artifacts."},
     )
 
@@ -114,17 +117,24 @@ class ArtifactLink(Base):
         ForeignKey("workspaces.id", ondelete="CASCADE"),
         nullable=False, index=True,
     )
-    memory_id: Mapped[uuid.UUID] = mapped_column(
+    document_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=True, index=True,
+        comment="Anchor written at sync time, before memories exist.",
+    )
+    memory_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("memories.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        nullable=True, index=True,
+        comment="Backfilled once the ingestion pipeline produces memories.",
     )
     source_tool: Mapped[str] = mapped_column(Text(), nullable=False)
     source_type: Mapped[str] = mapped_column(Text(), nullable=False)
     source_id: Mapped[str] = mapped_column(Text(), nullable=False)
     source_url: Mapped[str | None] = mapped_column(Text(), nullable=True)
     source_author: Mapped[str | None] = mapped_column(Text(), nullable=True)
-    source_timestamp: Mapped[datetime | None] = mapped_column(nullable=True)
+    source_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
@@ -135,7 +145,7 @@ class ArtifactLink(Base):
         "metadata", JSONB(), nullable=False, server_default="'{}'",
     )
     created_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default="NOW()",
+        DateTime(timezone=True), nullable=False, server_default="NOW()",
     )
 
     def __repr__(self) -> str:

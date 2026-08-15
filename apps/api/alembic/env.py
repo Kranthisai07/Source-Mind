@@ -84,14 +84,25 @@ def run_migrations_online() -> None:
     """Run migrations against a live database using synchronous psycopg2 driver."""
     # Swap asyncpg → psycopg2 for the migration runner only.
     # The app still uses asyncpg at runtime.
-    url = settings.database_url.replace(
-        "postgresql+asyncpg://", "postgresql+psycopg2://"
-    ).replace("?ssl=require", "")
+    # Railway's private network does not terminate TLS, so requiring SSL there
+    # fails with "server does not support SSL". Public proxies and Supabase do.
+    original_url = settings.database_url
+    needs_ssl = (
+        "ssl=require" in original_url or ".railway.internal" not in original_url
+    )
+
+    url = (
+        original_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://")
+        .replace("?ssl=require", "")
+        .replace("&ssl=require", "")
+    )
+
+    connect_args = {"sslmode": "require"} if needs_ssl else {}
 
     connectable = create_engine(
         url,
         poolclass=pool.NullPool,
-        connect_args={"sslmode": "require"},
+        connect_args=connect_args,
     )
 
     with connectable.connect() as connection:

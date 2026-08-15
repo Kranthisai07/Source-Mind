@@ -44,7 +44,7 @@ async def list_workspace_conflicts(
     """
     List conflicts for a workspace, ordered by similarity_score DESC.
     """
-    conditions = ["mc.workspace_id = :ws_id::uuid"]
+    conditions = ["mc.workspace_id = CAST(:ws_id AS uuid)"]
     params: dict[str, Any] = {"ws_id": str(workspace_id), "limit": limit}
 
     if conflict_status:

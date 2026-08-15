@@ -131,24 +131,24 @@ async def recompute_importance(session: AsyncSession, memory_id: UUID) -> float:
             LEFT JOIN (
                 SELECT target_memory_id, COUNT(*) AS inbound_count
                 FROM memory_relations
-                WHERE target_memory_id = :mid::uuid
+                WHERE target_memory_id = CAST(:mid AS uuid)
                 GROUP BY target_memory_id
             ) ir ON ir.target_memory_id = m.id
             LEFT JOIN (
                 SELECT memory_id, COUNT(*) AS approval_count
                 FROM attribution_edits
-                WHERE memory_id = :mid::uuid
+                WHERE memory_id = CAST(:mid AS uuid)
                   AND action_type IN ('approve', 'merge')
                 GROUP BY memory_id
             ) ap ON ap.memory_id = m.id
             LEFT JOIN (
                 SELECT parent_memory_id, COUNT(*) AS version_count
                 FROM memories
-                WHERE parent_memory_id = :mid::uuid
-                   OR id = :mid::uuid
+                WHERE parent_memory_id = CAST(:mid AS uuid)
+                   OR id = CAST(:mid AS uuid)
                 GROUP BY parent_memory_id
             ) vc ON TRUE
-            WHERE m.id = :mid::uuid
+            WHERE m.id = CAST(:mid AS uuid)
         """),
         {"mid": str(memory_id)},
     )
@@ -169,7 +169,7 @@ async def recompute_importance(session: AsyncSession, memory_id: UUID) -> float:
 
     # Write back
     await session.execute(
-        text("UPDATE memories SET importance_score = :score WHERE id = :mid::uuid"),
+        text("UPDATE memories SET importance_score = :score WHERE id = CAST(:mid AS uuid)"),
         {"score": score, "mid": str(memory_id)},
     )
 

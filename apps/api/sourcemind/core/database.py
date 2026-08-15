@@ -50,6 +50,11 @@ def _build_engine(settings: Any = None) -> AsyncEngine:
     # the pooler can route connections across backends, invalidating prepared
     # statement caches and causing "prepared statement does not exist" errors.
     db_url = settings.database_url.replace("?ssl=require", "").replace("&ssl=require", "")
+    # Railway injects a bare postgresql:// URL when the Postgres service is
+    # referenced from the dashboard. create_async_engine needs an async driver,
+    # so force asyncpg if no driver is named.
+    if db_url.startswith("postgresql://"):
+        db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
     connect_args: dict[str, Any] = {"statement_cache_size": 0}
     if "supabase" in db_url or "pooler" in db_url:
         connect_args["ssl"] = "require"

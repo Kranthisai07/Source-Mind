@@ -121,6 +121,10 @@ class Document(Base, TimestampMixin, SoftDeleteMixin):
         comment="Number of memories extracted during Stage 4",
     )
     pipeline_data: Mapped[dict] = mapped_column(
+        # The DB column is `metadata` (migration 0001); the ORM attribute is
+        # renamed because SQLAlchemy's Declarative API reserves `metadata`.
+        # Same pattern as User.clerk_data and ArtifactLink.artifact_metadata.
+        "metadata",
         nullable=False,
         server_default="'{}'::jsonb",
         comment="Pipeline metrics: token count, processing times, stage durations, etc.",

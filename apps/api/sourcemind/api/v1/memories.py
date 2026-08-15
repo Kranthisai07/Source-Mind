@@ -180,7 +180,7 @@ async def get_memory(
     rel_count_result = await db.execute(
         text(
             "SELECT COUNT(*) FROM memory_relations "
-            "WHERE source_memory_id = :id::uuid OR target_memory_id = :id::uuid"
+            "WHERE source_memory_id = CAST(:id AS uuid) OR target_memory_id = CAST(:id AS uuid)"
         ),
         {"id": str(memory_id)},
     )
@@ -298,7 +298,7 @@ async def delete_memory(
         raise MemoryNotFoundError(f"Memory {memory_id} not found.")
 
     await db.execute(
-        text("UPDATE memories SET deleted_at = NOW() WHERE id = :id::uuid"),
+        text("UPDATE memories SET deleted_at = NOW() WHERE id = CAST(:id AS uuid)"),
         {"id": str(memory_id)},
     )
     await db.commit()

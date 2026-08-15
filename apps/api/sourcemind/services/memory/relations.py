@@ -106,14 +106,14 @@ async def _maybe_create_conflict(
     # Get contributors
     r1 = await session.execute(
         text(
-            "SELECT user_id::text FROM attributions WHERE memory_id = :id::uuid "
+            "SELECT user_id::text FROM attributions WHERE memory_id = CAST(:id AS uuid) "
             "ORDER BY created_at ASC LIMIT 1"
         ),
         {"id": str(new_memory.id)},
     )
     r2 = await session.execute(
         text(
-            "SELECT user_id::text FROM attributions WHERE memory_id = :id::uuid "
+            "SELECT user_id::text FROM attributions WHERE memory_id = CAST(:id AS uuid) "
             "ORDER BY created_at ASC LIMIT 1"
         ),
         {"id": str(cand_id)},
@@ -129,8 +129,8 @@ async def _maybe_create_conflict(
     existing = await session.execute(
         text(
             "SELECT id FROM memory_relations "
-            "WHERE (source_memory_id = :a::uuid AND target_memory_id = :b::uuid) "
-            "OR (source_memory_id = :b::uuid AND target_memory_id = :a::uuid)"
+            "WHERE (source_memory_id = CAST(:a AS uuid) AND target_memory_id = CAST(:b AS uuid)) "
+            "OR (source_memory_id = CAST(:b AS uuid) AND target_memory_id = CAST(:a AS uuid))"
         ),
         {"a": str(new_memory.id), "b": str(cand_id)},
     )
@@ -203,14 +203,14 @@ class RelationDetector:
                     SELECT
                         id::text,
                         content,
-                        embedding <=> :emb::vector AS dist
+                        embedding <=> CAST(:emb AS vector) AS dist
                     FROM memories
-                    WHERE workspace_id = :ws_id::uuid
+                    WHERE workspace_id = CAST(:ws_id AS uuid)
                       AND current_version = TRUE
                       AND deleted_at IS NULL
                       AND embedding IS NOT NULL
                       AND id::text != :mem_id
-                    ORDER BY embedding <=> :emb::vector
+                    ORDER BY embedding <=> CAST(:emb AS vector)
                     LIMIT 10
                 """),
                 {
@@ -256,7 +256,7 @@ class RelationDetector:
                                     await session.execute(
                                         text(
                                             "UPDATE memories SET current_version = FALSE "
-                                            "WHERE id = :id::uuid"
+                                            "WHERE id = CAST(:id AS uuid)"
                                         ),
                                         {"id": cand_id_str},
                                     )

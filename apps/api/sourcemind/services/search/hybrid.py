@@ -186,7 +186,11 @@ def _rrf_merge(
             "id": mid,
             "content": content_map[mid],
             "score": scores[mid],
-            "match_type": "+".join(sorted(match_types[mid])),
+            # Emit in the order MatchTypeLiteral declares ("semantic+keyword").
+            # sorted() would produce "keyword+semantic" and fail response validation.
+            "match_type": "+".join(
+                m for m in ("semantic", "keyword") if m in match_types[mid]
+            ),
         }
         for mid in ranked
     ]

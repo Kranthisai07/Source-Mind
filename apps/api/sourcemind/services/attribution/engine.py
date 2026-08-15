@@ -105,7 +105,7 @@ async def recompute_attribution(
     pos_result = await session.execute(
         text(
             "SELECT COALESCE(MAX(edit_position), 0) + 1 FROM attribution_edits "
-            "WHERE memory_id = :mid::uuid"
+            "WHERE memory_id = CAST(:mid AS uuid)"
         ),
         {"mid": str(memory_id)},
     )
@@ -117,7 +117,7 @@ async def recompute_attribution(
             SELECT ae.editor_id::text, ae.content_before, ae.content_after,
                    ae.edit_position, ae.action_type
             FROM attribution_edits ae
-            WHERE ae.memory_id = :mid::uuid
+            WHERE ae.memory_id = CAST(:mid AS uuid)
             ORDER BY ae.edit_position ASC
         """),
         {"mid": str(memory_id)},

@@ -22,7 +22,6 @@ app = Celery(
     backend=settings.redis_url,
     include=[
         "sourcemind.workers.ingestion",
-        "sourcemind.workers.attribution",
         "sourcemind.workers.connector_tasks",
     ],
 )

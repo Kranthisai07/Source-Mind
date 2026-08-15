@@ -231,12 +231,16 @@ class GitHubConnector:
         if result.get("already_exists"):
             return False
 
-        # Record the artifact link for future dedup
+        # Record the artifact link for future dedup. Only the Document exists
+        # at this point — memories are created later by the Celery pipeline —
+        # so we anchor on document_id and leave memory_id NULL for
+        # backfill_artifact_links() to fill in once ingestion completes.
         document_id = result.get("document_id")
         if document_id:
             link = ArtifactLink(
                 workspace_id=self._workspace_id,
-                memory_id=uuid.UUID(str(document_id)),
+                document_id=uuid.UUID(str(document_id)),
+                memory_id=None,
                 source_tool=doc.source_tool,
                 source_type=doc.source_type,
                 source_id=doc.source_id,

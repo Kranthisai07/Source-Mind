@@ -61,7 +61,11 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
     from sourcemind.services.ingestion.extractor import extract
     from sourcemind.services.ingestion.fact_extractor import FactExtractor
     from sourcemind.services.memory.relations import RelationDetector
-    from sourcemind.services.memory.store import store_memories, update_document_status
+    from sourcemind.services.memory.store import (
+        backfill_artifact_links,
+        store_memories,
+        update_document_status,
+    )
 
     settings = get_settings()
 
@@ -170,6 +174,10 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                     await create_initial_attribution(
                         session, memory.id, user_uuid, memory.content, doc.source_type
                     )
+
+                # Connector-sourced documents have a pending ArtifactLink whose
+                # memory_id could not be set at sync time — fill it in now.
+                await backfill_artifact_links(session, doc_uuid, memories)
 
                 await relation_detector.detect(session, memories, ws_uuid)
 

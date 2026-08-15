@@ -31,9 +31,13 @@ WORKDIR /app
 # ── Stage 2: Dependencies ─────────────────────────────────────
 FROM base AS deps
 
+# hatchling's wheel target is packages = ["sourcemind"], so that directory
+# must exist before `pip install -e` runs — the build backend has nothing to
+# build otherwise. Source is bind-mounted over this at runtime by compose.
 COPY pyproject.toml ./
+COPY sourcemind/ ./sourcemind/
 
-# Install all dependencies (including dev in this stage for layer caching)
+# Install all dependencies (including dev extras for the development stage)
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir hatchling \
     && pip install --no-cache-dir -e ".[dev]"
@@ -59,14 +63,34 @@ CMD ["uvicorn", "sourcemind.main:app", "--host", "0.0.0.0", "--port", "8000", "-
 # ── Stage 4: Production build ─────────────────────────────────
 FROM base AS production
 
-# Copy only production dependencies (no dev extras)
+# Build inputs must land before the install. hatchling's wheel target is
+# packages = ["sourcemind"]; if that directory is absent the build still
+# SUCCEEDS but emits an empty wheel containing zero package files, which
+# would silently break a non-editable `pip install "."`.
 COPY pyproject.toml ./
+COPY sourcemind/ ./sourcemind/
+
+# Install production dependencies only (no dev extras)
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir hatchling \
     && pip install --no-cache-dir -e "."
 
-# Copy application source
-COPY sourcemind/ ./sourcemind/
+# Chromium for URL ingestion (services/ingestion/extractor.py launches
+# Playwright in pipeline Stage 2). --with-deps apt-installs the shared
+# libraries Chromium needs on a slim base.
+#
+# PLAYWRIGHT_BROWSERS_PATH must be set BEFORE the install: browsers default
+# to $HOME/.cache/ms-playwright, and the build runs as root while the
+# container runs as `sourcemind` — root's cache would be unreadable at
+# runtime. A shared world-readable path avoids that.
+#
+# Cost: adds roughly 400–500 MB to the image and several minutes to the build.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN playwright install --with-deps chromium \
+    && chmod -R a+rX /ms-playwright \
+    && rm -rf /var/lib/apt/lists/*
+
+# Runtime-only files — not part of the wheel, so they can land after install.
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
 

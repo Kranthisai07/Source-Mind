@@ -6,11 +6,14 @@ import asyncio
 import uuid
 
 import structlog
-from celery import shared_task
 
 from sourcemind.core.config import get_settings
-from sourcemind.core.database import get_db_engine
-from sourcemind.core.redis_client import get_redis
+# Bind to the CONFIGURED app, not celery's current_app. @shared_task resolves
+# against whatever app happens to be current, which in the API process is a
+# default Celery instance pointing at localhost:6379 — publishing then fails
+# with "connection refused" instead of reaching the real broker.
+from sourcemind.workers.celery_app import app as celery_app
+from sourcemind.core.redis_client import close_redis, get_redis, init_redis
 from sourcemind.connectors.github.app_auth import GitHubAppAuth
 from sourcemind.connectors.github.connector import GitHubConnector
 from sourcemind.models.connector import ConnectorConfig
@@ -18,7 +21,7 @@ from sourcemind.models.connector import ConnectorConfig
 log = structlog.get_logger(__name__)
 
 
-@shared_task(
+@celery_app.task(
     name="sourcemind.workers.connector_tasks.sync_github_connector",
     bind=True,
     max_retries=3,
@@ -49,7 +52,7 @@ def sync_github_connector(
         sync_type=sync_type,
     )
     try:
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             _run_sync(
                 connector_id=uuid.UUID(connector_id),
                 workspace_id=uuid.UUID(workspace_id),
@@ -79,43 +82,56 @@ async def _run_sync(
     sync_type: str,
 ) -> dict:
     """Async implementation of the connector sync."""
-    from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
     settings = get_settings()
-    engine = get_db_engine()
 
-    async with AsyncSession(engine) as session:
-        result = await session.execute(
-            select(ConnectorConfig).where(ConnectorConfig.id == connector_id)
-        )
-        config = result.scalar_one_or_none()
-        if config is None:
-            raise ValueError(f"ConnectorConfig not found: {connector_id}")
+    # A Celery worker process never runs the FastAPI lifespan, so the module
+    # globals behind get_engine()/get_redis() are unset. Build a dedicated
+    # engine and initialise Redis for this task, mirroring workers/ingestion.py.
+    engine = create_async_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        pool_size=2,
+        max_overflow=0,
+    )
+    await init_redis()
 
-        redis = await get_redis()
-        auth = GitHubAppAuth(
-            app_id=settings.github_app_id,
-            private_key_pem=settings.github_app_private_key,
-            installation_id=settings.github_app_installation_id,
-            redis_client=redis,
-        )
+    try:
+        async with AsyncSession(engine) as session:
+            result = await session.execute(
+                select(ConnectorConfig).where(ConnectorConfig.id == connector_id)
+            )
+            config = result.scalar_one_or_none()
+            if config is None:
+                raise ValueError(f"ConnectorConfig not found: {connector_id}")
 
-        connector = GitHubConnector(
-            config=config,
-            auth=auth,
-            session=session,
-            workspace_id=workspace_id,
-            user_id=user_id,
-        )
+            auth = GitHubAppAuth(
+                app_id=settings.github_app_id,
+                private_key_pem=settings.github_app_private_key,
+                installation_id=settings.github_app_installation_id,
+                redis_client=get_redis(),
+            )
 
-        sync_log = await connector.sync(sync_type=sync_type)
-        await session.commit()
+            connector = GitHubConnector(
+                config=config,
+                auth=auth,
+                session=session,
+                workspace_id=workspace_id,
+                user_id=user_id,
+            )
 
-        return {
-            "status": sync_log.status,
-            "artifacts_found": sync_log.artifacts_found,
-            "artifacts_new": sync_log.artifacts_new,
-            "artifacts_skipped": sync_log.artifacts_skipped,
-            "error_message": sync_log.error_message,
-        }
+            sync_log = await connector.sync(sync_type=sync_type)
+            await session.commit()
+
+            return {
+                "status": sync_log.status,
+                "artifacts_found": sync_log.artifacts_found,
+                "artifacts_new": sync_log.artifacts_new,
+                "artifacts_skipped": sync_log.artifacts_skipped,
+                "error_message": sync_log.error_message,
+            }
+    finally:
+        await engine.dispose()
+        await close_redis()

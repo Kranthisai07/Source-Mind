@@ -124,7 +124,7 @@ async def list_handoffs(
             FROM handoff_records hr
             LEFT JOIN users u_dep ON u_dep.id = hr.departing_user_id
             LEFT JOIN users u_init ON u_init.id = hr.initiated_by
-            WHERE hr.workspace_id = :ws::uuid
+            WHERE hr.workspace_id = CAST(:ws AS uuid)
             ORDER BY hr.created_at DESC
         """),
         {"ws": str(workspace_id)},
@@ -257,7 +257,7 @@ async def assign_handoff_memory(
     # Resolve departing user from handoff_records
     from sqlalchemy import text
     hr_result = await db.execute(
-        text("SELECT departing_user_id FROM handoff_records WHERE id = :hid::uuid"),
+        text("SELECT departing_user_id FROM handoff_records WHERE id = CAST(:hid AS uuid)"),
         {"hid": str(body.handoff_record_id)},
     )
     hr_row = hr_result.fetchone()

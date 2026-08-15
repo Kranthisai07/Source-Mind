@@ -84,7 +84,7 @@ async def get_overview(
                 COUNT(DISTINCT a.user_id) AS total_contributors
             FROM memories m
             LEFT JOIN attributions a ON a.memory_id = m.id
-            WHERE m.workspace_id = :ws::uuid
+            WHERE m.workspace_id = CAST(:ws AS uuid)
               AND m.current_version = TRUE
               AND m.deleted_at IS NULL
         """),
@@ -98,7 +98,7 @@ async def get_overview(
     recent = await session.execute(
         text("""
             SELECT COUNT(*) FROM memories
-            WHERE workspace_id = :ws::uuid
+            WHERE workspace_id = CAST(:ws AS uuid)
               AND current_version = TRUE
               AND deleted_at IS NULL
               AND created_at > NOW() - INTERVAL '30 days'
@@ -111,7 +111,7 @@ async def get_overview(
     conflicts = await session.execute(
         text(
             "SELECT COUNT(*) FROM memory_conflicts "
-            "WHERE workspace_id = :ws::uuid AND status = 'open'"
+            "WHERE workspace_id = CAST(:ws AS uuid) AND status = 'open'"
         ),
         {"ws": ws},
     )
@@ -123,7 +123,7 @@ async def get_overview(
             SELECT COUNT(*) FROM (
                 SELECT m.id FROM memories m
                 JOIN attributions a ON a.memory_id = m.id
-                WHERE m.workspace_id = :ws::uuid
+                WHERE m.workspace_id = CAST(:ws AS uuid)
                   AND m.current_version = TRUE
                   AND m.deleted_at IS NULL
                 GROUP BY m.id
@@ -140,7 +140,7 @@ async def get_overview(
             SELECT COUNT(*) FROM (
                 SELECT m.id FROM memories m
                 JOIN attributions a ON a.memory_id = m.id
-                WHERE m.workspace_id = :ws::uuid
+                WHERE m.workspace_id = CAST(:ws AS uuid)
                   AND m.current_version = TRUE
                   AND m.deleted_at IS NULL
                 GROUP BY m.id
@@ -159,7 +159,7 @@ async def get_overview(
                     OR created_at > NOW() - INTERVAL '90 days') AS updated,
                 COUNT(*) AS total_important
             FROM memories
-            WHERE workspace_id = :ws::uuid
+            WHERE workspace_id = CAST(:ws AS uuid)
               AND current_version = TRUE
               AND deleted_at IS NULL
               AND importance_score > 0.5
@@ -190,7 +190,7 @@ async def get_overview(
             FROM attributions a
             JOIN users u ON u.id = a.user_id
             JOIN memories m ON m.id = a.memory_id
-            WHERE m.workspace_id = :ws::uuid
+            WHERE m.workspace_id = CAST(:ws AS uuid)
               AND m.current_version = TRUE
               AND m.deleted_at IS NULL
             GROUP BY a.user_id, u.display_name, u.email
@@ -222,7 +222,7 @@ async def get_overview(
             FROM attribution_edits ae
             JOIN users u ON u.id = ae.editor_id
             JOIN memories m ON m.id = ae.memory_id
-            WHERE m.workspace_id = :ws::uuid
+            WHERE m.workspace_id = CAST(:ws AS uuid)
             ORDER BY ae.created_at DESC
             LIMIT 20
         """),
@@ -297,7 +297,7 @@ async def get_contribution_map(
         text("""
             WITH workspace_memories AS (
                 SELECT id FROM memories
-                WHERE workspace_id = :ws::uuid
+                WHERE workspace_id = CAST(:ws AS uuid)
                   AND current_version = TRUE
                   AND deleted_at IS NULL
             ),
@@ -371,7 +371,7 @@ async def get_knowledge_gaps(
             SELECT COUNT(*) FROM (
                 SELECT m.id FROM memories m
                 JOIN attributions a ON a.memory_id = m.id
-                WHERE m.workspace_id = :ws::uuid
+                WHERE m.workspace_id = CAST(:ws AS uuid)
                   AND m.current_version = TRUE
                   AND m.deleted_at IS NULL
                 GROUP BY m.id
@@ -395,7 +395,7 @@ async def get_knowledge_gaps(
     stale_result = await session.execute(
         text("""
             SELECT COUNT(*) FROM memories
-            WHERE workspace_id = :ws::uuid
+            WHERE workspace_id = CAST(:ws AS uuid)
               AND current_version = TRUE
               AND deleted_at IS NULL
               AND importance_score > 0.7
@@ -425,7 +425,7 @@ async def get_knowledge_gaps(
             LEFT JOIN memory_conflicts mc ON
                 (mc.memory_a_id = m.id OR mc.memory_b_id = m.id)
                 AND mc.status = 'open'
-            WHERE m.workspace_id = :ws::uuid
+            WHERE m.workspace_id = CAST(:ws AS uuid)
               AND m.current_version = TRUE
               AND m.deleted_at IS NULL
               AND m.tags IS NOT NULL
@@ -476,7 +476,7 @@ async def who_would_know(
                     m.category,
                     ts_rank_cd(m.content_tsv, plainto_tsquery('english', :q)) AS rank
                 FROM memories m
-                WHERE m.workspace_id = :ws::uuid
+                WHERE m.workspace_id = CAST(:ws AS uuid)
                   AND m.current_version = TRUE
                   AND m.deleted_at IS NULL
                   AND m.content_tsv @@ plainto_tsquery('english', :q)

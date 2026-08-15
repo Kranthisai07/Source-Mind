@@ -73,7 +73,7 @@ async def create_new_version(
 
     # 2. Mark old version as non-current
     await session.execute(
-        text("UPDATE memories SET current_version = FALSE WHERE id = :id::uuid"),
+        text("UPDATE memories SET current_version = FALSE WHERE id = CAST(:id AS uuid)"),
         {"id": str(old.id)},
     )
 
@@ -115,9 +115,9 @@ async def create_new_version(
     await session.execute(
         text("""
             INSERT INTO memory_relations (source_memory_id, target_memory_id, relation_type, confidence, similarity_score, detected_by)
-            SELECT :new_id::uuid, target_memory_id, relation_type, confidence, similarity_score, detected_by
+            SELECT CAST(:new_id AS uuid), target_memory_id, relation_type, confidence, similarity_score, detected_by
             FROM memory_relations
-            WHERE source_memory_id = :old_id::uuid
+            WHERE source_memory_id = CAST(:old_id AS uuid)
             ON CONFLICT DO NOTHING
         """),
         {"new_id": str(new_memory.id), "old_id": str(old.id)},
@@ -125,9 +125,9 @@ async def create_new_version(
     await session.execute(
         text("""
             INSERT INTO memory_relations (source_memory_id, target_memory_id, relation_type, confidence, similarity_score, detected_by)
-            SELECT source_memory_id, :new_id::uuid, relation_type, confidence, similarity_score, detected_by
+            SELECT source_memory_id, CAST(:new_id AS uuid), relation_type, confidence, similarity_score, detected_by
             FROM memory_relations
-            WHERE target_memory_id = :old_id::uuid
+            WHERE target_memory_id = CAST(:old_id AS uuid)
             ON CONFLICT DO NOTHING
         """),
         {"new_id": str(new_memory.id), "old_id": str(old.id)},
@@ -164,7 +164,7 @@ async def get_version_chain(
                 SELECT id, workspace_id, content, version, current_version,
                        parent_memory_id, created_at, deleted_at
                 FROM memories
-                WHERE id = :memory_id::uuid
+                WHERE id = CAST(:memory_id AS uuid)
 
                 UNION ALL
 
