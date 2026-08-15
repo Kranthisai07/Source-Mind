@@ -1,9 +1,96 @@
-node_modules
-dist
+# ─────────────────────────────────────────────────────────────
+# SourceMind — .gitignore
+# ─────────────────────────────────────────────────────────────
+
+# ── Secrets (NEVER commit these) ──────────────────────────────
 .env
-backend/.env
-frontend/.env
+.env.*
+!.env.example
+.env.local
+.env.production
+.env.staging
+*.pem
+*.key
+*.cert
+*_rsa
+*_dsa
+*_ed25519
+*_ecdsa
+
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+ENV/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# ── Node.js / Next.js ─────────────────────────────────────────
+node_modules/
+.next/
+out/
+.turbo/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+*.tsbuildinfo
+
+# ── IDEs ──────────────────────────────────────────────────────
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Docker ────────────────────────────────────────────────────
+.dockerignore
+
+# ── Terraform ─────────────────────────────────────────────────
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/terraform/*.tfvars
+infra/terraform/.terraform.lock.hcl
+
+# ── Alembic generated (keep script, not state) ────────────────
+# (alembic_version tracked by DB, not git)
+
+# ── Test artifacts ────────────────────────────────────────────
+.pytest_cache/
+htmlcov/
+junit.xml
+
+# ── OS ────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ── Logs ──────────────────────────────────────────────────────
 *.log
-/.next
-frontend/.next
-backend/prisma/dev.db
+logs/
+
+# ── Uploads / temp ────────────────────────────────────────────
+uploads/
+tmp/
+temp/

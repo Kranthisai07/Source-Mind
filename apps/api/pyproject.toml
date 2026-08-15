@@ -1,0 +1,221 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sourcemind-api"
+version = "0.1.0"
+description = "SourceMind — Collaborative Team Memory Platform API"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+
+dependencies = [
+  # ── Web Framework ────────────────────────────────────────
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.32.0",
+  "python-multipart>=0.0.12",
+
+  # ── Database ─────────────────────────────────────────────
+  "sqlalchemy[asyncio]>=2.0.36",
+  "asyncpg>=0.30.0",
+  "pgvector>=0.3.5",
+  "alembic>=1.14.0",
+
+  # ── Cache / Queue ─────────────────────────────────────────
+  "redis[hiredis]>=5.2.0",
+  "celery[redis]>=5.4.0",
+
+  # ── Messaging ─────────────────────────────────────────────
+  "aiokafka>=0.11.0",
+
+  # ── Validation / Config ───────────────────────────────────
+  "pydantic[email]>=2.10.0",
+  "email-validator>=2.0.0",
+  "pydantic-settings>=2.6.0",
+  "python-jose[cryptography]>=3.3.0",
+  "httpx>=0.28.0",
+
+  # ── Graph DB ──────────────────────────────────────────────
+  "neo4j>=5.27.0",
+
+  # ── AI / ML ───────────────────────────────────────────────
+  "openai>=1.57.0",
+  "anthropic>=0.40.0",
+  "sentence-transformers>=3.3.0",
+  "spacy>=3.8.0",
+  "tiktoken>=0.8.0",
+
+  # ── Document Processing ───────────────────────────────────
+  "pymupdf>=1.25.0",
+  "python-docx>=1.1.2",
+  "playwright>=1.49.0",
+  "readability-lxml>=0.8.1",
+  "tree-sitter>=0.23.0",
+
+  # ── Cloud / Storage ───────────────────────────────────────
+  "boto3>=1.35.0",
+  "botocore>=1.35.0",
+
+  # ── Observability ─────────────────────────────────────────
+  "structlog>=24.4.0",
+  "sentry-sdk[fastapi]>=2.19.0",
+  "opentelemetry-api>=1.29.0",
+  "opentelemetry-sdk>=1.29.0",
+
+  # ── Utilities ─────────────────────────────────────────────
+  "python-ulid>=3.0.0",
+  "tenacity>=9.0.0",
+  "orjson>=3.10.12",
+  "python-dateutil>=2.9.0",
+
+  # ── Previously implicit — required at runtime ─────────────
+  # psycopg2: alembic/env.py swaps the URL to postgresql+psycopg2 for
+  #   migrations, which run first in the production start command.
+  # slack-bolt: imported at module level by api/v1/slack.py, reached
+  #   unconditionally via api/router.py — the app cannot import without it.
+  # Levenshtein: attribution signal S1 (35% weight) in scorer.py.
+  # tree-sitter-languages: AST-aware code chunking in chunker.py.
+  # numpy: cosine similarity in scorer.py and fact_extractor.py.
+  "psycopg2-binary>=2.9",
+  "slack-bolt>=1.18",
+  "python-Levenshtein>=0.25",
+  "numpy>=1.26",
+  # No cp313/cp314 wheels exist (caps at cp312). The production image is
+  # python:3.12 so it installs there; local 3.14 dev skips it and chunker.py
+  # falls back to text chunking.
+  "tree-sitter-languages>=1.10; python_version < '3.13'",
+]
+
+[project.optional-dependencies]
+dev = [
+  # ── Testing ───────────────────────────────────────────────
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.24.0",
+  "pytest-cov>=6.0.0",
+  "pytest-mock>=3.14.0",
+  "httpx>=0.28.0",
+  "testcontainers[postgres,redis]>=4.9.0",
+  "factory-boy>=3.3.1",
+  "faker>=33.1.0",
+  "respx>=0.21.1",
+
+  # ── Linting / Formatting ──────────────────────────────────
+  "black>=24.10.0",
+  "isort>=5.13.2",
+  "ruff>=0.8.4",
+  "mypy>=1.13.0",
+
+  # ── Type stubs ────────────────────────────────────────────
+  "types-python-dateutil>=2.9.0",
+  "types-redis>=4.6.0",
+  "boto3-stubs[s3]>=1.35.0",
+]
+
+# Benchmark harness only (evaluation/). Deliberately excluded from the main
+# dependency set so the production API image does not carry chromadb.
+evaluation = [
+  "chromadb>=0.5",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["sourcemind"]
+
+# ─── Black ────────────────────────────────────────────────────
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+skip-string-normalization = false
+
+# ─── isort ────────────────────────────────────────────────────
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["sourcemind"]
+
+# ─── Ruff ─────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "B",   # flake8-bugbear
+  "C4",  # flake8-comprehensions
+  "UP",  # pyupgrade
+  "S",   # bandit security checks
+  "N",   # pep8-naming
+]
+ignore = [
+  "S101",  # allow assert in tests
+  "B008",  # allow function calls in default args (FastAPI Depends)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S", "N"]
+
+# ─── mypy ─────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+plugins = ["pydantic.mypy", "sqlalchemy.ext.mypy.plugin"]
+
+[[tool.mypy.overrides]]
+module = [
+  "pgvector.*",
+  "sentence_transformers.*",
+  "spacy.*",
+  "readability.*",
+  "tree_sitter.*",
+  "fitz.*",
+  "docx.*",
+  "celery.*",
+  "aiokafka.*",
+]
+ignore_missing_imports = true
+
+# ─── pytest ───────────────────────────────────────────────────
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+  "--cov=sourcemind",
+  "--cov-report=term-missing",
+  "--cov-report=html:htmlcov",
+  "--cov-fail-under=80",
+  "-v",
+]
+markers = [
+  "unit: unit tests (no external dependencies)",
+  "integration: integration tests (requires docker)",
+  "e2e: end-to-end tests",
+  "slow: tests that take >5s",
+]
+
+# ─── coverage ─────────────────────────────────────────────────
+[tool.coverage.run]
+source = ["sourcemind"]
+omit = ["*/tests/*", "*/migrations/*", "alembic/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "@(abc\\.)?abstractmethod",
+]
