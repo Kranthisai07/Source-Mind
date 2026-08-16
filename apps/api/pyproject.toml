@@ -78,6 +78,20 @@ dependencies = [
   # numpy: cosine similarity in scorer.py and fact_extractor.py.
   "psycopg2-binary>=2.9",
   "slack-bolt>=1.18",
+  # PyJWT provides the `jwt` module imported at module level by
+  # connectors/github/app_auth.py to sign the GitHub App RS256 assertion.
+  # Not in the FastAPI import chain, so it breaks connector sync in the
+  # Celery worker rather than app startup. cryptography (already declared)
+  # supplies the RS256 backend.
+  "PyJWT>=2.8",
+  # aiohttp must be declared here explicitly. api/v1/slack.py imports
+  # slack_bolt.async_app, whose first import is `from aiohttp import web`,
+  # but slack-bolt 1.28 declares only slack_sdk and offers no extras — so
+  # nothing pulls aiohttp in. It resolved locally purely by accident, as a
+  # transitive dependency of kubernetes via chromadb. Without this line the
+  # app dies at import with:
+  #   ModuleNotFoundError: No module named 'aiohttp'
+  "aiohttp>=3.9",
   "python-Levenshtein>=0.25",
   "numpy>=1.26",
   # No cp313/cp314 wheels exist (caps at cp312). The production image is
