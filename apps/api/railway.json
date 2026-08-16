@@ -5,7 +5,7 @@
     "dockerBuildTarget": "production"
   },
   "deploy": {
-    "startCommand": "alembic upgrade head && uvicorn sourcemind.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1",
+    "startCommand": "echo \"### STEP 1: shell alive, PORT=[$PORT] ###\"; alembic upgrade head; echo \"### STEP 2: alembic exited rc=$? ###\"; python -u -c \"import time,sys; t=time.time(); import sourcemind.main; print(f'### STEP 3: app imported OK in {time.time()-t:.1f}s ###', flush=True)\"; echo \"### STEP 4: import step exited rc=$? ###\"; exec uvicorn sourcemind.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --log-level debug",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",
