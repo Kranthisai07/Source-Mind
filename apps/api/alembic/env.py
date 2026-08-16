@@ -97,7 +97,22 @@ def run_migrations_online() -> None:
         .replace("&ssl=require", "")
     )
 
-    connect_args = {"sslmode": "require"} if needs_ssl else {}
+    # connect_timeout is essential, not optional. Without it psycopg2 inherits
+    # the OS default (~127s of TCP SYN retries on Linux, or indefinite if the
+    # route blackholes), and Alembic emits NO output before a connection
+    # succeeds — so an unreachable database looks like a totally silent hang.
+    # A container healthcheck will kill the process long before the OS timeout
+    # fires, leaving no diagnostic trace at all.
+    connect_args = {"connect_timeout": 10}
+    if needs_ssl:
+        connect_args["sslmode"] = "require"
+
+    safe_host = url.split("@")[1] if "@" in url else url
+    print(
+        f"[alembic] connecting to {safe_host} "
+        f"(sslmode={'require' if needs_ssl else 'disabled'}, timeout=10s)",
+        flush=True,
+    )
 
     connectable = create_engine(
         url,
@@ -106,7 +121,9 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        print("[alembic] connected — running migrations", flush=True)
         do_run_migrations(connection)
+        print("[alembic] migrations complete", flush=True)
 
 
 if context.is_offline_mode():
