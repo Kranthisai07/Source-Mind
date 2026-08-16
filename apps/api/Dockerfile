@@ -94,6 +94,10 @@ RUN playwright install --with-deps chromium \
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
 
+# TEMPORARY: diagnostic run before migrations by railway.json's startCommand.
+# Remove this line together with debug_db_connect.py.
+COPY debug_db_connect.py ./
+
 # Security: own files as root, run as non-root
 RUN chown -R sourcemind:sourcemind /app
 USER sourcemind
