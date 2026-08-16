@@ -1,21 +1,28 @@
-"""TEMPORARY diagnostic — psycopg2 path, mirroring alembic/env.py exactly.
-
-debug_db_connect.py proves asyncpg works. Alembic never uses asyncpg: it
-rewrites the URL to psycopg2 and applies its own sslmode logic, so it can
-fail where asyncpg succeeds. This reproduces that path with the same driver,
-the same URL rewriting, and the same needs_ssl computation.
-
-Remove this file and restore the original startCommand once the answer is
-known.
-"""
-
+print("=== DEBUG ALEMBIC SCRIPT STARTED ===", flush=True)
+import sys
+print(f"Python: {sys.version}", flush=True)
+print("About to import psycopg2...", flush=True)
 import time
-
 import psycopg2
-
+print("psycopg2 imported OK", flush=True)
+print("About to import sourcemind.core.config...", flush=True)
 from sourcemind.core.config import get_settings
-
+print("config imported OK", flush=True)
+print("About to call get_settings()...", flush=True)
 settings = get_settings()
+print("get_settings() returned OK", flush=True)
+
+# TEMPORARY diagnostic — psycopg2 path, mirroring alembic/env.py exactly.
+#
+# debug_db_connect.py proves asyncpg works. Alembic never uses asyncpg: it
+# rewrites the URL to psycopg2 and applies its own sslmode logic, so it can
+# fail where asyncpg succeeds. This reproduces that path with the same driver,
+# the same URL rewriting, and the same needs_ssl computation.
+#
+# Every step is announced before it runs so that silence in the deploy log
+# pinpoints the exact hang. Remove this file and restore the original
+# startCommand once the answer is known.
+
 url = settings.database_url.replace(
     "postgresql+asyncpg://", "postgresql://"
 ).replace("?ssl=require", "").replace("&ssl=require", "")
@@ -35,6 +42,7 @@ try:
     connect_kwargs = {"connect_timeout": 10}
     if needs_ssl:
         connect_kwargs["sslmode"] = "require"
+    print(f"[psycopg2] calling psycopg2.connect with {connect_kwargs}...", flush=True)
     conn = psycopg2.connect(url, **connect_kwargs)
     print(f"[psycopg2] CONNECTED in {time.time()-start:.2f}s", flush=True)
     cur = conn.cursor()
@@ -43,3 +51,5 @@ try:
     conn.close()
 except Exception as e:
     print(f"[psycopg2] FAILED after {time.time()-start:.2f}s: {type(e).__name__}: {e}", flush=True)
+
+print("=== DEBUG ALEMBIC SCRIPT COMPLETE ===", flush=True)
