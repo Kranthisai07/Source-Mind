@@ -112,7 +112,11 @@ EXPOSE 8000
 
 # Production: run Alembic migrations then start server
 # In Kubernetes: migrations run as an init container, not here
-CMD ["sh", "-c", "alembic upgrade head && uvicorn sourcemind.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 4 --no-access-log"]
+# NOTE: the ["sh", "-c", ...] form is required, not cosmetic. ${PORT:-8000}
+# is shell parameter expansion; with exec-form CMD (no shell) uvicorn would
+# receive the literal string and exit with
+#   Error: Invalid value for '--port': '${PORT:-8000}' is not a valid integer.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn sourcemind.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --no-access-log"]
 
 # Health check for Docker / ECS
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
