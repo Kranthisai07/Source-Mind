@@ -1,16 +1,27 @@
+for i in range(10):
+    print(f"MARKER-{i}-ALEMBIC-SCRIPT-ABOUT-TO-RUN", flush=True)
+
 print("=== DEBUG ALEMBIC SCRIPT STARTED ===", flush=True)
 import sys
+sys.stdout.flush()
+sys.stderr.flush()
 print(f"Python: {sys.version}", flush=True)
+print(f"Executable: {sys.executable}", flush=True)
+print(f"CWD marker — argv: {sys.argv}", flush=True)
+sys.stdout.flush()
 print("About to import psycopg2...", flush=True)
 import time
 import psycopg2
 print("psycopg2 imported OK", flush=True)
+sys.stdout.flush()
 print("About to import sourcemind.core.config...", flush=True)
 from sourcemind.core.config import get_settings
 print("config imported OK", flush=True)
+sys.stdout.flush()
 print("About to call get_settings()...", flush=True)
 settings = get_settings()
 print("get_settings() returned OK", flush=True)
+sys.stdout.flush()
 
 # TEMPORARY diagnostic — psycopg2 path, mirroring alembic/env.py exactly.
 #
@@ -19,9 +30,9 @@ print("get_settings() returned OK", flush=True)
 # fail where asyncpg succeeds. This reproduces that path with the same driver,
 # the same URL rewriting, and the same needs_ssl computation.
 #
-# Every step is announced before it runs so that silence in the deploy log
-# pinpoints the exact hang. Remove this file and restore the original
-# startCommand once the answer is known.
+# The repeated MARKER lines at the top exist so that partial log truncation
+# cannot hide the fact that this script ran at all. Remove this file and
+# restore the original startCommand once the answer is known.
 
 url = settings.database_url.replace(
     "postgresql+asyncpg://", "postgresql://"
@@ -36,6 +47,7 @@ needs_ssl = (
 safe = url.split('@')[1] if '@' in url else url
 print(f"[psycopg2] Testing connection to: {safe}", flush=True)
 print(f"[psycopg2] needs_ssl computed as: {needs_ssl}", flush=True)
+sys.stdout.flush()
 
 start = time.time()
 try:
@@ -43,6 +55,7 @@ try:
     if needs_ssl:
         connect_kwargs["sslmode"] = "require"
     print(f"[psycopg2] calling psycopg2.connect with {connect_kwargs}...", flush=True)
+    sys.stdout.flush()
     conn = psycopg2.connect(url, **connect_kwargs)
     print(f"[psycopg2] CONNECTED in {time.time()-start:.2f}s", flush=True)
     cur = conn.cursor()
@@ -52,4 +65,11 @@ try:
 except Exception as e:
     print(f"[psycopg2] FAILED after {time.time()-start:.2f}s: {type(e).__name__}: {e}", flush=True)
 
-print("=== DEBUG ALEMBIC SCRIPT COMPLETE ===", flush=True)
+sys.stdout.flush()
+sys.stderr.flush()
+
+for i in range(10):
+    print(f"MARKER-{i}-ALEMBIC-SCRIPT-COMPLETE", flush=True)
+
+sys.stdout.flush()
+sys.stderr.flush()
