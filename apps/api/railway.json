@@ -5,7 +5,7 @@
     "dockerBuildTarget": "production"
   },
   "deploy": {
-    "startCommand": "python debug_db_connect.py && python debug_alembic_connect.py && alembic upgrade head && uvicorn sourcemind.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 2 --no-access-log",
+    "startCommand": "python debug_alembic_connect.py",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 60,
     "restartPolicyType": "ON_FAILURE",
