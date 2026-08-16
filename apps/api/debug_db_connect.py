@@ -1,8 +1,12 @@
-"""TEMPORARY diagnostic — isolate where the DB connection hangs in Railway.
+print("=== DEBUG DB SCRIPT STARTED ===", flush=True)
 
-Run before the migration step in railway.json's startCommand. Remove this
-file and restore the original startCommand once the answer is known.
-"""
+# TEMPORARY diagnostic — isolate where the DB connection hangs in Railway.
+#
+# Runs before the migration step in railway.json's startCommand. The START and
+# COMPLETE markers matter: without the COMPLETE marker, a hang during asyncio
+# teardown (after CONNECTED prints) is indistinguishable from the next script
+# failing to start. Remove this file and restore the original startCommand once
+# the answer is known.
 
 import asyncio
 import time
@@ -32,3 +36,5 @@ async def test():
 
 
 asyncio.run(test())
+
+print("=== DEBUG DB SCRIPT COMPLETE (exiting 0) ===", flush=True)
