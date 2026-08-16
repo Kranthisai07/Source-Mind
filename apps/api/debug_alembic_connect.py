@@ -1,0 +1,45 @@
+"""TEMPORARY diagnostic — psycopg2 path, mirroring alembic/env.py exactly.
+
+debug_db_connect.py proves asyncpg works. Alembic never uses asyncpg: it
+rewrites the URL to psycopg2 and applies its own sslmode logic, so it can
+fail where asyncpg succeeds. This reproduces that path with the same driver,
+the same URL rewriting, and the same needs_ssl computation.
+
+Remove this file and restore the original startCommand once the answer is
+known.
+"""
+
+import time
+
+import psycopg2
+
+from sourcemind.core.config import get_settings
+
+settings = get_settings()
+url = settings.database_url.replace(
+    "postgresql+asyncpg://", "postgresql://"
+).replace("?ssl=require", "").replace("&ssl=require", "")
+
+original_url = settings.database_url
+needs_ssl = (
+    "ssl=require" in original_url
+    or ".railway.internal" not in original_url
+)
+
+safe = url.split('@')[1] if '@' in url else url
+print(f"[psycopg2] Testing connection to: {safe}", flush=True)
+print(f"[psycopg2] needs_ssl computed as: {needs_ssl}", flush=True)
+
+start = time.time()
+try:
+    connect_kwargs = {"connect_timeout": 10}
+    if needs_ssl:
+        connect_kwargs["sslmode"] = "require"
+    conn = psycopg2.connect(url, **connect_kwargs)
+    print(f"[psycopg2] CONNECTED in {time.time()-start:.2f}s", flush=True)
+    cur = conn.cursor()
+    cur.execute("SELECT version()")
+    print(f"[psycopg2] VERSION: {cur.fetchone()[0]}", flush=True)
+    conn.close()
+except Exception as e:
+    print(f"[psycopg2] FAILED after {time.time()-start:.2f}s: {type(e).__name__}: {e}", flush=True)
