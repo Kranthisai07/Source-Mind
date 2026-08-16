@@ -1,27 +1,38 @@
-for i in range(10):
-    print(f"MARKER-{i}-ALEMBIC-SCRIPT-ABOUT-TO-RUN", flush=True)
-
-print("=== DEBUG ALEMBIC SCRIPT STARTED ===", flush=True)
 import sys
-sys.stdout.flush()
-sys.stderr.flush()
-print(f"Python: {sys.version}", flush=True)
-print(f"Executable: {sys.executable}", flush=True)
-print(f"CWD marker — argv: {sys.argv}", flush=True)
-sys.stdout.flush()
-print("About to import psycopg2...", flush=True)
+from pathlib import Path
+
+LOG_FILE = Path("/tmp/debug_alembic.log")
+
+
+def log(msg):
+    """Print and append to LOG_FILE so output survives log-viewer gaps."""
+    print(msg, flush=True)
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(str(msg) + "\n")
+            f.flush()
+    except Exception as exc:
+        print(f"(log file write failed: {exc})", flush=True)
+    sys.stdout.flush()
+
+
+for i in range(10):
+    log(f"MARKER-{i}-ALEMBIC-SCRIPT-ABOUT-TO-RUN")
+
+log("=== DEBUG ALEMBIC SCRIPT STARTED ===")
+log(f"Python: {sys.version}")
+log(f"Executable: {sys.executable}")
+log(f"CWD marker — argv: {sys.argv}")
+log("About to import psycopg2...")
 import time
 import psycopg2
-print("psycopg2 imported OK", flush=True)
-sys.stdout.flush()
-print("About to import sourcemind.core.config...", flush=True)
+log("psycopg2 imported OK")
+log("About to import sourcemind.core.config...")
 from sourcemind.core.config import get_settings
-print("config imported OK", flush=True)
-sys.stdout.flush()
-print("About to call get_settings()...", flush=True)
+log("config imported OK")
+log("About to call get_settings()...")
 settings = get_settings()
-print("get_settings() returned OK", flush=True)
-sys.stdout.flush()
+log("get_settings() returned OK")
 
 # TEMPORARY diagnostic — psycopg2 path, mirroring alembic/env.py exactly.
 #
@@ -45,31 +56,26 @@ needs_ssl = (
 )
 
 safe = url.split('@')[1] if '@' in url else url
-print(f"[psycopg2] Testing connection to: {safe}", flush=True)
-print(f"[psycopg2] needs_ssl computed as: {needs_ssl}", flush=True)
-sys.stdout.flush()
+log(f"[psycopg2] Testing connection to: {safe}")
+log(f"[psycopg2] needs_ssl computed as: {needs_ssl}")
 
 start = time.time()
 try:
     connect_kwargs = {"connect_timeout": 10}
     if needs_ssl:
         connect_kwargs["sslmode"] = "require"
-    print(f"[psycopg2] calling psycopg2.connect with {connect_kwargs}...", flush=True)
+    log(f"[psycopg2] calling psycopg2.connect with {connect_kwargs}...")
     sys.stdout.flush()
     conn = psycopg2.connect(url, **connect_kwargs)
-    print(f"[psycopg2] CONNECTED in {time.time()-start:.2f}s", flush=True)
+    log(f"[psycopg2] CONNECTED in {time.time()-start:.2f}s")
     cur = conn.cursor()
     cur.execute("SELECT version()")
-    print(f"[psycopg2] VERSION: {cur.fetchone()[0]}", flush=True)
+    log(f"[psycopg2] VERSION: {cur.fetchone()[0]}")
     conn.close()
 except Exception as e:
-    print(f"[psycopg2] FAILED after {time.time()-start:.2f}s: {type(e).__name__}: {e}", flush=True)
+    log(f"[psycopg2] FAILED after {time.time()-start:.2f}s: {type(e).__name__}: {e}")
 
-sys.stdout.flush()
-sys.stderr.flush()
 
 for i in range(10):
-    print(f"MARKER-{i}-ALEMBIC-SCRIPT-COMPLETE", flush=True)
+    log(f"MARKER-{i}-ALEMBIC-SCRIPT-COMPLETE")
 
-sys.stdout.flush()
-sys.stderr.flush()
