@@ -208,7 +208,14 @@ def _split_text_chunks(text: str, source_metadata: dict[str, Any]) -> list[Chunk
 # ─── Code chunker ─────────────────────────────────────────────────────────────
 
 
-def _extract_imports(content: str, root: Any, language: str) -> str:
+def _extract_imports(content: str, root: Any, language: str) -> str:  # pragma: no cover
+    # Reachable only where tree_sitter_languages is installed, which is
+    # gated to python_version < '3.13' in pyproject.toml because no newer
+    # wheels exist. It is therefore live in the py3.12 production image but
+    # cannot execute — or be tested — on the 3.14 dev interpreter.
+    # NOTE: that means this path ships untested. Covering it requires
+    # running the suite inside the production image.
+
     """Extract import block from AST root node."""
     import_node_types: dict[str, list[str]] = {
         "python": ["import_statement", "import_from_statement"],
@@ -225,7 +232,7 @@ def _extract_imports(content: str, root: Any, language: str) -> str:
     return "\n".join(lines)
 
 
-def _extract_code_units(content: str, root: Any, language: str) -> list[tuple[str, str, str]]:
+def _extract_code_units(content: str, root: Any, language: str) -> list[tuple[str, str, str]]:  # pragma: no cover
     """
     Extract (unit_type, unit_name, unit_content) from AST.
 

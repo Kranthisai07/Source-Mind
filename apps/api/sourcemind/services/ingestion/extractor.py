@@ -240,7 +240,11 @@ class CodeExtractor:
                 "filename": filename,
                 "word_count": word_count,
                 "line_count": content.count("\n") + 1,
-                "extraction_method": "tree-sitter",
+                # Not "tree-sitter": this maps a file extension to a
+                # language name and performs no AST parsing. Claiming
+                # otherwise made a degraded path indistinguishable from
+                # the real one in stored metadata.
+                "extraction_method": "extension-map",
             },
         )
 
