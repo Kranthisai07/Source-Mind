@@ -88,6 +88,9 @@ async def create_memory(
         url=body.url,
         source_type=body.source_type.value,
         title=body.title,
+        # Previously dropped here: MemoryCreate accepted tags and nothing
+        # forwarded them, so they never reached the stored memory.
+        tags=body.tags,
         idempotency_key=idempotency_key,
     )
 

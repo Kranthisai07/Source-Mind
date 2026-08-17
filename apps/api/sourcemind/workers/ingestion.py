@@ -173,7 +173,15 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                 await update_document_status(
                     session, doc_uuid, IngestionStatus.PROCESSING, current_stage="indexing"
                 )
-                memories = await store_memories(session, ws_uuid, doc_uuid, embedding_results, {})
+                # Pass the ingestion metadata through instead of {}. Tags
+                # travel request -> pipeline_data -> here -> Memory.tags.
+                source_metadata = {
+                    "tags": (doc.pipeline_data or {}).get("tags") or [],
+                    "category": (doc.pipeline_data or {}).get("category"),
+                }
+                memories = await store_memories(
+                    session, ws_uuid, doc_uuid, embedding_results, source_metadata
+                )
 
                 for memory in memories:
                     await create_initial_attribution(

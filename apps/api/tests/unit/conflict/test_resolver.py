@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime, timezone, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -261,3 +261,164 @@ async def test_resolve_requires_known_type():
             resolver_id=uuid.uuid4(),
             resolution_type="invalid_type",
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GAP 1 — merged resolution must produce a complete, traceable memory
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_merged_memory_is_embedded_attributed_and_linked():
+    """A merged memory must be a first-class memory, not an orphan.
+
+    It previously got no embedding (invisible to semantic search), no
+    attribution (no provenance), and no link to the two memories it merged,
+    under a comment claiming a separate process handled attribution. Nothing
+    did. This asserts all four properties the fix guarantees.
+    """
+    from sourcemind.models.memory import Memory
+    from sourcemind.services.conflict.resolver import resolve_conflict
+
+    mem_a_id = str(uuid.uuid4())
+    mem_b_id = str(uuid.uuid4())
+    ws_id = str(uuid.UUID("00000000-0000-4000-8000-000000000010"))
+    user_a, user_b = str(uuid.uuid4()), str(uuid.uuid4())
+
+    added: list = []
+    statements: list[tuple[str, dict]] = []
+    primary_calls = {"n": 0}
+
+    async def execute_side_effect(stmt, params=None, **kwargs):
+        s = str(stmt)
+        statements.append((s, params or {}))
+        r = MagicMock()
+        if "SELECT memory_a_id" in s:
+            r.fetchone = MagicMock(return_value=(mem_a_id, mem_b_id, ws_id))
+        elif "DISTINCT ON (user_id)" in s:
+            # Primary contributor lookup: memory A -> user_a, memory B -> user_b
+            primary_calls["n"] += 1
+            row = MagicMock()
+            row.user_id = uuid.UUID(user_a if primary_calls["n"] == 1 else user_b)
+            r.first = MagicMock(return_value=row)
+        else:
+            r.fetchone = MagicMock(return_value=None)
+            r.first = MagicMock(return_value=None)
+        return r
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=execute_side_effect)
+    session.add = MagicMock(side_effect=added.append)
+    session.flush = AsyncMock()
+
+    # Minimal OpenAI stub: the embedder calls client.embeddings.create(...)
+    vector = [0.05] * 3072
+    fake_client = MagicMock()
+    fake_client.embeddings = MagicMock()
+    fake_client.embeddings.create = AsyncMock(
+        return_value=MagicMock(data=[MagicMock(embedding=vector)])
+    )
+
+    # The embedder caches vectors in Redis. Simulate a cold cache so it falls
+    # through to the (stubbed) API call rather than erroring.
+    fake_redis = AsyncMock()
+    fake_redis.get = AsyncMock(return_value=None)
+    fake_redis.setex = AsyncMock()
+
+    with patch(
+        "sourcemind.services.ingestion.embedder.get_redis", return_value=fake_redis
+    ):
+        ok = await resolve_conflict(
+            session=session,
+            conflict_id=uuid.uuid4(),
+            resolver_id=uuid.uuid4(),
+            resolution_type="merged",
+            merged_content="The service runs in both us-east-1 and eu-west-1.",
+            openai_client=fake_client,
+        )
+
+    assert ok is True
+
+    # 1. The merged memory exists and carries a real embedding
+    memories = [o for o in added if isinstance(o, Memory)]
+    assert len(memories) == 1, "exactly one merged memory should be created"
+    merged = memories[0]
+    assert merged.embedding is not None, (
+        "merged memory has no embedding — it would be invisible to semantic search"
+    )
+    assert len(merged.embedding) == 3072
+    assert merged.current_version is True
+
+    # 2. Attribution split 50/50 between both sources' primary contributors
+    attribution_stmts = [(s, p) for s, p in statements if "INSERT INTO attributions" in s]
+    assert len(attribution_stmts) == 2, (
+        f"expected one attribution row per contributor, got {len(attribution_stmts)}"
+    )
+    assert all(p["w"] == 0.5 for _, p in attribution_stmts), "weights must be 50/50"
+    assert {p["uid"] for _, p in attribution_stmts} == {user_a, user_b}
+    assert all("'merged'" in s for s, _ in attribution_stmts)
+
+    # 3. Provenance: a `derives` relation from each source to the merged memory
+    relation_stmts = [(s, p) for s, p in statements if "INSERT INTO memory_relations" in s]
+    assert len(relation_stmts) == 2, "expected a derives relation to each source"
+    assert all("'derives'" in s for s, _ in relation_stmts)
+    assert {p["src"] for _, p in relation_stmts} == {mem_a_id, mem_b_id}
+
+    # 4. Both sources superseded via the existing versioning flag
+    supersede = [
+        (s, p) for s, p in statements
+        if "UPDATE memories SET current_version = FALSE" in s
+    ]
+    assert supersede, "source memories were not superseded"
+    params = supersede[-1][1]
+    assert {params["a"], params["b"]} == {mem_a_id, mem_b_id}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_merged_shared_contributor_gets_full_weight_once():
+    """When both sources share a primary contributor, weights still sum to 1.0.
+
+    Two 0.5 rows for the same person would be wrong: they authored the whole
+    thing, and duplicate rows would distort every downstream weight query.
+    """
+    from sourcemind.services.conflict.resolver import resolve_conflict
+
+    mem_a_id, mem_b_id = str(uuid.uuid4()), str(uuid.uuid4())
+    ws_id = str(uuid.UUID("00000000-0000-4000-8000-000000000010"))
+    same_user = uuid.uuid4()
+    statements: list[tuple[str, dict]] = []
+
+    async def execute_side_effect(stmt, params=None, **kwargs):
+        s = str(stmt)
+        statements.append((s, params or {}))
+        r = MagicMock()
+        if "SELECT memory_a_id" in s:
+            r.fetchone = MagicMock(return_value=(mem_a_id, mem_b_id, ws_id))
+        elif "DISTINCT ON (user_id)" in s:
+            row = MagicMock()
+            row.user_id = same_user
+            r.first = MagicMock(return_value=row)
+        else:
+            r.fetchone = MagicMock(return_value=None)
+            r.first = MagicMock(return_value=None)
+        return r
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=execute_side_effect)
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+
+    await resolve_conflict(
+        session=session,
+        conflict_id=uuid.uuid4(),
+        resolver_id=uuid.uuid4(),
+        resolution_type="merged",
+        merged_content="Single-author merge.",
+        openai_client=None,  # no client: embedding skipped, must not crash
+    )
+
+    rows = [(s, p) for s, p in statements if "INSERT INTO attributions" in s]
+    assert len(rows) == 1, "a shared contributor should get one row, not two"
+    assert rows[0][1]["w"] == 1.0
+    assert rows[0][1]["uid"] == str(same_user)

@@ -17,7 +17,13 @@ import structlog
 from fastapi import APIRouter, Query, status
 from sqlalchemy import text
 
-from sourcemind.core.dependencies import AnthropicClient, CurrentUser, DBSession, RequestID
+from sourcemind.core.dependencies import (
+    AnthropicClient,
+    CurrentUser,
+    DBSession,
+    OpenAIClient,
+    RequestID,
+)
 from sourcemind.schemas.conflict import (
     ConflictDetail,
     ConflictListResponse,
@@ -169,6 +175,7 @@ async def resolve_conflict_endpoint(
     db: DBSession,
     current_user: CurrentUser,
     request_id: RequestID,
+    openai_client: OpenAIClient,
 ) -> ConflictResolveResponse:
     """Apply a resolution decision to a conflict."""
     from sourcemind.services.conflict.resolver import resolve_conflict
@@ -183,6 +190,8 @@ async def resolve_conflict_endpoint(
         revisit_at=body.revisit_at,
         tag_a=body.tag_a,
         tag_b=body.tag_b,
+        # Required so a 'merged' resolution produces a searchable memory.
+        openai_client=openai_client,
     )
 
     if not ok:
