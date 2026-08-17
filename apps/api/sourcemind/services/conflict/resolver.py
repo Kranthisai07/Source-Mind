@@ -322,16 +322,26 @@ async def _create_merged_memory(
         )
 
     # ── 3. Provenance: derives relations to both sources ─────────────────
-    for source_id in (memory_a_id, memory_b_id):
+    # DIRECTION IS CANONICAL — see RelationType.DERIVES:
+    #   "derives — source was logically derived from target"
+    # so source_memory_id is the DERIVED memory and target_memory_id is what
+    # it came from. services/memory/relations.py writes the same way: it sets
+    # source_memory_id to the new memory and target_memory_id to the existing
+    # candidate it was inferred from.
+    #
+    # The merged memory is the derived one, so it is the source and each
+    # original is a target. Reversing this would make the graph inconsistent
+    # for anything traversing derives edges.
+    for original_id in (memory_a_id, memory_b_id):
         await session.execute(
             text(
                 "INSERT INTO memory_relations "
                 "(source_memory_id, target_memory_id, relation_type, detected_by) "
-                "VALUES (CAST(:src AS uuid), CAST(:tgt AS uuid), 'derives', "
+                "VALUES (CAST(:derived AS uuid), CAST(:origin AS uuid), 'derives', "
                 "'conflict_resolution') "
                 "ON CONFLICT DO NOTHING"
             ),
-            {"src": str(source_id), "tgt": str(merged.id)},
+            {"derived": str(merged.id), "origin": str(original_id)},
         )
 
     # ── 4. Supersede both sources ────────────────────────────────────────

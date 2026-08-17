@@ -358,11 +358,14 @@ async def test_merged_memory_is_embedded_attributed_and_linked():
     assert {p["uid"] for _, p in attribution_stmts} == {user_a, user_b}
     assert all("'merged'" in s for s, _ in attribution_stmts)
 
-    # 3. Provenance: a `derives` relation from each source to the merged memory
+    # 3. Provenance: a `derives` edge from the merged memory to each original.
+    #    Direction follows RelationType.DERIVES — "source was logically derived
+    #    from target" — so the merged memory is the source and each original is
+    #    a target. See tests/unit/test_relation_direction.py.
     relation_stmts = [(s, p) for s, p in statements if "INSERT INTO memory_relations" in s]
     assert len(relation_stmts) == 2, "expected a derives relation to each source"
     assert all("'derives'" in s for s, _ in relation_stmts)
-    assert {p["src"] for _, p in relation_stmts} == {mem_a_id, mem_b_id}
+    assert {p["origin"] for _, p in relation_stmts} == {mem_a_id, mem_b_id}
 
     # 4. Both sources superseded via the existing versioning flag
     supersede = [
