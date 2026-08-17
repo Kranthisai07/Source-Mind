@@ -94,11 +94,6 @@ RUN playwright install --with-deps chromium \
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
 
-# TEMPORARY: diagnostics run before migrations by railway.json's startCommand.
-# Remove these lines together with the scripts.
-COPY debug_db_connect.py ./
-COPY debug_alembic_connect.py ./
-
 # Security: own files as root, run as non-root
 RUN chown -R sourcemind:sourcemind /app
 USER sourcemind
@@ -108,7 +103,12 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV ENVIRONMENT=production
 
-EXPOSE 8000
+# Deliberately no EXPOSE. The server binds whatever $PORT the platform
+# injects, so a hardcoded value here is not merely redundant — it is a
+# wrong hint. Platforms use EXPOSE to infer the target port, and an
+# EXPOSE 8000 against an app listening on an injected 8080 routed the
+# edge to a dead port: the healthcheck passed internally while every
+# public request returned 502.
 
 # Production: run Alembic migrations then start server
 # In Kubernetes: migrations run as an init container, not here

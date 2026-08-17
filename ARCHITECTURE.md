@@ -499,20 +499,81 @@ django.
 
 ## 13. Deployment
 
-Railway builds `apps/api/Dockerfile` targeting the `production` stage.
+**Two services** are deployed from this one repository, both building
+`apps/api/Dockerfile` at the `production` target with root directory
+`apps/api`. Each names its own config file, because an auto-detected
+`railway.json` would apply to both — and the worker would inherit the API's
+`healthcheckPath`, which it can never satisfy.
+
+| Service | Config file | Public domain | Healthcheck |
+|---------|-------------|---------------|-------------|
+| API | `apps/api/railway.api.json` | yes | `/health` |
+| Worker | `apps/api/railway.worker.json` | no | none |
+
+**API start command:**
+```sh
+sh -c 'alembic upgrade head && exec uvicorn sourcemind.main:app \
+    --host 0.0.0.0 --port ${PORT:-8000} --workers 1'
+```
+
+**Worker start command:**
+```sh
+sh -c 'celery -A sourcemind.workers.celery_app worker --loglevel=info \
+    -Q default,ingestion,connectors --concurrency=2'
+```
+
+**Dockerfile CMD** (used only when no config file applies):
+```dockerfile
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn sourcemind.main:app \
+    --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --no-access-log"]
+```
+
+### `sh -c` is mandatory, not stylistic
+
+Railway tokenizes `startCommand` and execs it **without a shell**, so
+`${PORT:-8000}` is passed through literally and uvicorn exits immediately:
 
 ```
-alembic upgrade head && uvicorn sourcemind.main:app --host 0.0.0.0 \
-    --port ${PORT:-8000} --workers 2 --no-access-log
+Error: Invalid value for '--port': '${PORT:-8000}' is not a valid integer.
 ```
 
-Known gaps:
+That failure is nearly invisible — alembic still succeeds, uvicorn never
+prints a banner, and the healthcheck simply reports the service as
+unavailable for its whole window. Wrapping in `sh -c` supplies the shell
+that performs the expansion. The Dockerfile `CMD` uses the
+`["sh", "-c", ...]` form for the same reason; converting it to exec form
+reintroduces the bug.
 
-- **No worker service is defined.** Without one, ingestion jobs enqueue and
-  never run. It needs a second service running the Celery command from §2.
+### No EXPOSE in the production stage
+
+The server binds whatever `$PORT` the platform injects, so a hardcoded
+`EXPOSE` is a *wrong* hint rather than a redundant one. Platforms use it to
+infer the target port: `EXPOSE 8000` against an app listening on an injected
+8080 routed the edge to a dead port, so the healthcheck passed internally
+while every public request returned 502.
+
+### Environment variables
+
+Nothing from `.env` reaches the container — the Dockerfile never copies it.
+Every variable must be set in the platform dashboard, and **the API and
+worker services need identical values**, particularly `DATABASE_URL` and
+`REDIS_URL`. If they diverge, the API enqueues to one broker while the
+worker consumes from another: jobs sit at `queued` forever with no error,
+and the worker looks healthy and idle. Prefer reference variables
+(`${{Postgres.DATABASE_URL}}`) so the two cannot drift.
+
+`ENVIRONMENT=production` additionally requires `SENTRY_DSN` or the app
+refuses to boot. `staging` behaves identically to production in every other
+respect — auth enforced, docs hidden, tracebacks suppressed — and skips only
+that check.
+
+### Remaining gaps
+
 - Each uvicorn worker opens its own pool (20 + 10 overflow); check the total
-  against the database connection limit.
-- The Docker `HEALTHCHECK` hardcodes port 8000 while `CMD` binds `$PORT`.
+  against the database connection limit before raising `--workers`.
+- The Docker `HEALTHCHECK` hardcodes port 8000 while the server binds
+  `$PORT`. Railway uses `healthcheckPath` instead, so this is inert there,
+  but it is wrong for any runtime that honours `HEALTHCHECK`.
 - Playwright Chromium is installed in the production image with
   `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` so the non-root user can read it.
   The development stage has no browsers, so URL ingestion fails there.

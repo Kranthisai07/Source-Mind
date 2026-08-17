@@ -5,7 +5,7 @@
     "dockerBuildTarget": "production"
   },
   "deploy": {
-    "startCommand": "sh -c 'echo PORT=$PORT; alembic upgrade head && exec uvicorn sourcemind.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1'",
+    "startCommand": "sh -c 'alembic upgrade head && exec uvicorn sourcemind.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1'",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",
