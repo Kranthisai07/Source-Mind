@@ -1,0 +1,53 @@
+# CI for the API. The workflows directory existed but was empty, so nothing
+# has ever run automatically — every check in this repository has been manual.
+#
+# The SQL guard is called out explicitly because that bug class has already
+# reached production once and cannot be caught by the unit suite: a mocked
+# session never parses the SQL.
+
+name: API CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.12 matches the production image. Local development runs 3.14, where
+      # tree-sitter-languages has no wheels — see the marker in pyproject.toml.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check sourcemind/
+
+      # No database needed: this is a static AST check.
+      - name: Raw SQL bind parameters are consistently typed
+        run: python scripts/check_sql_params.py
+
+      # An empty wheel still exits 0, so assert the package has real contents.
+      - name: Installed package contains real modules
+        run: python scripts/check_wheel.py
+
+      - name: Tests
+        # The end-to-end test needs a live database and a running Celery
+        # worker, so it is excluded here and run manually against a deployed
+        # environment.
+        run: pytest -q -k "not e2e_pipeline"
