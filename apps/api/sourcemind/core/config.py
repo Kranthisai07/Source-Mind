@@ -9,7 +9,7 @@ from enum import StrEnum
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -65,6 +65,30 @@ class Settings(BaseSettings):
     database_url: Annotated[str, Field(repr=False)] = Field(
         default="postgresql+asyncpg://sourcemind:sourcemind@localhost:5432/sourcemind"
     )
+
+    @field_validator("database_url", mode="after")
+    @classmethod
+    def _normalise_database_driver(cls, value: str) -> str:
+        """Force the async driver on a bare postgresql:// URL.
+
+        Platforms that provision Postgres inject a driver-less
+        `postgresql://...` URL. SQLAlchemy then defaults to psycopg2, and
+        every create_async_engine() call fails with:
+
+            InvalidRequestError: The asyncio extension requires an async
+            driver to be used. The loaded 'psycopg2' is not async.
+
+        Three modules build engines from this value — core/database.py,
+        workers/ingestion.py and workers/connector_tasks.py — so normalising
+        here fixes all of them at once. Doing it in only one of them is what
+        let the API start cleanly while every Celery task died.
+
+        alembic/env.py still rewrites +asyncpg to +psycopg2 for migrations,
+        which continues to work because the scheme is now always explicit.
+        """
+        if value.startswith("postgresql://"):
+            return value.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return value
     database_pool_size: int = 20
     database_max_overflow: int = 10
     database_pool_timeout: int = 30
