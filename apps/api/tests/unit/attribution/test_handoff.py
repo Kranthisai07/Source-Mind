@@ -247,3 +247,125 @@ async def test_departed_user_name_preserved_in_history():
     # Only workspace_members and handoff_records should be updated
     attribution_updates = [c for c in update_calls if "attributions" in c.lower()]
     assert len(attribution_updates) == 0, "Attribution records were modified"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GAP 3 — _find_successor must actually use vector search
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_successor_found_by_similarity_with_no_relation_edges():
+    """A memory with zero memory_relations must still get a suggestion.
+
+    This was the whole bug: the docstring promised semantic search, the code
+    only ever ran the relation query, and relations are written only when
+    Claude classifies a pair above threshold during ingestion. So the common
+    case — a memory with no edges but an obviously related neighbour in vector
+    space — produced no successor at all.
+    """
+    from sourcemind.services.attribution.handoff import _find_successor
+
+    memory_id = str(uuid.uuid4())
+    departing = str(uuid.uuid4())
+    candidate = str(uuid.uuid4())
+    executed: list[str] = []
+
+    async def execute_side_effect(stmt, params=None, **kwargs):
+        s = str(stmt)
+        executed.append(s)
+        r = MagicMock()
+        if "embedding <=>" in s:
+            # Semantic path finds a strong candidate.
+            r.fetchone = MagicMock(return_value=(candidate, "Nadia Okonkwo", 1.42, 0.82))
+        else:
+            # Relation path would find nothing — no edges exist.
+            r.fetchone = MagicMock(return_value=None)
+        return r
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=execute_side_effect)
+
+    result = await _find_successor(session, memory_id, departing)
+
+    assert result is not None, "no successor suggested despite a similar memory"
+    assert result["user_id"] == candidate
+    assert result["name"] == "Nadia Okonkwo"
+    assert result["method"] == "semantic"
+    assert 0.0 <= result["confidence"] <= 1.0
+    assert any("embedding <=>" in s for s in executed), (
+        "vector search was never attempted"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_falls_back_to_relations_when_nothing_is_similar():
+    """With no semantic neighbour, the original relation ranking still runs."""
+    from sourcemind.services.attribution.handoff import _find_successor
+
+    candidate = str(uuid.uuid4())
+    used_relation_query = {"yes": False}
+
+    async def execute_side_effect(stmt, params=None, **kwargs):
+        s = str(stmt)
+        r = MagicMock()
+        if "embedding <=>" in s:
+            r.fetchone = MagicMock(return_value=None)
+        else:
+            used_relation_query["yes"] = True
+            r.fetchone = MagicMock(return_value=(candidate, "Tomas Lindqvist", 0.73))
+        return r
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=execute_side_effect)
+
+    result = await _find_successor(session, str(uuid.uuid4()), str(uuid.uuid4()))
+
+    assert used_relation_query["yes"], "fallback query never ran"
+    assert result is not None
+    assert result["method"] == "relations"
+    assert result["confidence"] == 0.73
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_returns_none_when_neither_strategy_finds_anyone():
+    from sourcemind.services.attribution.handoff import _find_successor
+
+    session = AsyncMock()
+    r = MagicMock()
+    r.fetchone = MagicMock(return_value=None)
+    session.execute = AsyncMock(return_value=r)
+
+    assert await _find_successor(session, str(uuid.uuid4()), str(uuid.uuid4())) is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_similarity_query_uses_the_documented_threshold_and_excludes_departing():
+    """The declared constant must be the value actually sent to the query.
+
+    _SEMANTIC_SIMILARITY was previously declared and never referenced.
+    """
+    from sourcemind.services.attribution import handoff
+
+    captured: dict = {}
+
+    async def execute_side_effect(stmt, params=None, **kwargs):
+        if "embedding <=>" in str(stmt):
+            captured.update(params or {})
+        r = MagicMock()
+        r.fetchone = MagicMock(return_value=None)
+        return r
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=execute_side_effect)
+    departing = str(uuid.uuid4())
+
+    await handoff._find_successor(session, str(uuid.uuid4()), departing)
+
+    assert captured.get("max_dist") == handoff._SEMANTIC_SIMILARITY
+    assert captured.get("dep_uid") == departing, (
+        "the departing user must be excluded from their own succession"
+    )

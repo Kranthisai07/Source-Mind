@@ -203,6 +203,166 @@ async def mark_under_review(
     return result.fetchone() is not None
 
 
+async def _primary_contributor(
+    session: AsyncSession, memory_id: uuid.UUID
+) -> uuid.UUID | None:
+    """Return the user with the highest current attribution weight on a memory.
+
+    `attributions` is append-only, so a user accumulates one row per
+    recomputation. DISTINCT ON picks each user's most recent row before
+    ranking, otherwise a stale high weight could outrank a current low one.
+    """
+    row = (
+        await session.execute(
+            text(
+                "SELECT user_id FROM ("
+                "  SELECT DISTINCT ON (user_id) user_id, contribution_weight"
+                "  FROM attributions WHERE memory_id = CAST(:mid AS uuid)"
+                "  ORDER BY user_id, created_at DESC"
+                ") latest ORDER BY contribution_weight DESC LIMIT 1"
+            ),
+            {"mid": str(memory_id)},
+        )
+    ).first()
+    return row.user_id if row else None
+
+
+async def _create_merged_memory(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    memory_a_id: uuid.UUID,
+    memory_b_id: uuid.UUID,
+    merged_content: str,
+    openai_client: object | None = None,
+) -> uuid.UUID:
+    """Create the memory produced by a 'merged' resolution.
+
+    This previously inserted a bare row with no embedding, no attribution and
+    no link to its sources, under a comment claiming a separate process
+    handled attribution. No such process existed, so merged memories were
+    invisible to semantic search and had no provenance at all.
+
+    A merged memory is a real memory and gets the same treatment as any other:
+
+      1. An embedding, so it is reachable by semantic search.
+      2. Attribution split 50/50 between the primary contributor of each
+         source memory, recorded with trigger_action='merged'.
+      3. `derives` relations back to both sources, so provenance survives.
+      4. Both sources marked current_version=False — the same supersession
+         flag versioning already uses, rather than a second mechanism.
+    """
+    import hashlib
+
+    from sourcemind.models.memory import Memory
+
+    # ── 1. Embedding ─────────────────────────────────────────────────────
+    embedding: list[float] | None = None
+    if openai_client is not None:
+        from sourcemind.services.ingestion.embedder import EmbeddingService
+
+        try:
+            results = await EmbeddingService(openai_client).embed([merged_content])
+            if results:
+                embedding = results[0].embedding
+        except Exception as exc:
+            # Do not fail the resolution over the embedding: the conflict is
+            # still resolved and the merge is still correct. Log loudly —
+            # a NULL embedding means the memory is invisible to semantic
+            # search, which is exactly the silent degradation this fix exists
+            # to remove.
+            log.error(
+                "merged_memory_embedding_failed",
+                memory_a=str(memory_a_id),
+                memory_b=str(memory_b_id),
+                error=str(exc),
+            )
+    else:
+        log.warning(
+            "merged_memory_no_embedding_client",
+            reason="openai_client not supplied; merged memory will not be searchable",
+        )
+
+    merged = Memory(
+        workspace_id=workspace_id,
+        content=merged_content,
+        content_hash=hashlib.sha256(merged_content.encode()).hexdigest(),
+        embedding=embedding,
+        version=1,
+        current_version=True,
+    )
+    session.add(merged)
+    await session.flush()
+
+    # ── 2. Attribution: 50/50 to each source's primary contributor ───────
+    contributors: list[uuid.UUID] = []
+    for source_id in (memory_a_id, memory_b_id):
+        primary = await _primary_contributor(session, source_id)
+        if primary is not None:
+            contributors.append(primary)
+
+    if contributors:
+        # If both sources share a primary contributor, they receive the whole
+        # weight once rather than two half rows for the same person.
+        unique = list(dict.fromkeys(contributors))
+        weight = 1.0 / len(unique)
+        for user_id in unique:
+            await session.execute(
+                text(
+                    "INSERT INTO attributions "
+                    "(memory_id, user_id, contribution_weight, trigger_action) "
+                    "VALUES (CAST(:mid AS uuid), CAST(:uid AS uuid), :w, 'merged')"
+                ),
+                {"mid": str(merged.id), "uid": str(user_id), "w": weight},
+            )
+    else:
+        log.warning(
+            "merged_memory_no_attribution",
+            reason="neither source memory had attribution records",
+            memory_id=str(merged.id),
+        )
+
+    # ── 3. Provenance: derives relations to both sources ─────────────────
+    # DIRECTION IS CANONICAL — see RelationType.DERIVES:
+    #   "derives — source was logically derived from target"
+    # so source_memory_id is the DERIVED memory and target_memory_id is what
+    # it came from. services/memory/relations.py writes the same way: it sets
+    # source_memory_id to the new memory and target_memory_id to the existing
+    # candidate it was inferred from.
+    #
+    # The merged memory is the derived one, so it is the source and each
+    # original is a target. Reversing this would make the graph inconsistent
+    # for anything traversing derives edges.
+    for original_id in (memory_a_id, memory_b_id):
+        await session.execute(
+            text(
+                "INSERT INTO memory_relations "
+                "(source_memory_id, target_memory_id, relation_type, detected_by) "
+                "VALUES (CAST(:derived AS uuid), CAST(:origin AS uuid), 'derives', "
+                "'conflict_resolution') "
+                "ON CONFLICT DO NOTHING"
+            ),
+            {"derived": str(merged.id), "origin": str(original_id)},
+        )
+
+    # ── 4. Supersede both sources ────────────────────────────────────────
+    await session.execute(
+        text(
+            "UPDATE memories SET current_version = FALSE "
+            "WHERE id = ANY(ARRAY[CAST(:a AS uuid), CAST(:b AS uuid)])"
+        ),
+        {"a": str(memory_a_id), "b": str(memory_b_id)},
+    )
+    await session.flush()
+
+    log.info(
+        "merged_memory_created",
+        memory_id=str(merged.id),
+        contributors=len(contributors),
+        has_embedding=embedding is not None,
+    )
+    return merged.id
+
+
 async def resolve_conflict(
     session: AsyncSession,
     conflict_id: uuid.UUID,
@@ -213,6 +373,7 @@ async def resolve_conflict(
     revisit_at: datetime | None = None,
     tag_a: str | None = None,
     tag_b: str | None = None,
+    openai_client: object | None = None,
 ) -> bool:
     """
     Apply a resolution decision to a conflict.
@@ -250,23 +411,14 @@ async def resolve_conflict(
     elif resolution_type == "merged":
         if not merged_content:
             raise ValueError("merged_content required for resolution_type='merged'")
-        # Deprecate both
-        await session.execute(
-            text("UPDATE memories SET current_version = FALSE WHERE id = ANY(ARRAY[CAST(:a AS uuid), CAST(:b AS uuid)])"),
-            {"a": mem_a_id, "b": mem_b_id},
-        )
-        # Create merged memory — 50/50 attribution handled by separate process
-        from sourcemind.models.memory import Memory
-        import hashlib
-        merged = Memory(
+        await _create_merged_memory(
+            session,
             workspace_id=uuid.UUID(ws_id),
-            content=merged_content,
-            content_hash=hashlib.sha256(merged_content.encode()).hexdigest(),
-            version=1,
-            current_version=True,
+            memory_a_id=uuid.UUID(mem_a_id),
+            memory_b_id=uuid.UUID(mem_b_id),
+            merged_content=merged_content,
+            openai_client=openai_client,
         )
-        session.add(merged)
-        await session.flush()
         new_status = "resolved"
 
     elif resolution_type == "split":

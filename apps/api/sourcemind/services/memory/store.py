@@ -37,7 +37,32 @@ async def store_memories(
     Each memory is version=1, current_version=True.
     Flushes after each insert to get the generated UUID.
     Returns all created Memory objects.
+
+    Args:
+        source_metadata: Carried through the pipeline from the ingestion
+            request. Recognised keys:
+              tags     — list[str], applied to every memory from this document
+              category — str, one of decision/process/definition/fact/question
+
+    `source_metadata` was previously accepted and ignored, so every memory was
+    stored with tags=NULL and category=NULL. That silently disabled three
+    downstream features: the importance scorer's category signal always fell
+    back to its 0.5 neutral default, the high_conflict_area knowledge-gap
+    detector groups by unnest(tags) and so could never fire, and tag-based
+    search filters had nothing to match.
     """
+    tags = source_metadata.get("tags") or None
+    category = source_metadata.get("category") or None
+
+    # Guard the shapes: these arrive from JSONB and a bad type would fail at
+    # INSERT with a confusing driver error rather than here.
+    if tags is not None and not isinstance(tags, list):
+        log.warning("store_memories_ignoring_bad_tags", got=type(tags).__name__)
+        tags = None
+    if category is not None and not isinstance(category, str):
+        log.warning("store_memories_ignoring_bad_category", got=type(category).__name__)
+        category = None
+
     memories: list[Memory] = []
 
     for i, result in enumerate(embedding_results):
@@ -53,6 +78,8 @@ async def store_memories(
             current_version=True,
             source_chunk_index=i,
             confidence_score=0.9,
+            tags=tags,
+            category=category,
         )
         session.add(memory)
         memories.append(memory)

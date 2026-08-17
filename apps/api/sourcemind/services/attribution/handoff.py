@@ -168,9 +168,115 @@ async def _find_successor(
     Find the most qualified successor for a memory.
 
     Strategy:
-      1. Find memories semantically similar to this one (dist < 0.3)
-      2. Find contributors to those memories (excluding departing user)
-      3. Rank by contribution_weight DESC, then recency
+      1. Semantic search — contributors to memories within
+         _SEMANTIC_SIMILARITY cosine distance of this one.
+      2. Fallback — contributors to memories joined by an explicit
+         memory_relations edge.
+
+    Step 1 was documented but never implemented: the function only ever ran
+    the relation-based query, so a memory with no memory_relations edges got
+    no suggestion at all, even with an obviously related memory sitting beside
+    it in vector space. Since relations are only written when Claude
+    classifies a pair above threshold during ingestion, that was the common
+    case rather than the exception.
+    """
+    successor = await _find_successor_by_similarity(
+        session, memory_id, departing_user_id
+    )
+    if successor is not None:
+        return successor
+    return await _find_successor_by_relations(session, memory_id, departing_user_id)
+
+
+async def _find_successor_by_similarity(
+    session: AsyncSession,
+    memory_id: str,
+    departing_user_id: str,
+) -> dict[str, Any] | None:
+    """Rank candidates by semantic proximity weighted by their contribution.
+
+    Uses the same pgvector cosine operator and filters as
+    services/memory/relations.py, so "similar" means the same thing in both
+    places.
+
+    Candidates are scored SUM((1 - dist) * contribution_weight): a strong
+    contributor to a moderately similar memory can outrank a marginal
+    contributor to a very similar one, which is the behaviour you want when
+    choosing who inherits ownership.
+
+    `attributions` is append-only, so DISTINCT ON picks each user's most
+    recent weight per memory before aggregating — otherwise a superseded
+    weight would be counted alongside the current one.
+    """
+    result = await session.execute(
+        text("""
+            WITH src AS (
+                SELECT embedding, workspace_id
+                FROM memories
+                WHERE id = CAST(:mid AS uuid)
+                  AND embedding IS NOT NULL
+            ),
+            neighbours AS (
+                SELECT m.id,
+                       (m.embedding <=> (SELECT embedding FROM src)) AS dist
+                FROM memories m, src
+                WHERE m.workspace_id = src.workspace_id
+                  AND m.current_version = TRUE
+                  AND m.deleted_at IS NULL
+                  AND m.embedding IS NOT NULL
+                  AND m.id != CAST(:mid AS uuid)
+                  AND (m.embedding <=> (SELECT embedding FROM src)) < :max_dist
+                ORDER BY dist
+                LIMIT 20
+            ),
+            latest AS (
+                SELECT DISTINCT ON (a.memory_id, a.user_id)
+                       a.memory_id, a.user_id, a.contribution_weight
+                FROM attributions a
+                JOIN neighbours n ON n.id = a.memory_id
+                ORDER BY a.memory_id, a.user_id, a.created_at DESC
+            )
+            SELECT l.user_id::text,
+                   COALESCE(u.display_name, u.email) AS name,
+                   SUM((1 - n.dist) * l.contribution_weight) AS score,
+                   AVG(1 - n.dist) AS avg_similarity
+            FROM latest l
+            JOIN neighbours n ON n.id = l.memory_id
+            JOIN users u ON u.id = l.user_id
+            WHERE l.user_id != CAST(:dep_uid AS uuid)
+            GROUP BY l.user_id, u.display_name, u.email
+            ORDER BY score DESC
+            LIMIT 1
+        """),
+        {
+            "mid": memory_id,
+            "dep_uid": departing_user_id,
+            "max_dist": _SEMANTIC_SIMILARITY,
+        },
+    )
+    row = result.fetchone()
+    if not row:
+        return None
+    user_id, name, _score, avg_similarity = row
+    # Report similarity rather than the raw score: the score is unbounded
+    # (it sums across neighbours) and would not read as a confidence.
+    return {
+        "user_id": user_id,
+        "name": name,
+        "confidence": round(min(float(avg_similarity), 1.0), 4),
+        "method": "semantic",
+    }
+
+
+async def _find_successor_by_relations(
+    session: AsyncSession,
+    memory_id: str,
+    departing_user_id: str,
+) -> dict[str, Any] | None:
+    """Fallback: rank contributors to memories joined by an explicit relation.
+
+    Used when the memory has no embedding, or when nothing sits within the
+    similarity threshold.
     """
     result = await session.execute(
         text("""
@@ -183,10 +289,10 @@ async def _find_successor(
                 m2.id = mr.source_memory_id OR m2.id = mr.target_memory_id
             )
             JOIN attributions a ON a.memory_id = m2.id
-                AND a.user_id::text != :dep_uid
+                AND a.user_id != CAST(:dep_uid AS uuid)
             JOIN users u ON u.id = a.user_id
             WHERE (mr.source_memory_id = CAST(:mid AS uuid) OR mr.target_memory_id = CAST(:mid AS uuid))
-              AND m2.id::text != :mid
+              AND m2.id != CAST(:mid AS uuid)
               AND m2.current_version = TRUE
               AND m2.deleted_at IS NULL
             GROUP BY a.user_id, u.display_name, u.email
@@ -199,7 +305,12 @@ async def _find_successor(
     if not row:
         return None
     user_id, name, avg_weight = row
-    return {"user_id": user_id, "name": name, "confidence": float(avg_weight)}
+    return {
+        "user_id": user_id,
+        "name": name,
+        "confidence": float(avg_weight),
+        "method": "relations",
+    }
 
 
 async def assign_memory(

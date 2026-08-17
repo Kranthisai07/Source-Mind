@@ -45,6 +45,7 @@ async def receive(
     url: str | None = None,
     source_type: str = DocumentSourceType.TEXT,
     title: str | None = None,
+    tags: list[str] | None = None,
     idempotency_key: str,
 ) -> dict[str, Any]:
     """
@@ -129,6 +130,10 @@ async def receive(
             "raw_content": content,
             "idempotency_key": idempotency_key,
             "current_stage": "queued",
+            # Carried to store_memories via the worker. Tags supplied on
+            # the ingest request used to be dropped here, so every memory
+            # was stored with tags=NULL.
+            "tags": tags or [],
         },
     )
     session.add(doc)
