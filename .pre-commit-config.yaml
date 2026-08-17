@@ -1,0 +1,44 @@
+# Pre-commit hooks for SourceMind.
+#
+# Install once:
+#     pip install pre-commit
+#     pre-commit install
+#
+# Run against everything:
+#     pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^apps/api/
+      - id: ruff-format
+        files: ^apps/api/
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-merge-conflict
+      # A private key was committed to a working tree during development.
+      # This blocks it reaching a commit.
+      - id: detect-private-key
+
+  - repo: local
+    hooks:
+      # Catches the asyncpg one-type-per-placeholder bug that broke
+      # _find_successor: the same bind parameter used as CAST(:p AS uuid)
+      # in one clause and compared against ::text in another. Postgres
+      # rejects the statement at plan time; mocked tests never see it.
+      - id: sql-param-types
+        name: raw SQL bind parameters are consistently typed
+        entry: apps/api/.venv/Scripts/python.exe apps/api/scripts/check_sql_params.py
+        language: system
+        pass_filenames: false
+        files: ^apps/api/sourcemind/.*\.py$
