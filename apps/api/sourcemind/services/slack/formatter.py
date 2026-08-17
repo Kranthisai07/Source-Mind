@@ -37,8 +37,13 @@ def _strip_md(text: str) -> str:
     text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-    text = re.sub(r"\*\*([^*]+)\*\*", r"*\1*", text)   # bold → Slack bold
-    text = re.sub(r"\*([^*]+)\*", r"_\1_", text)        # italic → Slack italic
+    # Bold must be parked behind a sentinel first. Rewriting **bold** to
+    # *bold* and then applying the italic rule turns it straight into _bold_,
+    # so every bold span silently rendered as italic in Slack.
+    _BOLD = "\x00BOLD\x00"
+    text = re.sub(r"\*\*([^*]+)\*\*", rf"{_BOLD}\1{_BOLD}", text)  # bold → sentinel
+    text = re.sub(r"\*([^*]+)\*", r"_\1_", text)                    # italic → Slack italic
+    text = text.replace(_BOLD, "*")                                 # sentinel → Slack bold
     text = re.sub(r"~~([^~]+)~~", r"~\1~", text)        # strike stays
     text = re.sub(r"^[-*+]\s+", "• ", text, flags=re.MULTILINE)
     text = re.sub(r"^\d+\.\s+", "• ", text, flags=re.MULTILINE)
