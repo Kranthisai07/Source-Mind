@@ -80,9 +80,14 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
     fact_extractor = FactExtractor(anthropic_client)
     relation_detector = RelationDetector(anthropic_client)
 
-    # Create a dedicated engine for this Celery worker process
+    # Dedicated engine for this Celery worker process. Must use
+    # settings.async_database_url, not settings.database_url: deriving the URL
+    # inline here is exactly how this module ended up without the bare
+    # postgresql:// normalisation, failing every task with
+    # "The asyncio extension requires an async driver" while the API stayed
+    # healthy.
     engine = create_async_engine(
-        settings.database_url,
+        settings.async_database_url,
         pool_pre_ping=True,
         pool_size=2,
         max_overflow=0,

@@ -89,6 +89,48 @@ class Settings(BaseSettings):
         if value.startswith("postgresql://"):
             return value.replace("postgresql://", "postgresql+asyncpg://", 1)
         return value
+
+    # ── Derived database URLs ─────────────────────────────────────
+    # Every engine in the codebase must build its URL from one of these
+    # three properties. Four modules used to derive it inline with slightly
+    # different rules, and the two worker modules were missed when the
+    # bare-postgresql:// normalisation was added — the API looked perfectly
+    # healthy while every background task died. Duplication is what caused
+    # that, so the logic lives here once.
+
+    @property
+    def async_database_url(self) -> str:
+        """URL for create_async_engine(). asyncpg driver, no ssl query param.
+
+        asyncpg rejects `?ssl=require` as a query parameter; SSL is passed
+        through connect_args instead.
+        """
+        return (
+            self.database_url
+            .replace("?ssl=require", "")
+            .replace("&ssl=require", "")
+        )
+
+    @property
+    def sync_database_url(self) -> str:
+        """URL for synchronous create_engine() — Alembic migrations."""
+        return (
+            self.async_database_url
+            .replace("postgresql+asyncpg://", "postgresql+psycopg2://")
+        )
+
+    @property
+    def requires_ssl(self) -> bool:
+        """Whether the connection needs TLS.
+
+        Railway's private network does not terminate TLS, so requiring SSL
+        against a *.railway.internal host fails with "server does not support
+        SSL". Everything else — public proxies, Supabase — does require it.
+        """
+        return (
+            "ssl=require" in self.database_url
+            or ".railway.internal" not in self.database_url
+        )
     database_pool_size: int = 20
     database_max_overflow: int = 10
     database_pool_timeout: int = 30
@@ -170,6 +212,15 @@ class Settings(BaseSettings):
                 raise ValueError("ANTHROPIC_API_KEY is required in production")
             if not self.clerk_secret_key:
                 raise ValueError("CLERK_SECRET_KEY is required in production")
+            # The publishable key is not optional despite the name: the JWKS
+            # URL used to verify every token is derived from it. Unset, no
+            # request can authenticate, and the only symptom is a confusing
+            # 401 from the JWKS endpoint on every call. Fail at boot instead.
+            if not self.clerk_publishable_key:
+                raise ValueError(
+                    "CLERK_PUBLISHABLE_KEY is required in production — the "
+                    "Clerk JWKS URL for token verification is derived from it"
+                )
             if not self.sentry_dsn:
                 raise ValueError("SENTRY_DSN is required in production")
         return self

@@ -23,7 +23,7 @@ from sourcemind.core.dependencies import (
     _verify_clerk_token,
     AuthenticatedUser,
 )
-from sourcemind.core.exceptions import UnauthorizedError
+from sourcemind.core.exceptions import InternalError, UnauthorizedError
 
 
 # ── _clerk_jwks_url ──────────────────────────────────────────────────────────
@@ -44,13 +44,20 @@ class TestClerkJwksUrl:
         url = _clerk_jwks_url(key)
         assert url == f"https://{host}/.well-known/jwks.json"
 
-    def test_falls_back_on_garbage_input(self):
-        url = _clerk_jwks_url("not_a_valid_key")
-        assert url == "https://api.clerk.com/v1/jwks"
+    # These two previously asserted a fallback to https://api.clerk.com/v1/jwks.
+    # That fallback was the bug, not the safety net: the endpoint requires
+    # authentication, the JWKS fetch sends none, so it answers 401 forever and
+    # every token verification fails. Encoding it here is why an unset
+    # CLERK_PUBLISHABLE_KEY reached production and surfaced only as a
+    # confusing 401 on every request. The function now fails loudly.
 
-    def test_falls_back_on_empty_string(self):
-        url = _clerk_jwks_url("")
-        assert url == "https://api.clerk.com/v1/jwks"
+    def test_raises_on_garbage_input(self):
+        with pytest.raises(InternalError, match="CLERK_PUBLISHABLE_KEY"):
+            _clerk_jwks_url("not_a_valid_key")
+
+    def test_raises_on_empty_string(self):
+        with pytest.raises(InternalError, match="CLERK_PUBLISHABLE_KEY"):
+            _clerk_jwks_url("")
 
 
 # ── _fetch_jwks ──────────────────────────────────────────────────────────────

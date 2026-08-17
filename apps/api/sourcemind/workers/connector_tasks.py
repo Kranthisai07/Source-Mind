@@ -91,7 +91,7 @@ async def _run_sync(
     # globals behind get_engine()/get_redis() are unset. Build a dedicated
     # engine and initialise Redis for this task, mirroring workers/ingestion.py.
     engine = create_async_engine(
-        settings.database_url,
+        settings.async_database_url,
         pool_pre_ping=True,
         pool_size=2,
         max_overflow=0,
