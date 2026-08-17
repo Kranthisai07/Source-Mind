@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sourcemind.core.database import get_db_session
 from sourcemind.core.exceptions import (
+    InternalError,
     InvalidIdempotencyKeyError,
     UnauthorizedError,
     WorkspaceAccessDeniedError,
@@ -152,11 +153,29 @@ def _clerk_jwks_url(publishable_key: str) -> str:
 
     Publishable key format: pk_test_<base64(frontend_api_host + '$')>
     The frontend API host is the Clerk instance URL.
+
+    Raises:
+        InternalError: if the key is missing or unparseable.
+
+    There is deliberately no fallback. The previous fallback returned
+    https://api.clerk.com/v1/jwks, which is an authenticated endpoint: the
+    JWKS fetch sends no credentials, so it always answers 401 and every token
+    verification fails. In production that surfaced only as a confusing
+    "Token verification error: 401 for url .../jwks" on every request, hours
+    after the real mistake — an unset CLERK_PUBLISHABLE_KEY. A fallback that
+    can never succeed is worse than no fallback, so this fails loudly and
+    names the variable to fix.
     """
+    if not publishable_key:
+        raise InternalError(
+            "CLERK_PUBLISHABLE_KEY is not set. It is required to derive the "
+            "Clerk JWKS URL used to verify tokens; without it no request can "
+            "authenticate."
+        )
     try:
         parts = publishable_key.split("_", 2)
         if len(parts) < 3 or not parts[2]:
-            return "https://api.clerk.com/v1/jwks"
+            raise ValueError(f"malformed publishable key: {publishable_key[:12]!r}")
         b64 = parts[2]
         # Pad base64 to multiple of 4
         padding = 4 - len(b64) % 4
@@ -164,10 +183,14 @@ def _clerk_jwks_url(publishable_key: str) -> str:
             b64 += "=" * padding
         host = base64.b64decode(b64).decode().rstrip("$")
         if not host:
-            return "https://api.clerk.com/v1/jwks"
+            raise ValueError("publishable key decoded to an empty host")
         return f"https://{host}/.well-known/jwks.json"
-    except Exception:
-        return "https://api.clerk.com/v1/jwks"
+    except InternalError:
+        raise
+    except Exception as exc:
+        raise InternalError(
+            f"CLERK_PUBLISHABLE_KEY could not be parsed into a JWKS URL: {exc}"
+        ) from exc
 
 
 async def _fetch_jwks(jwks_url: str) -> list[dict]:

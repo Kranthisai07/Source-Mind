@@ -63,10 +63,20 @@ CMD ["uvicorn", "sourcemind.main:app", "--host", "0.0.0.0", "--port", "8000", "-
 # ── Stage 4: Production build ─────────────────────────────────
 FROM base AS production
 
-# Build inputs must land before the install. hatchling's wheel target is
-# packages = ["sourcemind"]; if that directory is absent the build still
-# SUCCEEDS but emits an empty wheel containing zero package files, which
-# would silently break a non-editable `pip install "."`.
+# ORDER IS LOAD-BEARING — do not move the install above these COPYs.
+#
+# hatchling's wheel target is packages = ["sourcemind"]. If that directory is
+# absent when `pip install` runs, the build does NOT fail: it emits a valid
+# 1.5 KB wheel containing zero package files, and exits 0. Nothing in the
+# build output indicates a problem.
+#
+# This shipped. It was survivable only because the source is also copied
+# below and PYTHONPATH=/app makes imports resolve from the filesystem;
+# switching to a non-editable `pip install "."` would produce an image that
+# installs nothing and dies at `import sourcemind`.
+#
+# Guarded by scripts/check_wheel.py, which asserts the installed package
+# contains real modules. Run it in CI after building.
 COPY pyproject.toml ./
 COPY sourcemind/ ./sourcemind/
 

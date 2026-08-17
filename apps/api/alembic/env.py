@@ -7,6 +7,7 @@ Database URL is loaded from environment — never hardcoded.
 """
 
 from logging.config import fileConfig
+from typing import Any
 
 from alembic import context
 from sqlalchemy import create_engine, pool
@@ -84,18 +85,11 @@ def run_migrations_online() -> None:
     """Run migrations against a live database using synchronous psycopg2 driver."""
     # Swap asyncpg → psycopg2 for the migration runner only.
     # The app still uses asyncpg at runtime.
-    # Railway's private network does not terminate TLS, so requiring SSL there
-    # fails with "server does not support SSL". Public proxies and Supabase do.
-    original_url = settings.database_url
-    needs_ssl = (
-        "ssl=require" in original_url or ".railway.internal" not in original_url
-    )
-
-    url = (
-        original_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://")
-        .replace("?ssl=require", "")
-        .replace("&ssl=require", "")
-    )
+    # URL and SSL decision both come from Settings — never derived inline.
+    # Four modules used to each derive this themselves, which is how the
+    # worker modules ended up missing a fix the API had.
+    url = settings.sync_database_url
+    needs_ssl = settings.requires_ssl
 
     # connect_timeout is essential, not optional. Without it psycopg2 inherits
     # the OS default (~127s of TCP SYN retries on Linux, or indefinite if the
@@ -103,7 +97,7 @@ def run_migrations_online() -> None:
     # succeeds — so an unreachable database looks like a totally silent hang.
     # A container healthcheck will kill the process long before the OS timeout
     # fires, leaving no diagnostic trace at all.
-    connect_args = {"connect_timeout": 10}
+    connect_args: dict[str, Any] = {"connect_timeout": 10}
     if needs_ssl:
         connect_args["sslmode"] = "require"
 
