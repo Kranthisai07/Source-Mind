@@ -397,6 +397,12 @@ async def assign_memory(
     from sourcemind.services.memory.importance import recompute_importance
     await recompute_importance(session, memory_id)
 
+    # importance_score feeds conflict severity, so rescore any conflict
+    # touching this memory or severity silently goes stale behind it.
+    from sourcemind.services.conflict.severity import recompute_severity_for_memory
+
+    await recompute_severity_for_memory(session, memory_id)
+
     # Return updated attribution breakdown
     updated_result = await session.execute(
         text("""

@@ -12,7 +12,7 @@ from pydantic import BaseModel
 # sourcemind.models.memory_conflict (ConflictStatus, ConflictType, ConflictSeverity).
 ConflictStatusLiteral = Literal["open", "under_review", "resolved", "deferred", "dismissed"]
 ConflictTypeLiteral = Literal["contradiction", "duplication", "ambiguity"]
-ConflictSeverityLiteral = Literal["low", "medium", "high"]
+ConflictSeverityLiteral = Literal["low", "medium", "critical"]
 ResolutionTypeLiteral = Literal["kept_a", "kept_b", "merged", "split", "deferred"]
 
 

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -30,7 +30,7 @@ class ConflictSeverity(StrEnum):
 
     LOW = "low"
     MEDIUM = "medium"
-    HIGH = "high"
+    CRITICAL = "critical"
 
 
 class ConflictStatus(StrEnum):
@@ -93,8 +93,23 @@ class MemoryConflict(Base, TimestampMixin):
     severity: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
-        server_default="'medium'",
-        comment="ConflictSeverity enum value",
+        server_default="'low'",
+        comment="ConflictSeverity enum value; computed by compute_conflict_severity()",
+    )
+    competing_claim_count: Mapped[int] = mapped_column(
+        Integer(),
+        nullable=False,
+        server_default="2",
+        comment=(
+            "Distinct memories disputing the same memory, counted across all "
+            "of its conflict rows. A pairwise conflict alone is 2."
+        ),
+    )
+    blocks_derivation: Mapped[bool] = mapped_column(
+        Boolean(),
+        nullable=False,
+        server_default="false",
+        comment="True only while severity='critical' and the conflict is unresolved",
     )
     status: Mapped[str] = mapped_column(
         String(50),

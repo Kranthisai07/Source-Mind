@@ -148,6 +148,8 @@ async def _maybe_create_conflict(
             memory_a_id=cand_id,
             memory_b_id=new_memory.id,
             conflict_type=ConflictType.CONTRADICTION,
+            # Placeholder only — overwritten by compute_conflict_severity()
+            # below, once the row exists and can be scored.
             severity=ConflictSeverity.MEDIUM,
             status=ConflictStatus.OPEN,
             similarity_score=1.0 - distance,
@@ -155,6 +157,12 @@ async def _maybe_create_conflict(
         )
         session.add(conflict)
         await session.flush()
+
+        # Score it now that the row exists. Severity is derived, so the
+        # placeholder above must never survive past creation.
+        from sourcemind.services.conflict.severity import compute_conflict_severity
+
+        await compute_conflict_severity(session, conflict.id)
 
         log.info(
             "conflict_detected",
@@ -300,3 +308,9 @@ async def detect_relations(
     from sourcemind.services.memory.importance import recompute_importance
     for memory in new_memories:
         await recompute_importance(session, memory.id)
+
+        # importance_score feeds conflict severity, so rescore any conflict
+        # touching this memory or severity silently goes stale behind it.
+        from sourcemind.services.conflict.severity import recompute_severity_for_memory
+
+        await recompute_severity_for_memory(session, memory.id)
