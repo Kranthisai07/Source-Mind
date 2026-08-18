@@ -465,7 +465,11 @@ async def resolve_conflict(
             SET status = :status,
                 resolver_id = CAST(:rid AS uuid),
                 resolved_at = NOW(),
-                resolution_note = :note
+                resolution_note = :note,
+                -- A settled conflict never blocks, whatever severity it
+                -- carried. Severity itself is left intact as a record of how
+                -- serious it was when it mattered.
+                blocks_derivation = FALSE
             WHERE id = CAST(:cid AS uuid)
         """),
         {
@@ -480,6 +484,14 @@ async def resolve_conflict(
     from sourcemind.services.memory.importance import recompute_importance
     await recompute_importance(session, uuid.UUID(mem_a_id))
     await recompute_importance(session, uuid.UUID(mem_b_id))
+
+    # Resolving this conflict removes it from the competing-claim count, and
+    # importance has just changed too, so any REMAINING conflict on either
+    # memory may now score differently.
+    from sourcemind.services.conflict.severity import recompute_severity_for_memory
+
+    await recompute_severity_for_memory(session, uuid.UUID(mem_a_id))
+    await recompute_severity_for_memory(session, uuid.UUID(mem_b_id))
 
     log.info(
         "conflict_resolved",

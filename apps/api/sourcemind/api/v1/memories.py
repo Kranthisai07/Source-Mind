@@ -259,6 +259,12 @@ async def update_memory(
 
     await recompute_importance(session=db, memory_id=new_mem.id)
 
+    # importance_score feeds conflict severity, so rescore any conflict
+    # touching this memory or severity silently goes stale behind it.
+    from sourcemind.services.conflict.severity import recompute_severity_for_memory
+
+    await recompute_severity_for_memory(db, new_mem.id)
+
     await db.commit()
 
     mem_resp = MemoryResponse(
