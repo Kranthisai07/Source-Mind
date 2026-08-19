@@ -177,8 +177,37 @@ async def resolve_conflict_endpoint(
     request_id: RequestID,
     openai_client: OpenAIClient,
 ) -> ConflictResolveResponse:
-    """Apply a resolution decision to a conflict."""
+    """Apply a resolution decision to a conflict.
+
+    Requires owner or admin on the workspace the conflict belongs to.
+    Resolving retires memories and can create a merged one, so it is the only
+    conflict action that is gated — listing, viewing detail and marking a
+    conflict under review stay open to any workspace member.
+    """
+    from sourcemind.core.dependencies import require_workspace_role
+    from sourcemind.models.workspace import WorkspaceRole
     from sourcemind.services.conflict.resolver import resolve_conflict
+
+    workspace_id = (
+        await db.execute(
+            text(
+                "SELECT workspace_id FROM memory_conflicts "
+                "WHERE id = CAST(:cid AS uuid)"
+            ),
+            {"cid": str(conflict_id)},
+        )
+    ).scalar()
+    if workspace_id is None:
+        from sourcemind.core.exceptions import SourceMindError
+
+        raise SourceMindError(f"Conflict {conflict_id} not found.", code="SM040")
+
+    await require_workspace_role(
+        db,
+        current_user.user_id,
+        workspace_id,
+        {WorkspaceRole.OWNER.value, WorkspaceRole.ADMIN.value},
+    )
 
     ok = await resolve_conflict(
         session=db,

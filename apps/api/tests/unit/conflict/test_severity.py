@@ -5,7 +5,9 @@ effect it has is blocks_derivation, and even that only marks a conflict as
 blocking — a human still resolves it (ADR-008, AI advisory-only).
 
 Ladder:
-    critical  importance > 0.7 AND claims >= 3
+    critical  importance > 0.7
+              (claim count is a secondary signal only — it can lift low to
+               medium, but is never required for critical)
     medium    importance > 0.4 OR  claims >= 2
     low       everything else
 """
@@ -69,6 +71,25 @@ def test_severity_critical_high_importance_many_claims():
 
 
 @pytest.mark.unit
+def test_severity_critical_two_claims_high_importance():
+    """Two people disagreeing about an important decision is critical.
+
+    This was unreachable before: critical demanded three competing claims,
+    and an 'updates' verdict retires the disputed memory so it can never
+    collect a third through ingestion. It is the ordinary case, not an edge.
+    """
+    assert classify_severity(0.75, 2) == "critical"
+    assert classify_severity(0.71, 2) == "critical"
+
+
+@pytest.mark.unit
+def test_claim_count_is_never_required_for_critical():
+    """A single claim on a high-importance memory is still critical."""
+    assert classify_severity(0.9, 1) == "critical"
+    assert classify_severity(0.9, 0) == "critical"
+
+
+@pytest.mark.unit
 def test_severity_medium_moderate_importance():
     """Importance alone can reach medium, regardless of claim count."""
     assert classify_severity(0.5, 1) == "medium"
@@ -93,9 +114,9 @@ def test_severity_low_default_case():
 @pytest.mark.parametrize(
     "importance,claims,expected",
     [
-        (0.7, 3, "medium"),    # boundary is strict >, not >=
-        (0.71, 2, "medium"),   # high importance but too few claims
-        (0.9, 2, "medium"),    # AND requires both clauses
+        (0.7, 3, "medium"),     # boundary is strict >, not >=
+        (0.71, 2, "critical"),  # importance alone is now sufficient
+        (0.9, 2, "critical"),   # claim count is not a requirement
         (0.4, 2, "medium"),    # claims carry it
         (0.4, 1, "low"),       # neither clause met
     ],
@@ -126,7 +147,7 @@ async def test_computed_severity_is_written_back_with_the_claim_count():
 async def test_blocks_derivation_true_only_for_critical():
     cases = [
         (0.9, 2, "critical", True),
-        (0.9, 1, "medium", False),
+        (0.9, 1, "critical", True),   # one rival, high importance
         (0.5, 0, "medium", False),
         (0.1, 0, "low", False),
     ]

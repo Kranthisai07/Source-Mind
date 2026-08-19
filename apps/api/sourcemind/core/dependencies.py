@@ -15,7 +15,7 @@ import httpx
 import structlog
 from fastapi import Depends, Header, Query, Request
 from jose import JWTError, jwt
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sourcemind.core.database import get_db_session
@@ -371,3 +371,47 @@ def get_request_id(request: Request) -> str:
 
 
 RequestID = Annotated[str, Depends(get_request_id)]
+
+
+# ─── Workspace role authorization ─────────────────────────────────────────────
+
+async def require_workspace_role(
+    session: AsyncSession,
+    user_id: UUID,
+    workspace_id: UUID,
+    allowed_roles: set[str],
+) -> str:
+    """Assert the user holds one of `allowed_roles` in the workspace.
+
+    Returns the user's role, or raises WorkspaceAccessDeniedError (SM005, 403)
+    if they are not a member or hold an insufficient role.
+
+    This is the first role gate in the codebase. No prior pattern existed to
+    reuse: workspaces.py queries WorkspaceMember.role to FIND the owner rather
+    than to authorize, and AuthenticatedUser.workspace_role is declared but
+    never assigned, so it is always None. It is defined here, beside the other
+    auth dependencies, so later gates have something to follow rather than
+    each inventing its own.
+    """
+    row = (
+        await session.execute(
+            text(
+                "SELECT role FROM workspace_members "
+                "WHERE workspace_id = CAST(:ws AS uuid) "
+                "  AND user_id = CAST(:uid AS uuid)"
+            ),
+            {"ws": str(workspace_id), "uid": str(user_id)},
+        )
+    ).first()
+
+    if row is None:
+        raise WorkspaceAccessDeniedError(
+            "You are not a member of this workspace."
+        )
+    role = row.role
+    if role not in allowed_roles:
+        raise WorkspaceAccessDeniedError(
+            f"This action requires one of: {', '.join(sorted(allowed_roles))}. "
+            f"Your role is '{role}'."
+        )
+    return role

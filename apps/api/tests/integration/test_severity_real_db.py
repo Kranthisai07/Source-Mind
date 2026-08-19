@@ -116,18 +116,23 @@ async def test_critical_requires_high_importance_and_three_claims(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_high_importance_with_a_single_rival_is_only_medium(
+async def test_high_importance_with_a_single_rival_is_critical(
     db_session, test_workspace
 ):
-    """The critical clause is AND, not OR — importance alone is not enough."""
+    """Importance alone decides critical — one rival is enough.
+
+    This previously asserted the opposite, because critical demanded three
+    competing claims. Two people disagreeing about a 0.95-importance memory
+    is the ordinary case and is critical on its own.
+    """
     disputed = await _memory(db_session, test_workspace.id, importance=0.95)
     rival = await _memory(db_session, test_workspace.id, importance=0.1)
     conflict_id = await _conflict(db_session, test_workspace.id, disputed, rival)
 
-    assert await compute_conflict_severity(db_session, conflict_id) == "medium"
+    assert await compute_conflict_severity(db_session, conflict_id) == "critical"
     row = await _read(db_session, conflict_id)
     assert row.competing_claim_count == 2
-    assert row.blocks_derivation is False
+    assert row.blocks_derivation is True
 
 
 @pytest.mark.integration
@@ -137,10 +142,11 @@ async def test_resolved_conflicts_are_excluded_from_the_claim_count(
 ):
     """A settled disagreement is no longer a competing claim.
 
-    Same shape as the critical case, but one rival conflict is resolved, so
-    the count drops to 2 and severity falls back to medium.
+    Importance is deliberately low so the stored claim count is what this
+    test observes: with the new ladder a high-importance conflict is critical
+    regardless of how many rivals it has, which would mask the drop.
     """
-    disputed = await _memory(db_session, test_workspace.id, importance=0.85)
+    disputed = await _memory(db_session, test_workspace.id, importance=0.20)
     rival_one = await _memory(db_session, test_workspace.id, importance=0.3)
     rival_two = await _memory(db_session, test_workspace.id, importance=0.3)
 

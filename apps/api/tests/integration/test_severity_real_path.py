@@ -258,14 +258,19 @@ async def _extra_conflict(session, workspace_id, memory_a, memory_b):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_cluster_rescore_lifts_an_existing_conflict_to_critical(
+async def test_cluster_rescore_updates_the_stored_claim_count(
     db_session, test_workspace
 ):
     """A third claim must rescore the conflict created earlier.
 
-    The first conflict comes through the real detect() path and scores medium.
-    A second conflict on the same memory takes the count to 3, which must lift
-    the FIRST one to critical rather than leaving it at its creation score.
+    Under the corrected ladder severity is decided by importance alone, so a
+    new claim no longer changes the TIER of an existing conflict — every
+    unresolved conflict already has a claim count of at least 2. What must
+    still be refreshed is the stored competing_claim_count, which is the
+    signal the tier used to depend on and is surfaced to reviewers.
+
+    Importance is kept low so the count is observable rather than masked by a
+    critical tier.
     """
     from sourcemind.services.conflict.severity import recompute_severity_for_memory
 
@@ -274,7 +279,7 @@ async def test_cluster_rescore_lifts_an_existing_conflict_to_critical(
     author_c = await _user(db_session)
 
     disputed = await _memory_with_author(
-        db_session, test_workspace.id, author_a, seed=0.09, importance=0.95
+        db_session, test_workspace.id, author_a, seed=0.09, importance=0.20
     )
     rival_one = await _memory_with_author(
         db_session, test_workspace.id, author_b, seed=0.09, importance=0.20
@@ -287,7 +292,8 @@ async def test_cluster_rescore_lifts_an_existing_conflict_to_critical(
     )
 
     first = (await _conflicts_for(db_session, disputed))[0]
-    assert first.severity == "medium", "one rival is not yet critical"
+    assert first.severity == "medium", "low importance, so medium"
+    assert first.competing_claim_count == 2
     assert first.blocks_derivation is False
 
     rival_two = await _memory_with_author(
@@ -299,11 +305,12 @@ async def test_cluster_rescore_lifts_an_existing_conflict_to_critical(
     await recompute_severity_for_memory(db_session, disputed)
 
     rows = {r.id: r for r in await _conflicts_for(db_session, disputed)}
-    assert rows[first.id].severity == "critical", (
+    assert rows[first.id].competing_claim_count == 3, (
         "the existing conflict was not rescored when a third claim appeared"
     )
-    assert rows[first.id].competing_claim_count == 3
-    assert rows[first.id].blocks_derivation is True
+    assert rows[first.id].severity == "medium", (
+        "importance is unchanged, so the tier should not move"
+    )
 
 
 @pytest.mark.integration

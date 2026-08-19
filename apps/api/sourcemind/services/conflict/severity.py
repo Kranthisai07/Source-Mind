@@ -8,9 +8,16 @@ Severity is DERIVED, never stored by hand. It combines two live inputs:
 
 Ladder (ADR — conflict severity):
 
-    critical  importance_score > 0.7 AND competing_claim_count >= 3
-    medium    importance_score > 0.4 OR  competing_claim_count >= 2
+    critical  importance_score > 0.7
+    medium    importance_score > 0.4 OR competing_claim_count >= 2
     low       everything else
+
+Claim count is a secondary signal only: it can lift something from low to
+medium, but it is never a REQUIREMENT for critical. Critical previously also
+demanded three competing claims, which made it unreachable for the ordinary
+case — two people disagreeing about an important decision — and, given that
+an 'updates' verdict retires the disputed memory, very nearly unreachable
+through ingestion at all.
 
 NO AUTO-RESOLUTION AT ANY SEVERITY, EVER. Severity ranks attention; it never
 decides an outcome. `blocks_derivation` is the strongest effect available and
@@ -39,7 +46,6 @@ log = structlog.get_logger(__name__)
 
 # Thresholds
 _CRITICAL_IMPORTANCE = 0.7
-_CRITICAL_CLAIMS = 3
 _MEDIUM_IMPORTANCE = 0.4
 _MEDIUM_CLAIMS = 2
 
@@ -50,10 +56,10 @@ SEVERITY_LOW = "low"
 
 def classify_severity(importance_score: float, competing_claim_count: int) -> str:
     """Pure severity ladder. Separated so the thresholds are testable alone."""
-    if (
-        importance_score > _CRITICAL_IMPORTANCE
-        and competing_claim_count >= _CRITICAL_CLAIMS
-    ):
+    # Importance alone decides critical. Two people disagreeing about a
+    # high-importance decision is already critical; requiring a third claim
+    # only delayed the signal.
+    if importance_score > _CRITICAL_IMPORTANCE:
         return SEVERITY_CRITICAL
     if (
         importance_score > _MEDIUM_IMPORTANCE
