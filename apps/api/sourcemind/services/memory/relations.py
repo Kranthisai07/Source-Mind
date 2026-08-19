@@ -95,6 +95,8 @@ async def _maybe_create_conflict(
     cand_id: uuid.UUID,
     cand_content: str,
     distance: float,
+    relation_type: str | None = None,
+    confidence: float | None = None,
 ) -> None:
     """
     Check whether two similar memories from different contributors form a conflict.
@@ -137,8 +139,12 @@ async def _maybe_create_conflict(
     if existing.fetchone():
         return  # Already related
 
-    # LLM contradiction check
-    relation_type, confidence, _ = await _classify_relation(client, cand_content, new_memory.content)
+    # LLM contradiction check. detect() has usually classified this pair
+    # already; reuse that rather than paying for a second identical call.
+    if relation_type is None or confidence is None:
+        relation_type, confidence, _ = await _classify_relation(
+            client, cand_content, new_memory.content
+        )
     if relation_type != "updates" or confidence < _MIN_CONFIDENCE:
         return
 
@@ -158,11 +164,17 @@ async def _maybe_create_conflict(
         session.add(conflict)
         await session.flush()
 
-        # Score it now that the row exists. Severity is derived, so the
-        # placeholder above must never survive past creation.
-        from sourcemind.services.conflict.severity import compute_conflict_severity
+        # Score the whole cluster, not just this row. Adding a conflict raises
+        # the competing-claim count for the disputed memory, which changes the
+        # severity of every OTHER unresolved conflict already on it — a second
+        # rival can tip an existing conflict from medium to critical. Scoring
+        # only the new row would leave those stale.
+        #
+        # recompute_severity_for_memory covers the new conflict too, since it
+        # rescores every unresolved conflict touching cand_id.
+        from sourcemind.services.conflict.severity import recompute_severity_for_memory
 
-        await compute_conflict_severity(session, conflict.id)
+        await recompute_severity_for_memory(session, cand_id)
 
         log.info(
             "conflict_detected",
@@ -243,6 +255,32 @@ class RelationDetector:
                         self._client, cand_content, memory.content
                     )
 
+                    # Conflict check runs BEFORE the relation write.
+                    #
+                    # _maybe_create_conflict skips any pair that is already
+                    # related, which is meant to catch pairs related in an
+                    # EARLIER run. Writing the relation first made that guard
+                    # fire on the edge written moments earlier in this same
+                    # loop, so a conflict could only ever be created when the
+                    # relation insert happened to fail. Since _CONFLICT_RADIUS
+                    # (0.15) is inside _LLM_RADIUS (0.20), every conflict
+                    # candidate took that path — conflict detection was
+                    # unreachable on the real ingestion path.
+                    #
+                    # The classification is passed through so the pair is not
+                    # sent to the model a second time.
+                    if distance <= _CONFLICT_RADIUS:
+                        await _maybe_create_conflict(
+                            session,
+                            self._client,
+                            memory,
+                            cand_id,
+                            cand_content,
+                            distance,
+                            relation_type=relation_type,
+                            confidence=confidence,
+                        )
+
                     if relation_type != "unrelated" and confidence >= _MIN_CONFIDENCE:
                         # Savepoint isolates the duplicate-edge case so we don't
                         # roll back unrelated rows already flushed in this transaction.
@@ -281,36 +319,27 @@ class RelationDetector:
                             # Duplicate edge (UniqueConstraint) — savepoint already rolled back.
                             log.debug("relation_insert_skipped", error=str(exc))
 
-                if distance <= _CONFLICT_RADIUS:
-                    await _maybe_create_conflict(session, self._client, memory, cand_id, cand_content, distance)
 
         await session.flush()
 
-
-# ── Backward-compatible module-level function ─────────────────────────────────
-
-async def detect_relations(
-    session: AsyncSession,
-    new_memories: list[Memory],
-    workspace_id: uuid.UUID,
-    anthropic_client: object | None = None,
-) -> None:
-    """Module-level wrapper. Celery task uses this; pass client explicitly for testability."""
-    if anthropic_client is None:
-        from anthropic import AsyncAnthropic
-        from sourcemind.core.config import get_settings
-        settings = get_settings()
-        anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-
-    await RelationDetector(anthropic_client).detect(session, new_memories, workspace_id)
-
-    # Recompute importance for all newly-related memories
-    from sourcemind.services.memory.importance import recompute_importance
-    for memory in new_memories:
-        await recompute_importance(session, memory.id)
-
-        # importance_score feeds conflict severity, so rescore any conflict
-        # touching this memory or severity silently goes stale behind it.
+        # Post-processing lives HERE, not in a wrapper.
+        #
+        # Relations and conflicts have just been written, which changes both
+        # inbound-relation counts (an importance_score input) and the number
+        # of competing claims (a severity input). Both must be refreshed
+        # before this returns.
+        #
+        # This used to sit in the module-level detect_relations() wrapper,
+        # whose docstring claimed the Celery task used it. It did not —
+        # workers/ingestion.py calls detect() directly — so on the real
+        # ingestion path importance stayed at the 0.5 column default and
+        # every conflict scored 'medium' from that placeholder forever.
+        # Keeping it inside detect() means no caller can bypass it.
         from sourcemind.services.conflict.severity import recompute_severity_for_memory
+        from sourcemind.services.memory.importance import recompute_importance
 
-        await recompute_severity_for_memory(session, memory.id)
+        for memory in new_memories:
+            # Order matters: severity reads importance_score, so refresh it
+            # first or severity is computed from the stale value.
+            await recompute_importance(session, memory.id)
+            await recompute_severity_for_memory(session, memory.id)
