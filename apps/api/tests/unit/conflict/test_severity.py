@@ -2,7 +2,7 @@
 
 Severity ranks attention; it must never decide an outcome. The strongest
 effect it has is blocks_derivation, and even that only marks a conflict as
-blocking — a human still resolves it (ADR-008, AI advisory-only).
+blocking — a human still resolves it (ADR-010, no AI ranking).
 
 Ladder:
     critical  importance > 0.7

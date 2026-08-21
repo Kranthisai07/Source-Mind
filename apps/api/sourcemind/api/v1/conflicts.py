@@ -2,7 +2,7 @@
 Conflict resolution endpoints.
 
 GET  /v1/workspaces/:id/conflicts           — list workspace conflicts
-GET  /v1/conflicts/:id                      — full conflict detail + AI suggestion
+GET  /v1/conflicts/:id                      — full conflict detail
 POST /v1/conflicts/:id/review               — open → under_review
 POST /v1/conflicts/:id/resolve              — apply resolution decision
 """
@@ -18,7 +18,6 @@ from fastapi import APIRouter, Query, status
 from sqlalchemy import text
 
 from sourcemind.core.dependencies import (
-    AnthropicClient,
     CurrentUser,
     DBSession,
     OpenAIClient,
@@ -107,15 +106,13 @@ async def get_conflict(
     db: DBSession,
     current_user: CurrentUser,
     request_id: RequestID,
-    anthropic_client: AnthropicClient,
 ) -> ConflictDetail:
-    """
-    Full conflict detail including both memory contents, attribution, and AI suggestion.
-    If no AI suggestion exists, one is generated and stored.
+    """Full conflict detail: both memory contents and the neutral
+    detection-time summary. No AI recommendation is produced (ADR-010).
     """
     from sourcemind.services.conflict.resolver import get_conflict_detail
 
-    detail = await get_conflict_detail(db, conflict_id, anthropic_client)
+    detail = await get_conflict_detail(db, conflict_id)
     if not detail:
         from sourcemind.core.exceptions import SourceMindError
         raise SourceMindError(f"Conflict {conflict_id} not found.", code="SM040")
@@ -130,7 +127,6 @@ async def get_conflict(
         explanation=detail.explanation,
         memory_a=MemoryRef(id=detail.memory_a_id, content=detail.memory_a_content),
         memory_b=MemoryRef(id=detail.memory_b_id, content=detail.memory_b_content),
-        suggested_resolution=detail.suggested_resolution,
         reviewed_by=detail.reviewed_by,
         reviewed_at=detail.reviewed_at,
         revisit_at=detail.revisit_at,

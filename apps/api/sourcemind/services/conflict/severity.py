@@ -21,8 +21,8 @@ through ingestion at all.
 
 NO AUTO-RESOLUTION AT ANY SEVERITY, EVER. Severity ranks attention; it never
 decides an outcome. `blocks_derivation` is the strongest effect available and
-only marks a conflict as blocking — a human still resolves it. See ADR-008 on
-AI being advisory-only for conflicts.
+only marks a conflict as blocking — a human still resolves it. See ADR-010:
+no model output ranks the two claims, at detection or at resolution.
 
 WHY competing_claim_count IS DERIVED
 ------------------------------------

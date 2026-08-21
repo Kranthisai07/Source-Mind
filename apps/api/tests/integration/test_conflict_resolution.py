@@ -12,34 +12,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
-def _make_mock_conflict(
-    conflict_id: uuid.UUID,
-    memory_a_id: uuid.UUID,
-    memory_b_id: uuid.UUID,
-    status: str = "open",
-):
-    """Build a mock conflict row as returned by SQLAlchemy execute."""
-    row = MagicMock()
-    row.__getitem__ = MagicMock(side_effect=lambda i: [
-        str(conflict_id),   # 0: id
-        status,             # 1: status
-        "contradiction",    # 2: conflict_type
-        "high",             # 3: severity
-        0.92,               # 4: similarity_score
-        "Contradictory facts detected.",  # 5: explanation
-        str(memory_a_id),  # 6: memory_a_id
-        "Memory A content.", # 7: content_a
-        str(memory_b_id),  # 8: memory_b_id
-        "Memory B content.", # 9: content_b
-        None,               # 10: suggested_resolution
-        None,               # 11: reviewed_by
-        None,               # 12: reviewed_at
-        None,               # 13: revisit_at
-        datetime.now(timezone.utc),  # 14: created_at
-    ][i])
-    return row
-
-
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_full_conflict_lifecycle():

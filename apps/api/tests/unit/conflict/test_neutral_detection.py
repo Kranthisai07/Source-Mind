@@ -13,6 +13,10 @@ TWO KINDS OF CONFIDENCE, only one acceptable:
 
 The prompts are the surface under test here, because that is where the
 instruction to rank either exists or does not.
+
+Phase 2.5 went further and deleted the resolution-time advisory outright
+(ADR-010, superseding ADR-008). OLD_ADVISORY_PROMPT below is retained as
+a fixture: it is what the checks must still be able to catch.
 """
 
 from __future__ import annotations
@@ -22,7 +26,8 @@ import re
 
 import pytest
 
-from sourcemind.services.conflict.resolver import _SUGGESTION_PROMPT
+from sourcemind.schemas.conflict import ConflictDetail
+from sourcemind.services.conflict import resolver
 from sourcemind.services.memory import relations
 
 # Phrases that ask the model to rank, prefer, or decide between the two claims.
@@ -133,9 +138,26 @@ def test_conflict_prompt_contains_no_winner_language():
 
 
 @pytest.mark.unit
-def test_advisory_prompt_contains_no_winner_language():
-    hits = _found(_SUGGESTION_PROMPT)
-    assert not hits, f"winner-implying framing in the advisory prompt: {hits}"
+def test_the_resolver_generates_no_ai_suggestion_at_all():
+    """ADR-010: the advisory mechanism is removed, not reworded.
+
+    Phase 2 made the advisory prompt neutral, which was not enough. Any
+    model-written text on the resolution screen reads as a lead to the
+    owner or admin who is the only one able to act on it, so the check
+    is for absence of the machinery rather than for its wording.
+    """
+    source = inspect.getsource(resolver)
+    assert "_SUGGESTION_PROMPT" not in source
+    assert "_generate_suggestion" not in source
+
+    # No model client can be handed to the read path.
+    params = inspect.signature(resolver.get_conflict_detail).parameters
+    assert "anthropic_client" not in params, (
+        "get_conflict_detail must not accept a model client"
+    )
+
+    # And the field it populated is off the wire.
+    assert "suggested_resolution" not in ConflictDetail.model_fields
 
 
 @pytest.mark.unit
@@ -150,9 +172,9 @@ def test_conflict_response_schema_has_no_ranking_field():
         "winner",
         "recommended",
     ]
-    for prompt in (inspect.getsource(relations._classify_relation), _SUGGESTION_PROMPT):
-        for field in banned_fields:
-            assert field not in prompt, f"ranking field {field!r} in response schema"
+    prompt = inspect.getsource(relations._classify_relation)
+    for field in banned_fields:
+        assert field not in prompt, f"ranking field {field!r} in response schema"
 
 
 @pytest.mark.unit
