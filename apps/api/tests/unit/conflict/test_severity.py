@@ -30,7 +30,7 @@ from sourcemind.services.conflict.severity import (
 def _session(
     *,
     importance: float | None,
-    disputing: int,
+    cluster: int,
     status: str = "open",
     conflict_exists: bool = True,
 ):
@@ -41,7 +41,11 @@ def _session(
     async def execute(stmt, params=None, **kwargs):
         s = str(stmt)
         r = MagicMock()
-        if "SELECT memory_a_id" in s:
+        # Order matters: the cluster query selects memory_a_id too, so it has
+        # to be recognised before the conflict-lookup branch claims it.
+        if "COUNT(DISTINCT claimant)" in s:
+            r.scalar = MagicMock(return_value=cluster)
+        elif "SELECT memory_a_id" in s:
             r.first = MagicMock(
                 return_value=(str(mem_a), str(mem_b), status)
                 if conflict_exists
@@ -49,8 +53,6 @@ def _session(
             )
         elif "importance_score" in s:
             r.scalar = MagicMock(return_value=importance)
-        elif "COUNT(DISTINCT other)" in s:
-            r.scalar = MagicMock(return_value=disputing)
         elif "UPDATE memory_conflicts" in s:
             writes.append(params or {})
         return r
@@ -130,15 +132,16 @@ def test_ladder_boundaries_are_exact(importance, claims, expected):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_computed_severity_is_written_back_with_the_claim_count():
-    # 2 other memories disputing -> claim count 3
-    sess = _session(importance=0.9, disputing=2)
+    # A cluster of 3 competing claims is stored as 3. The query returns the
+    # whole cluster including both endpoints of this row, so nothing is added.
+    sess = _session(importance=0.9, cluster=3)
     severity = await compute_conflict_severity(sess, uuid.uuid4())
 
     assert severity == "critical"
     assert len(sess._writes) == 1
     written = sess._writes[0]
     assert written["sev"] == "critical"
-    assert written["cnt"] == 3, "claim count is disputing memories plus the memory itself"
+    assert written["cnt"] == 3, "the stored count is the cluster size, verbatim"
     assert written["blk"] is True
 
 
@@ -146,13 +149,13 @@ async def test_computed_severity_is_written_back_with_the_claim_count():
 @pytest.mark.asyncio
 async def test_blocks_derivation_true_only_for_critical():
     cases = [
-        (0.9, 2, "critical", True),
-        (0.9, 1, "critical", True),   # one rival, high importance
+        (0.9, 3, "critical", True),
+        (0.9, 2, "critical", True),   # one rival, high importance
         (0.5, 0, "medium", False),
         (0.1, 0, "low", False),
     ]
-    for importance, disputing, expected_sev, expected_block in cases:
-        sess = _session(importance=importance, disputing=disputing)
+    for importance, cluster, expected_sev, expected_block in cases:
+        sess = _session(importance=importance, cluster=cluster)
         sev = await compute_conflict_severity(sess, uuid.uuid4())
         assert sev == expected_sev
         assert sess._writes[0]["blk"] is expected_block, (
@@ -164,7 +167,7 @@ async def test_blocks_derivation_true_only_for_critical():
 @pytest.mark.asyncio
 async def test_resolved_conflict_never_blocks_even_if_critical():
     """A settled disagreement must not hold up derivation."""
-    sess = _session(importance=0.95, disputing=5, status="resolved")
+    sess = _session(importance=0.95, cluster=5, status="resolved")
     sev = await compute_conflict_severity(sess, uuid.uuid4())
     assert sev == "critical", "severity is retained as a record of seriousness"
     assert sess._writes[0]["blk"] is False
@@ -173,7 +176,7 @@ async def test_resolved_conflict_never_blocks_even_if_critical():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_missing_conflict_returns_empty_and_writes_nothing():
-    sess = _session(importance=0.9, disputing=3, conflict_exists=False)
+    sess = _session(importance=0.9, cluster=3, conflict_exists=False)
     assert await compute_conflict_severity(sess, uuid.uuid4()) == ""
     assert sess._writes == []
 
@@ -182,7 +185,7 @@ async def test_missing_conflict_returns_empty_and_writes_nothing():
 @pytest.mark.asyncio
 async def test_null_importance_is_treated_as_zero_not_an_error():
     """importance_score can be NULL on a freshly ingested memory."""
-    sess = _session(importance=None, disputing=0)
+    sess = _session(importance=None, cluster=0)
     assert await compute_conflict_severity(sess, uuid.uuid4()) == "low"
 
 
@@ -201,6 +204,8 @@ async def test_severity_recomputed_when_importance_changes():
         r = MagicMock()
         if "SELECT id::text FROM memory_conflicts" in s:
             r.fetchall = MagicMock(return_value=[(c,) for c in conflict_ids])
+        elif "COUNT(DISTINCT claimant)" in s:
+            r.scalar = MagicMock(return_value=0)
         elif "SELECT memory_a_id" in s:
             seen.append(params["cid"])
             r.first = MagicMock(
@@ -208,8 +213,6 @@ async def test_severity_recomputed_when_importance_changes():
             )
         elif "importance_score" in s:
             r.scalar = MagicMock(return_value=0.2)
-        elif "COUNT(DISTINCT other)" in s:
-            r.scalar = MagicMock(return_value=0)
         return r
 
     sess = AsyncMock()

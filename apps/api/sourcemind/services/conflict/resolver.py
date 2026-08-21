@@ -13,9 +13,20 @@ Resolution types:
   split     Both kept, tagged differently
   deferred  Postponed with revisit_at date
 
-AI suggestion is generated asynchronously when GET /v1/conflicts/:id is called
-and stored in memory_conflicts.suggested_resolution JSONB.
-See ADR-008 for rationale on advisory-only AI suggestions.
+When GET /v1/conflicts/:id is called, Claude produces a NEUTRAL
+characterisation of the disagreement, cached in the
+memory_conflicts.suggested_resolution JSONB column.
+
+SUPERSEDES ADR-008. That ADR allowed a non-binding AI suggestion, and the
+implementation drifted past even that: it asked Claude which statement was
+"more specific and evidence-based" and returned kept_a/kept_b with a
+confidence score. With resolution now restricted to owners and admins, a
+ranked recommendation shown to the one person allowed to click is an
+anchor, not advice. The model now describes what the two claims disagree
+about and what would settle it, and never which side is right.
+
+The column keeps its original name so no migration is needed; its contents
+are a characterisation, not a recommendation.
 """
 
 from __future__ import annotations
@@ -33,8 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 log = structlog.get_logger(__name__)
 
 _SUGGESTION_PROMPT = """\
-Two statements in a team knowledge base are in conflict.
-Analyze them and suggest the best resolution.
+Two statements in a team knowledge base disagree with each other.
 
 Statement A (contributed by {contributor_a}):
 "{content_a}"
@@ -42,24 +52,31 @@ Statement A (contributed by {contributor_a}):
 Statement B (contributed by {contributor_b}):
 "{content_b}"
 
-Consider:
-- Which is more specific and evidence-based?
-- Could both be true in different contexts?
-- Is one an update of the other?
-- Can they be merged into one accurate statement?
+Characterise the disagreement so a human reviewer can orient quickly. Do NOT
+decide the outcome, do NOT indicate which statement is right, and do NOT rank
+them by plausibility, specificity or evidence. A person resolves this.
+
+Describe only:
+- what each statement claims about the shared point
+- whether they could both hold in different contexts, or are strictly
+  mutually exclusive
+- what a reviewer would need to know in order to decide
 
 Respond in JSON:
 {{
-  "suggested_resolution": "kept_a|kept_b|merged|split",
-  "reasoning": "2-3 sentence explanation",
-  "merged_content": "string if merged, null otherwise",
-  "confidence": 0.0-1.0
+  "disagreement": "one sentence naming the point the two statements differ on",
+  "claim_a": "what A asserts, in neutral terms",
+  "claim_b": "what B asserts, in neutral terms",
+  "could_coexist": true or false,
+  "what_would_settle_it": "the information a reviewer would need"
 }}"""
 
 
 @dataclass
 class ConflictDetail:
-    """Full conflict detail including both memory contents and AI suggestion."""
+    """Full conflict detail: both memory contents and a neutral
+    characterisation of the disagreement.
+    """
     conflict_id: str
     status: str
     conflict_type: str
@@ -83,7 +100,8 @@ async def get_conflict_detail(
     anthropic_client: object | None = None,
 ) -> ConflictDetail | None:
     """
-    Fetch full conflict detail. If no AI suggestion yet, generate one asynchronously.
+    Fetch full conflict detail, generating the neutral characterisation on
+    first read if it is not cached yet.
     """
     result = await session.execute(
         text("""
@@ -155,7 +173,12 @@ async def _generate_suggestion(
     contributor_b: str,
     client: object,
 ) -> dict[str, Any] | None:
-    """Call Claude to generate a conflict resolution suggestion and store it."""
+    """Describe the disagreement neutrally and cache it.
+
+    Returns what the two claims differ on and what would settle it. It must
+    never return a recommended resolution: only a human may decide, and
+    only owners and admins can act on that decision.
+    """
     prompt = _SUGGESTION_PROMPT.format(
         contributor_a=contributor_a,
         content_a=content_a,

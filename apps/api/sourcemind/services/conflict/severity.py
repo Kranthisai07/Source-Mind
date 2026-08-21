@@ -28,10 +28,15 @@ WHY competing_claim_count IS DERIVED
 ------------------------------------
 MemoryConflict is strictly pairwise (memory_a_id, memory_b_id), so a single
 conflict row is always exactly 2 claims. Counting per-row would pin every
-conflict at 2 and make the critical tier unreachable. Instead the count is the
-number of distinct memories disputing the disputed memory across ALL of its
-conflict rows, plus the memory itself. Two separate memories contradicting one
-memory yields 3, which is the situation the critical tier is meant to catch.
+conflict at 2. Instead the count is the size of the row's CLUSTER: every
+distinct memory named by an unresolved conflict touching either endpoint. Two
+memories contradicting a third yields 3 on all rows involved, whichever side
+of each row the shared memory happens to sit on.
+
+The neighbourhood is one hop, deliberately. A full transitive closure would
+chain separate decision points together through any memory that happens to
+dispute two unrelated things, inflating the count with claims that are not
+competing with each other.
 """
 
 from __future__ import annotations
@@ -109,25 +114,39 @@ async def compute_conflict_severity(
     ).scalar()
     importance = float(importance or 0.0)
 
-    # Distinct memories disputing memory_a, across every conflict it appears
-    # in, plus memory_a itself. Resolved conflicts are excluded: a settled
-    # disagreement is not a competing claim any more.
-    disputing = (
+    # Every distinct memory in this conflict's cluster: the memories named by
+    # any unresolved conflict touching EITHER endpoint. Resolved conflicts are
+    # excluded, since a settled disagreement is not a competing claim any more.
+    #
+    # Both endpoints, not just memory_a. Anchoring on memory_a alone under-
+    # counted the ordinary three-way ingestion shape, where one arriving
+    # memory disputes two existing ones: the shared memory is then memory_b on
+    # both rows, so each row saw only its own anchor's single rival and stored
+    # 2 when three claims were in play.
+    cluster = (
         await session.execute(
             text(
-                "SELECT COUNT(DISTINCT other) FROM ("
-                "  SELECT CASE WHEN memory_a_id = CAST(:mid AS uuid) "
-                "              THEN memory_b_id ELSE memory_a_id END AS other"
-                "  FROM memory_conflicts"
-                "  WHERE (memory_a_id = CAST(:mid AS uuid) "
-                "         OR memory_b_id = CAST(:mid AS uuid))"
-                "    AND status NOT IN ('resolved', 'deferred')"
+                "SELECT COUNT(DISTINCT claimant) FROM ("
+                "  SELECT memory_a_id AS claimant FROM memory_conflicts"
+                "  WHERE status NOT IN ('resolved', 'deferred')"
+                "    AND (memory_a_id IN (CAST(:a AS uuid), CAST(:b AS uuid))"
+                "         OR memory_b_id IN (CAST(:a AS uuid), CAST(:b AS uuid)))"
+                "  UNION ALL"
+                "  SELECT memory_b_id FROM memory_conflicts"
+                "  WHERE status NOT IN ('resolved', 'deferred')"
+                "    AND (memory_a_id IN (CAST(:a AS uuid), CAST(:b AS uuid))"
+                "         OR memory_b_id IN (CAST(:a AS uuid), CAST(:b AS uuid)))"
                 ") d"
             ),
-            {"mid": memory_a_id},
+            {"a": memory_a_id, "b": memory_b_id},
         )
     ).scalar()
-    competing_claim_count = int(disputing or 0) + 1
+    # The subquery already contains both endpoints, so there is no +1 here.
+    # An OPEN conflict therefore always counts at least its own two memories.
+    # A resolved or deferred one counts 0 unless some other live conflict
+    # touches it, which is the intended reading: the number is competing
+    # claims still in play, and a settled disagreement has none.
+    competing_claim_count = int(cluster or 0)
 
     severity = classify_severity(importance, competing_claim_count)
     # Blocking is meaningless once the conflict is settled.
