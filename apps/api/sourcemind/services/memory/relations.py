@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from typing import NamedTuple
 
 import structlog
 from sqlalchemy import text
@@ -50,26 +51,57 @@ _CONFLICT_RADIUS = 0.15   # cosine distance: trigger conflict check
 _MIN_CONFIDENCE = 0.85    # minimum LLM confidence to persist
 
 
+class Classification(NamedTuple):
+    """One LLM verdict about a pair of memories.
+
+    relation / confidence describe the knowledge-graph edge.
+    is_conflict / conflict_summary are the conflict signal, and carry no
+    opinion about which claim is correct.
+
+    confidence measures certainty in the CLASSIFICATION, not in either
+    statement being true. The two are different and only the first is
+    something the model may judge.
+    """
+
+    relation: str
+    confidence: float
+    is_conflict: bool = False
+    conflict_summary: str = ""
+
+
 async def _classify_relation(
     client: object,
     existing_content: str,
     new_content: str,
-) -> tuple[str, float, str]:
+) -> Classification:
     """
     Ask Claude Haiku to classify the relationship.
     Returns (relation_type, confidence, reasoning).
     Uses Haiku for cost efficiency on this high-frequency classification.
     """
     prompt = (
-        "Classify the relationship between these two statements.\n\n"
+        "Two statements from a team knowledge base are shown below. "
+        "Describe their relationship. Do NOT judge which statement is "
+        "correct, better supported, or more likely to be true. That "
+        "decision belongs to a human reviewer.\n\n"
         f"Statement A: {existing_content}\n\n"
         f"Statement B: {new_content}\n\n"
-        "Choose exactly one:\n"
-        '- "updates": B contradicts or replaces A (A becomes outdated)\n'
-        '- "extends": B adds new detail to A (both remain valid)\n'
-        '- "derives": B is a logical inference from A\n'
+        "First, pick the relationship type for the knowledge graph:\n"
+        '- "updates": B states a different value for the same thing A describes\n'
+        '- "extends": B adds detail to A\n'
+        '- "derives": B follows logically from A\n'
         '- "unrelated": no meaningful relationship\n\n'
-        'Respond in JSON only: {"relation": string, "confidence": float, "reasoning": string}'
+        "Second, decide whether the two are in conflict. They conflict when "
+        "they are mutually exclusive claims about the same underlying "
+        "decision point, meaning both cannot be true at once. Summarise the "
+        "disagreement factually, stating what each side claims, without "
+        "indicating which one is right.\n\n"
+        "confidence is how certain you are that this relationship "
+        "classification is correct. It is NOT a judgement about which "
+        "statement is true.\n\n"
+        "Respond in JSON only: "
+        '{"relation": string, "confidence": float, "is_conflict": bool, '
+        '"conflict_summary": string}'
     )
     try:
         response = await client.messages.create(  # type: ignore[union-attr]
@@ -78,14 +110,15 @@ async def _classify_relation(
             messages=[{"role": "user", "content": prompt}],
         )
         data = json.loads(response.content[0].text)
-        return (
-            str(data.get("relation", "unrelated")),
-            float(data.get("confidence", 0.0)),
-            str(data.get("reasoning", "")),
+        return Classification(
+            relation=str(data.get("relation", "unrelated")),
+            confidence=float(data.get("confidence", 0.0)),
+            is_conflict=bool(data.get("is_conflict", False)),
+            conflict_summary=str(data.get("conflict_summary", "")),
         )
     except Exception as exc:
         log.debug("relation_classify_error", error=str(exc))
-        return "unrelated", 0.0, ""
+        return Classification(relation="unrelated", confidence=0.0)
 
 
 async def _maybe_create_conflict(
@@ -95,8 +128,7 @@ async def _maybe_create_conflict(
     cand_id: uuid.UUID,
     cand_content: str,
     distance: float,
-    relation_type: str | None = None,
-    confidence: float | None = None,
+    verdict: Classification | None = None,
 ) -> None:
     """
     Check whether two similar memories from different contributors form a conflict.
@@ -139,13 +171,16 @@ async def _maybe_create_conflict(
     if existing.fetchone():
         return  # Already related
 
-    # LLM contradiction check. detect() has usually classified this pair
-    # already; reuse that rather than paying for a second identical call.
-    if relation_type is None or confidence is None:
-        relation_type, confidence, _ = await _classify_relation(
-            client, cand_content, new_memory.content
-        )
-    if relation_type != "updates" or confidence < _MIN_CONFIDENCE:
+    # detect() has usually classified this pair already; reuse that rather
+    # than paying for a second identical call.
+    if verdict is None:
+        verdict = await _classify_relation(client, cand_content, new_memory.content)
+
+    # A conflict is raised on the neutral mutual-exclusivity signal, not on
+    # a supersession verdict. Keying off relation == 'updates' meant every
+    # conflict originated from a judgement that one side was outdated,
+    # which is the model picking a winner.
+    if not verdict.is_conflict or verdict.confidence < _MIN_CONFIDENCE:
         return
 
     try:
@@ -159,7 +194,11 @@ async def _maybe_create_conflict(
             severity=ConflictSeverity.MEDIUM,
             status=ConflictStatus.OPEN,
             similarity_score=1.0 - distance,
-            explanation=f"Two memories from different contributors appear to contradict. Confidence: {confidence:.2f}",
+            explanation=(
+                verdict.conflict_summary
+                or "Two memories from different contributors make mutually "
+                   "exclusive claims about the same point."
+            ),
         )
         session.add(conflict)
         await session.flush()
@@ -181,7 +220,7 @@ async def _maybe_create_conflict(
             memory_a=str(cand_id),
             memory_b=str(new_memory.id),
             similarity=1.0 - distance,
-            confidence=confidence,
+            confidence=verdict.confidence,
         )
     except Exception as exc:
         log.debug("conflict_insert_skipped", error=str(exc))
@@ -251,9 +290,11 @@ class RelationDetector:
                 cand_id = uuid.UUID(cand_id_str)
 
                 if distance <= _LLM_RADIUS:
-                    relation_type, confidence, _ = await _classify_relation(
+                    verdict = await _classify_relation(
                         self._client, cand_content, memory.content
                     )
+                    relation_type = verdict.relation
+                    confidence = verdict.confidence
 
                     # Conflict check runs BEFORE the relation write.
                     #
@@ -277,8 +318,7 @@ class RelationDetector:
                             cand_id,
                             cand_content,
                             distance,
-                            relation_type=relation_type,
-                            confidence=confidence,
+                            verdict=verdict,
                         )
 
                     if relation_type != "unrelated" and confidence >= _MIN_CONFIDENCE:

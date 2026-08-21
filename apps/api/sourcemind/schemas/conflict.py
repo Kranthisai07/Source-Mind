@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -60,7 +60,6 @@ class ConflictDetail(BaseModel):
     explanation: str | None
     memory_a: MemoryRef
     memory_b: MemoryRef
-    suggested_resolution: dict[str, Any] | None
     reviewed_by: UUID | None
     reviewed_at: datetime | None
     revisit_at: datetime | None

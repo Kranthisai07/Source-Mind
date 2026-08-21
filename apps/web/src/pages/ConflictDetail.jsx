@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Sparkles, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2 } from "lucide-react";
 import TopBar from "../components/layout/TopBar";
 import StatusBadge from "../components/widgets/StatusBadge";
 import ContributorAvatar from "../components/widgets/ContributorAvatar";
@@ -89,18 +89,6 @@ export default function ConflictDetail() {
                         color="#A78BFA"
                     />
 
-                    <div className="rounded-xl border border-sm-purple/40 bg-gradient-to-br from-sm-purple/10 to-transparent p-5">
-                        <div className="flex items-center gap-2 mb-3">
-                            <div className="w-7 h-7 rounded-md bg-sm-purple/20 flex items-center justify-center">
-                                <Sparkles className="w-4 h-4 text-sm-purple" />
-                            </div>
-                            <div>
-                                <div className="text-[13px] font-semibold text-sm-text">Claude suggests</div>
-                                <div className="font-mono text-[10.5px] text-sm-text-secondary">model: claude-sonnet-4-6</div>
-                            </div>
-                        </div>
-                        <p className="text-[13.5px] text-sm-text leading-relaxed">{c.ai_suggestion}</p>
-                    </div>
                 </section>
 
                 {/* Right — resolution */}

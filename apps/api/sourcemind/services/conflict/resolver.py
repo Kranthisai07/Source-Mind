@@ -13,18 +13,29 @@ Resolution types:
   split     Both kept, tagged differently
   deferred  Postponed with revisit_at date
 
-AI suggestion is generated asynchronously when GET /v1/conflicts/:id is called
-and stored in memory_conflicts.suggested_resolution JSONB.
-See ADR-008 for rationale on advisory-only AI suggestions.
+NO AI SUGGESTION IS GENERATED HERE. See ADR-010, which supersedes ADR-008.
+
+ADR-008 permitted a non-binding AI suggestion on first read of a conflict.
+Phase 2 rewrote its prompt to be neutral, but the mechanism is the problem,
+not its wording: anything Claude writes into the resolution screen reads as
+a lead to the one person allowed to click, and resolution is restricted to
+owners and admins. The generation call, its prompt and the response field
+are gone.
+
+What a reviewer sees instead is `explanation`, the neutral conflict summary
+written at DETECTION time by services/memory/relations.py, which states what
+each side claims without ranking them.
+
+The memory_conflicts.suggested_resolution column still exists and is now
+neither read nor written. Dropping it needs a migration; leaving it costs
+nothing and keeps historical rows readable for audit.
 """
 
 from __future__ import annotations
 
-import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
 
 import structlog
 from sqlalchemy import text
@@ -32,34 +43,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 log = structlog.get_logger(__name__)
 
-_SUGGESTION_PROMPT = """\
-Two statements in a team knowledge base are in conflict.
-Analyze them and suggest the best resolution.
-
-Statement A (contributed by {contributor_a}):
-"{content_a}"
-
-Statement B (contributed by {contributor_b}):
-"{content_b}"
-
-Consider:
-- Which is more specific and evidence-based?
-- Could both be true in different contexts?
-- Is one an update of the other?
-- Can they be merged into one accurate statement?
-
-Respond in JSON:
-{{
-  "suggested_resolution": "kept_a|kept_b|merged|split",
-  "reasoning": "2-3 sentence explanation",
-  "merged_content": "string if merged, null otherwise",
-  "confidence": 0.0-1.0
-}}"""
-
-
 @dataclass
 class ConflictDetail:
-    """Full conflict detail including both memory contents and AI suggestion."""
+    """Full conflict detail: both memory contents and the detection-time
+    summary of what they disagree about. Carries no AI recommendation.
+    """
     conflict_id: str
     status: str
     conflict_type: str
@@ -70,7 +58,6 @@ class ConflictDetail:
     memory_a_content: str
     memory_b_id: str
     memory_b_content: str
-    suggested_resolution: dict[str, Any] | None
     reviewed_by: str | None
     reviewed_at: datetime | None
     revisit_at: datetime | None
@@ -80,11 +67,8 @@ class ConflictDetail:
 async def get_conflict_detail(
     session: AsyncSession,
     conflict_id: uuid.UUID,
-    anthropic_client: object | None = None,
 ) -> ConflictDetail | None:
-    """
-    Fetch full conflict detail. If no AI suggestion yet, generate one asynchronously.
-    """
+    """Fetch full conflict detail. Reads only; calls no model."""
     result = await session.execute(
         text("""
             SELECT
@@ -92,19 +76,10 @@ async def get_conflict_detail(
                 mc.similarity_score, mc.explanation,
                 mc.memory_a_id::text, ma.content,
                 mc.memory_b_id::text, mb.content,
-                mc.suggested_resolution,
-                mc.reviewed_by::text, mc.reviewed_at, mc.revisit_at, mc.created_at,
-                COALESCE(ua.display_name, ua.email) AS contributor_a,
-                COALESCE(ub.display_name, ub.email) AS contributor_b
+                mc.reviewed_by::text, mc.reviewed_at, mc.revisit_at, mc.created_at
             FROM memory_conflicts mc
             JOIN memories ma ON ma.id = mc.memory_a_id
             JOIN memories mb ON mb.id = mc.memory_b_id
-            LEFT JOIN attributions aa ON aa.memory_id = mc.memory_a_id
-                AND aa.created_at = (SELECT MAX(a2.created_at) FROM attributions a2 WHERE a2.memory_id = mc.memory_a_id)
-            LEFT JOIN users ua ON ua.id = aa.user_id
-            LEFT JOIN attributions ab ON ab.memory_id = mc.memory_b_id
-                AND ab.created_at = (SELECT MAX(a3.created_at) FROM attributions a3 WHERE a3.memory_id = mc.memory_b_id)
-            LEFT JOIN users ub ON ub.id = ab.user_id
             WHERE mc.id = CAST(:cid AS uuid)
         """),
         {"cid": str(conflict_id)},
@@ -115,17 +90,7 @@ async def get_conflict_detail(
 
     (cid, status, ctype, severity, sim, explanation,
      a_id, a_content, b_id, b_content,
-     suggested, reviewed_by, reviewed_at, revisit_at, created_at,
-     contrib_a, contrib_b) = row
-
-    # Generate AI suggestion if missing and client provided
-    if suggested is None and anthropic_client is not None:
-        suggested = await _generate_suggestion(
-            session, conflict_id,
-            a_content, b_content,
-            contrib_a or "Unknown", contrib_b or "Unknown",
-            anthropic_client,
-        )
+     reviewed_by, reviewed_at, revisit_at, created_at) = row
 
     return ConflictDetail(
         conflict_id=cid,
@@ -138,51 +103,11 @@ async def get_conflict_detail(
         memory_a_content=a_content,
         memory_b_id=b_id,
         memory_b_content=b_content,
-        suggested_resolution=suggested,
         reviewed_by=reviewed_by,
         reviewed_at=reviewed_at,
         revisit_at=revisit_at,
         created_at=created_at,
     )
-
-
-async def _generate_suggestion(
-    session: AsyncSession,
-    conflict_id: uuid.UUID,
-    content_a: str,
-    content_b: str,
-    contributor_a: str,
-    contributor_b: str,
-    client: object,
-) -> dict[str, Any] | None:
-    """Call Claude to generate a conflict resolution suggestion and store it."""
-    prompt = _SUGGESTION_PROMPT.format(
-        contributor_a=contributor_a,
-        content_a=content_a,
-        contributor_b=contributor_b,
-        content_b=content_b,
-    )
-    try:
-        response = await client.messages.create(  # type: ignore[union-attr]
-            model="claude-haiku-4-5-20251001",
-            max_tokens=512,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        suggestion = json.loads(response.content[0].text)
-
-        # Store in DB
-        await session.execute(
-            text(
-                "UPDATE memory_conflicts SET suggested_resolution = CAST(:s AS jsonb) "
-                "WHERE id = CAST(:cid AS uuid)"
-            ),
-            {"s": json.dumps(suggestion), "cid": str(conflict_id)},
-        )
-        log.info("conflict_suggestion_generated", conflict_id=str(conflict_id))
-        return suggestion
-    except Exception as exc:
-        log.warning("conflict_suggestion_failed", error=str(exc), conflict_id=str(conflict_id))
-        return None
 
 
 async def mark_under_review(

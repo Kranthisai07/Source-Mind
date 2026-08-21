@@ -35,14 +35,20 @@ from sourcemind.services.memory.relations import RelationDetector
 
 
 def _claude_saying_contradiction():
-    """Client whose classification always yields a high-confidence 'updates'.
+    """Client that reports a high-confidence conflict.
 
-    'updates' is the only verdict that produces a MemoryConflict, and it must
-    clear _MIN_CONFIDENCE (0.85).
+    A conflict is now raised on is_conflict, the neutral mutual-exclusivity
+    signal, rather than on a 'updates' supersession verdict. relation is
+    still set because it drives the knowledge-graph edge.
     """
     client = MagicMock()
     payload = json.dumps(
-        {"relation": "updates", "confidence": 0.97, "reasoning": "direct contradiction"}
+        {
+            "relation": "updates",
+            "confidence": 0.97,
+            "is_conflict": True,
+            "conflict_summary": "A and B state different values for the same point",
+        }
     )
     client.messages = MagicMock()
     client.messages.create = AsyncMock(
@@ -378,4 +384,160 @@ async def test_blocks_derivation_clears_when_the_conflict_is_resolved(
     )
     assert row.severity == "critical", (
         "severity is retained as a record of how serious it was"
+    )
+
+
+async def _pair_row(session: AsyncSession, memory_a, memory_b):
+    """The conflict row for one unordered pair, or None."""
+    return (
+        await session.execute(
+            text(
+                "SELECT id::text, severity, competing_claim_count, blocks_derivation "
+                "FROM memory_conflicts WHERE "
+                "(memory_a_id = CAST(:a AS uuid) AND memory_b_id = CAST(:b AS uuid)) "
+                "OR (memory_a_id = CAST(:b AS uuid) AND memory_b_id = CAST(:a AS uuid))"
+            ),
+            {"a": str(memory_a), "b": str(memory_b)},
+        )
+    ).first()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_three_way_conflict_creates_correct_pairwise_rows(
+    db_session, test_workspace
+):
+    """Three people, one decision point, one ingestion run.
+
+    Two claims already exist; a third arrives disputing both. MemoryConflict
+    is pairwise, so the newcomer must produce exactly two rows — one per
+    existing claim. Not one (which would mean the candidate loop stopped at
+    the first match) and not three (which would mean the two PRE-EXISTING
+    claims were also paired with each other; detect() never compares two old
+    memories, it only compares the batch against the store).
+
+    Both rows describe the same three-claim cluster, so both must carry a
+    competing_claim_count of 3.
+    """
+    author_a = await _user(db_session)
+    author_b = await _user(db_session)
+    author_c = await _user(db_session)
+
+    # Distinct importances so the two rows land in different severity tiers,
+    # which proves severity is read per-row rather than copied.
+    claim_a = await _memory_with_author(
+        db_session, test_workspace.id, author_a, seed=0.09, importance=0.90
+    )
+    claim_b = await _memory_with_author(
+        db_session, test_workspace.id, author_b, seed=0.09, importance=0.30
+    )
+    newcomer = await _memory_with_author(
+        db_session, test_workspace.id, author_c, seed=0.09, importance=0.30
+    )
+
+    await RelationDetector(_claude_saying_contradiction()).detect(
+        db_session,
+        [_MemoryRow(newcomer, test_workspace.id, "third claim", [0.09] * 3072)],
+        test_workspace.id,
+    )
+
+    rows = await _conflicts_for(db_session, newcomer)
+    assert len(rows) == 2, f"expected one row per existing claim, got {len(rows)}"
+
+    row_a = await _pair_row(db_session, claim_a, newcomer)
+    row_b = await _pair_row(db_session, claim_b, newcomer)
+    assert row_a is not None, "no conflict between the newcomer and the first claim"
+    assert row_b is not None, "no conflict between the newcomer and the second claim"
+
+    # detect() compares the batch against the store, never store against
+    # store, so the two pre-existing claims are not paired with each other.
+    assert await _pair_row(db_session, claim_a, claim_b) is None
+
+    # Both rows belong to the same cluster of three competing claims.
+    assert row_a.competing_claim_count == 3, (
+        f"first row reports {row_a.competing_claim_count} claims, not 3"
+    )
+    assert row_b.competing_claim_count == 3, (
+        f"second row reports {row_b.competing_claim_count} claims, not 3"
+    )
+
+    # Phase 1.5 ladder: importance alone decides critical; claims only lift
+    # low to medium.
+    assert row_a.severity == "critical", (
+        f"importance 0.90 must be critical, got {row_a.severity!r}"
+    )
+    assert row_a.blocks_derivation is True
+    assert row_b.severity == "medium", (
+        f"importance 0.30 with 3 claims must be medium, got {row_b.severity!r}"
+    )
+    assert row_b.blocks_derivation is False
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_clustering_does_not_widen_the_retirement_blind_spot(
+    db_session, test_workspace
+):
+    """Clustering must not lose conflicts to the current_version filter.
+
+    An 'updates' verdict sets current_version = FALSE on the disputed memory,
+    and the neighbour search only sees current_version = TRUE. The risk is
+    ordering: if retiring the first candidate removed the second from the run,
+    a three-way disagreement would silently record only one conflict.
+
+    It does not, because detect() materialises the whole candidate list before
+    the loop begins. Retirement therefore takes effect from the NEXT run on,
+    which is the already-known deferred bug and no worse here: this asserts
+    the boundary explicitly so a future rewrite that moves the neighbour query
+    inside the loop fails loudly instead of quietly halving the cluster.
+    """
+    authors = [await _user(db_session) for _ in range(4)]
+
+    claim_a = await _memory_with_author(
+        db_session, test_workspace.id, authors[0], seed=0.11, importance=0.30
+    )
+    claim_b = await _memory_with_author(
+        db_session, test_workspace.id, authors[1], seed=0.11, importance=0.30
+    )
+    newcomer = await _memory_with_author(
+        db_session, test_workspace.id, authors[2], seed=0.11, importance=0.30
+    )
+
+    detector = RelationDetector(_claude_saying_contradiction())
+    await detector.detect(
+        db_session,
+        [_MemoryRow(newcomer, test_workspace.id, "third claim", [0.11] * 3072)],
+        test_workspace.id,
+    )
+
+    # Both conflicts recorded despite both candidates being retired mid-loop.
+    assert len(await _conflicts_for(db_session, newcomer)) == 2
+
+    retired = (
+        await db_session.execute(
+            text(
+                "SELECT id::text FROM memories WHERE id IN "
+                "(CAST(:a AS uuid), CAST(:b AS uuid)) AND current_version = FALSE"
+            ),
+            {"a": str(claim_a), "b": str(claim_b)},
+        )
+    ).fetchall()
+    assert len(retired) == 2, "both disputed claims should have been retired"
+
+    # The blind spot itself, unchanged: a fourth claim sees only the newcomer,
+    # so it adds one conflict, not three.
+    fourth = await _memory_with_author(
+        db_session, test_workspace.id, authors[3], seed=0.11, importance=0.30
+    )
+    await detector.detect(
+        db_session,
+        [_MemoryRow(fourth, test_workspace.id, "fourth claim", [0.11] * 3072)],
+        test_workspace.id,
+    )
+
+    assert len(await _conflicts_for(db_session, fourth)) == 1, (
+        "a retired claim must stay invisible to later runs"
+    )
+    assert len(await _conflicts_for(db_session, claim_a)) == 1, (
+        "clustering must not let retired claims accumulate new conflicts"
     )

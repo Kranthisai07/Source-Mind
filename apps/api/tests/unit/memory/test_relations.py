@@ -42,11 +42,20 @@ def _memory(content: str = "a fact", embedding: list[float] | None = None):
     return m
 
 
-def _claude_returning(relation: str, confidence: float):
-    """Anthropic client stub whose response parses to the given classification."""
+def _claude_returning(relation: str, confidence: float, is_conflict: bool = False):
+    """Anthropic client stub whose response parses to the given classification.
+
+    is_conflict is separate from relation on purpose: a conflict is raised
+    on mutual exclusivity, not on a supersession verdict.
+    """
     client = MagicMock()
     payload = json.dumps(
-        {"relation": relation, "confidence": confidence, "reasoning": "because"}
+        {
+            "relation": relation,
+            "confidence": confidence,
+            "is_conflict": is_conflict,
+            "conflict_summary": "A and B state different values",
+        }
     )
     client.messages = MagicMock()
     client.messages.create = AsyncMock(
@@ -88,11 +97,14 @@ def _session_with_candidates(rows: list[tuple[str, str, float]]):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_classify_parses_a_well_formed_response():
-    rel, conf, reason = await _classify_relation(
+    verdict = await _classify_relation(
         _claude_returning("extends", 0.91), "existing", "new"
     )
-    assert (rel, conf) == ("extends", 0.91)
-    assert reason == "because"
+    assert verdict.relation == "extends"
+    assert verdict.confidence == 0.91
+    assert verdict.is_conflict is False, (
+        "a payload without is_conflict must not be read as a conflict"
+    )
 
 
 @pytest.mark.unit
@@ -114,8 +126,11 @@ async def test_classify_degrades_to_unrelated_on_unparseable_output(text_payload
     client.messages.create = AsyncMock(
         return_value=MagicMock(content=[MagicMock(text=text_payload)])
     )
-    rel, conf, _ = await _classify_relation(client, "a", "b")
-    assert (rel, conf) == ("unrelated", 0.0)
+    verdict = await _classify_relation(client, "a", "b")
+    assert (verdict.relation, verdict.confidence) == ("unrelated", 0.0)
+    assert verdict.is_conflict is False, (
+        "an unparseable response must never raise a conflict"
+    )
 
 
 @pytest.mark.unit
@@ -124,7 +139,9 @@ async def test_classify_degrades_when_the_api_call_itself_raises():
     client = MagicMock()
     client.messages = MagicMock()
     client.messages.create = AsyncMock(side_effect=RuntimeError("503 overloaded"))
-    assert await _classify_relation(client, "a", "b") == ("unrelated", 0.0, "")
+    verdict = await _classify_relation(client, "a", "b")
+    assert (verdict.relation, verdict.confidence) == ("unrelated", 0.0)
+    assert verdict.is_conflict is False
 
 
 # ─── distance gating ─────────────────────────────────────────────────────────

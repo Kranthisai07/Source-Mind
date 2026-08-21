@@ -292,7 +292,6 @@ export const CONFLICTS = [
         memory_b_excerpt: "For pgvector at our scale, use IVFFlat with lists=100. HNSW has too high memory overhead for nodes with <32GB RAM.",
         conflict_type: "contradiction · configuration",
         contributors: ["priya.nair", "yuki.tanaka"],
-        ai_suggestion: "These claims conflict on index choice. The HNSW claim (Memory A) is more recent and aligns with pgvector 0.7+ best practices at this corpus size. IVFFlat (Memory B) was valid for older deployments pre-2024. Recommend: accept Memory A as canonical, mark Memory B as outdated with a link to the newer doc.",
     },
     {
         id: "cfl_502",
@@ -303,7 +302,6 @@ export const CONFLICTS = [
         memory_b_excerpt: "Ingest is a 5-stage process: receive, chunk, embed, store, attribute. Extraction and completion are implicit.",
         conflict_type: "naming / count discrepancy",
         contributors: ["dmitry.volk", "noah.rivera"],
-        ai_suggestion: "This is a naming disagreement, not a true contradiction. Memory A's 7-stage model is the canonical one used in the observability dashboard. Recommend: merge — update Memory B to reference the 7-stage model while preserving the simpler mental model as a 'summary view'.",
     },
     {
         id: "cfl_503",
@@ -314,7 +312,6 @@ export const CONFLICTS = [
         memory_b_excerpt: "Extraction model has been pinned to Claude Opus for complex architectural documents. Sonnet loses nuance on nested design rationale.",
         conflict_type: "policy vs. exception",
         contributors: ["priya.nair", "raj.patel"],
-        ai_suggestion: "Memory B describes a real exception case (nested architectural docs). Recommend: merge — keep Sonnet as default, add explicit carve-out for docs tagged 'adr' or 'architecture-deep-dive'.",
     },
     {
         id: "cfl_504",
@@ -325,7 +322,6 @@ export const CONFLICTS = [
         memory_b_excerpt: "Deploy freeze window: Friday 12:00 UTC through Monday 08:00 UTC.",
         conflict_type: "policy consolidation",
         contributors: ["lina.chen", "dmitry.volk"],
-        ai_suggestion: "Memory B is more precise and does not contradict Memory A. Recommend: accept Memory B as the authoritative statement.",
     },
     {
         id: "cfl_505",
@@ -336,7 +332,6 @@ export const CONFLICTS = [
         memory_b_excerpt: "Free plan users get 60 req/min after the 2025 pricing update.",
         conflict_type: "stale content",
         contributors: ["noah.rivera", "sara.hofmann"],
-        ai_suggestion: "Memory B reflects the current pricing page. Memory A appears to be pre-update. Recommend: mark Memory A as outdated.",
     },
 ];
 
