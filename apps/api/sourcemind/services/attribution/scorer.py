@@ -35,6 +35,51 @@ except Exception:
     SPACY_AVAILABLE = False
     log.info("ner.backend", backend="regex_fallback", reason="spacy_unavailable")
 
+# ─── Signal 1: edit-distance backend selection ───────────────────────────────
+#
+# Resolved once here rather than per call. Whether the package is installed
+# cannot change between calls, so a per-call failure would emit the same
+# error thousands of times or - as it did - stay silent forever. The
+# fallback itself is unchanged; only its visibility is.
+
+try:
+    from Levenshtein import distance as _lev_distance
+
+    SIGNAL_1_DEGRADED = False
+except Exception as _lev_exc:  # pragma: no cover - depends on the install
+    _lev_distance = None
+    SIGNAL_1_DEGRADED = True
+    log.error(
+        "signal1.degraded",
+        detail=(
+            "Signal 1 (35% weight) is running in degraded char-overlap "
+            "mode, not Levenshtein distance."
+        ),
+        error=str(_lev_exc),
+    )
+
+# Set when a signal falls back at runtime, so degradation is inspectable
+# rather than only discoverable by reading logs. See degraded_signals().
+SIGNAL_2_DEGRADED = False
+SIGNAL_4_DEGRADED = False
+
+
+def degraded_signals() -> dict[str, bool]:
+    """Which attribution signals are not running at full strength.
+
+    Signal 1 is decided at import. Signals 2 and 4 depend on state passed
+    in per call, so their flags mean 'has degraded at least once since
+    start', not 'is currently degraded'. Signal 4's regex path is NOT
+    counted here: falling back from spaCy to regex is the designed
+    behaviour under ADR-007, not a failure.
+    """
+    return {
+        "signal_1_char_diff": SIGNAL_1_DEGRADED,
+        "signal_2_semantic": SIGNAL_2_DEGRADED,
+        "signal_4_structural": SIGNAL_4_DEGRADED,
+    }
+
+
 # Regex: CamelCase words | ALLCAPS (2+ chars) | version strings | known tech keywords
 _TECH_PATTERN = re.compile(
     r'\b('
@@ -130,16 +175,32 @@ def _signal1_char_diff(before: str | None, after: str) -> float:
     if not before:
         # Initial creation: contributor changed 100%
         return 1.0
-    try:
-        from Levenshtein import distance as lev_distance
-        dist = lev_distance(before, after)
-        denom = max(len(before), len(after), 1)
-        return 1.0 - (dist / denom)
-    except Exception:
-        # Fallback: simple char-level overlap
+    def _char_overlap() -> float:
+        """The degraded path: same maths as before, unchanged."""
         common = sum(a == b for a, b in zip(before, after, strict=False))
         denom = max(len(before), len(after), 1)
         return common / denom
+
+    # Already reported once at import; do not repeat it per call.
+    if _lev_distance is None:
+        return _char_overlap()
+
+    try:
+        dist = _lev_distance(before, after)
+        denom = max(len(before), len(after), 1)
+        return 1.0 - (dist / denom)
+    except Exception as exc:
+        # The package imported but the call failed - genuinely per-call,
+        # so it is reported per call.
+        log.error(
+            "signal1.degraded",
+            detail=(
+                "Signal 1 (35% weight) is running in degraded char-overlap "
+                "mode, not Levenshtein distance."
+            ),
+            error=str(exc),
+        )
+        return _char_overlap()
 
 
 def _signal2_semantic(contributor_input: str, final_content: str, sbert_model: Any) -> float:
@@ -158,7 +219,20 @@ def _signal2_semantic(contributor_input: str, final_content: str, sbert_model: A
         )
         return float(np.dot(embs[0], embs[1]))
     except Exception as exc:
-        log.debug("signal2_failed", error=str(exc))
+        # error, not warning: this is the single largest signal, and a
+        # constant 0.5 is indistinguishable in the output from a genuine
+        # measurement of 0.5.
+        global SIGNAL_2_DEGRADED
+        SIGNAL_2_DEGRADED = True
+        log.error(
+            "signal2.degraded",
+            detail=(
+                "Signal 2 (30% weight) has degraded to a constant 0.5 - "
+                "semantic contribution is not being measured for this "
+                "computation."
+            ),
+            error=str(exc),
+        )
         return 0.5  # Neutral fallback
 
 
@@ -186,7 +260,20 @@ def _signal4_structural(before: str | None, after: str) -> float:
         new_entities = entities_after - entities_before
         return len(new_entities) / len(entities_after)
     except Exception as exc:
-        log.debug("signal4_failed", error=str(exc))
+        # Not the same thing as running on the regex backend: that is the
+        # designed path when spaCy is unavailable (ADR-007) and is already
+        # reported once as ner.backend. Reaching here means extraction
+        # itself failed and the signal contributes nothing.
+        global SIGNAL_4_DEGRADED
+        SIGNAL_4_DEGRADED = True
+        log.error(
+            "signal4.degraded",
+            detail=(
+                "Signal 4 (10% weight) has degraded to 0.0 - structural "
+                "contribution is not being measured for this computation."
+            ),
+            error=str(exc),
+        )
         return 0.0
 
 

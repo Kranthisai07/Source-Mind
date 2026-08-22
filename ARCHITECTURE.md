@@ -486,14 +486,47 @@ django.
 
 **Current limitations** — worth knowing before quoting any numbers:
 
-- Only NaiveRAG runs by default. Supermemory needs `SUPERMEMORY_API_KEY` and is
-  skipped **silently**. SourceMind needs `SOURCEMIND_API_URL` / `_API_KEY` /
-  `_WORKSPACE_ID`, and there is no script that ingests the dataset into it.
-- Attribution accuracy reports 0.000 because the NaiveRAG baseline does not
-  store `author` in its vector metadata.
-- Conflict detection never runs: the dataset has no `metadata.state` on issues,
-  and the runner hardcodes a uniform "no conflict" prediction.
+- Supermemory is excluded unless `SUPERMEMORY_API_KEY` is set, and now says so
+  in the output rather than vanishing from the results.
+- SourceMind needs `SOURCEMIND_API_URL` / `SOURCEMIND_WORKSPACE_ID`.
+  `SourceMindRetriever.index()` ingests the dataset and records the
+  ground-truth id -> memory id map, because one document fans out into several
+  memories and the metrics compare against ground-truth ids.
+- Attribution accuracy reports 0.000 for SourceMind, and this is structural
+  rather than a bug: ingestion attributes each memory to the authenticated API
+  caller, not to the artifact's original author, so the system cannot know the
+  GitHub author. Measuring it properly needs per-author ingestion.
+- Conflict detection is excluded by design and stated as such in both the
+  runner output and the report. The dataset has no labelled negative pairs.
 - Knowledge retention, latency, and role-scoped retrieval are meaningful.
+
+### Known gaps — silent failure sites
+
+An AST sweep for broad `except` handlers that neither re-raise nor report
+above debug found ten. Three separate real bugs have hidden in this shape, so
+the remaining ones are listed rather than forgotten:
+
+| Site | Behaviour | Status |
+|------|-----------|--------|
+| `attribution/scorer.py` signals 1, 2, 4 | fall back to char-overlap / 0.5 / 0.0 | **fixed** — now `log.error`, plus `degraded_signals()` |
+| `memory/relations.py::_classify_relation` | unparseable reply became `unrelated` | **fixed** — fence-tolerant parse, `log.warning` |
+| `memory/relations.py::_maybe_create_conflict` | `conflict_insert_skipped` at debug | **open** — this handler hid a `NameError` for a whole phase |
+| `ingestion/extractor.py:115` | readability failure returns `""` | **open** — reads downstream as "nothing to extract" |
+| `ingestion/extractor.py:151` | HTML strip falls back to regex | open, low impact — a real fallback |
+| `ingestion/chunker.py:116` | spaCy unavailable, regex sentencizer | open, low impact — expected on Python 3.14 |
+| `core/database.py:170`, `core/redis_client.py:134` | bare `pass` in URL redaction | **intentional** — logging there could leak the credentials being redacted |
+| `api/v1/health.py:92` | no logging call | not a defect — the error is returned in the response body |
+
+**Attribution signal health.** `degraded_signals()` reports signals 1, 2 and 4.
+Signal 4 running on the regex backend is NOT counted as degraded: that is the
+designed path under ADR-007 when spaCy is unavailable, which is always the
+case on Python 3.14.
+
+Worth knowing when reading attribution numbers: the ingestion pipeline calls
+`create_initial_attribution()`, which writes a single contributor at weight
+1.0 with every signal hardcoded to 1.0. The 5-signal algorithm runs only in
+`recompute_attribution()`, on `PATCH /v1/memories/:id`. Ingesting a corpus
+therefore exercises none of it.
 
 ---
 
