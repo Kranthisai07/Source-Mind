@@ -52,11 +52,12 @@ def generate_report(results_path: str, output_path: str | None = None) -> str:
     col_width = max(len(r) for r in retrievers) + 2 if retrievers else 10
     metric_cols = [
         ("Knowledge Retention (recall@5)", "knowledge_retention", "score"),
-        ("Attribution Accuracy", "attribution_accuracy", "score"),
         ("Role Scope (engineer)", "role_scoped_retrieval_engineer", "score"),
         ("Role Scope (manager)", "role_scoped_retrieval_manager", "score"),
         ("Latency p95 (ms)", "latency", "p95_ms"),
-        ("Conflict F1", "conflict_detection", "f1"),
+        # conflict_detection is deliberately absent: rendering it as an
+        # "n/a" cell reads as a hole in the results. It gets its own
+        # section below, stating why.
     ]
 
     headers = ["Retriever"] + [mc[0] for mc in metric_cols]
@@ -73,6 +74,18 @@ def generate_report(results_path: str, output_path: str | None = None) -> str:
         lines.append("| " + " | ".join(row) + " |")
 
     lines.append("")
+    lines.append("## Excluded Metrics")
+    lines.append("")
+    excluded = data.get("excluded_metrics", {})
+    if excluded:
+        for metric_name, reason in excluded.items():
+            lines.append(f"**{metric_name}** — excluded by design, not missing.")
+            lines.append("")
+            lines.append(f"> {reason}")
+            lines.append("")
+    else:
+        lines.append("None.")
+        lines.append("")
     lines.append("## Detailed Results")
     lines.append("")
 
@@ -81,6 +94,8 @@ def generate_report(results_path: str, output_path: str | None = None) -> str:
         lines.append("")
         r_results = results.get(retriever, {})
         for metric_key, metric_data in r_results.items():
+            if metric_data.get("status") == "excluded":
+                continue
             lines.append(f"**{metric_key}**")
             lines.append("")
             lines.append("| Field | Value |")

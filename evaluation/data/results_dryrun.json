@@ -1,0 +1,105 @@
+{
+  "generated_at": "2026-08-22T16:41:10.665412+00:00",
+  "ground_truth_items": 5,
+  "retrievers": [
+    "naive_rag",
+    "sourcemind"
+  ],
+  "excluded_metrics": {
+    "conflict_detection": "conflict_detection: excluded from this run — dataset lacks labeled negative pairs; system now includes a novel human-gated severity-tiered resolution design not present in comparable systems (Supermemory, Mem0 both auto-resolve via LLM with no human oversight — see paper Section X). Full evaluation of this feature is planned as follow-up work."
+  },
+  "results": {
+    "naive_rag": {
+      "knowledge_retention": {
+        "metric": "knowledge_retention",
+        "score": 1.0,
+        "hits": 5,
+        "total": 5,
+        "top_k": 5
+      },
+      "attribution_accuracy": {
+        "metric": "attribution_accuracy",
+        "score": 0.6,
+        "correct": 3,
+        "total": 5
+      },
+      "role_scoped_retrieval_engineer": {
+        "metric": "role_scoped_retrieval",
+        "role": "engineer",
+        "score": 1.0,
+        "total_queries": 5,
+        "in_scope_results": 25,
+        "total_results": 25
+      },
+      "role_scoped_retrieval_manager": {
+        "metric": "role_scoped_retrieval",
+        "role": "manager",
+        "score": 0.0,
+        "total_queries": 0,
+        "in_scope_results": 0,
+        "total_results": 0
+      },
+      "latency": {
+        "metric": "latency",
+        "p50_ms": 184.53,
+        "p95_ms": 236.27,
+        "p99_ms": 236.27,
+        "mean_ms": 185.75,
+        "min_ms": 137.54,
+        "max_ms": 236.27,
+        "total_queries": 5
+      },
+      "conflict_detection": {
+        "metric": "conflict_detection",
+        "status": "excluded",
+        "reason": "conflict_detection: excluded from this run — dataset lacks labeled negative pairs; system now includes a novel human-gated severity-tiered resolution design not present in comparable systems (Supermemory, Mem0 both auto-resolve via LLM with no human oversight — see paper Section X). Full evaluation of this feature is planned as follow-up work."
+      }
+    },
+    "sourcemind": {
+      "knowledge_retention": {
+        "metric": "knowledge_retention",
+        "score": 0.6,
+        "hits": 3,
+        "total": 5,
+        "top_k": 5
+      },
+      "attribution_accuracy": {
+        "metric": "attribution_accuracy",
+        "score": 0.0,
+        "correct": 0,
+        "total": 5
+      },
+      "role_scoped_retrieval_engineer": {
+        "metric": "role_scoped_retrieval",
+        "role": "engineer",
+        "score": 1.0,
+        "total_queries": 5,
+        "in_scope_results": 25,
+        "total_results": 25
+      },
+      "role_scoped_retrieval_manager": {
+        "metric": "role_scoped_retrieval",
+        "role": "manager",
+        "score": 0.0,
+        "total_queries": 0,
+        "in_scope_results": 0,
+        "total_results": 0
+      },
+      "latency": {
+        "metric": "latency",
+        "p50_ms": 609.06,
+        "p95_ms": 653.47,
+        "p99_ms": 653.47,
+        "mean_ms": 621.02,
+        "min_ms": 603.11,
+        "max_ms": 653.47,
+        "total_queries": 5
+      },
+      "conflict_detection": {
+        "metric": "conflict_detection",
+        "status": "excluded",
+        "reason": "conflict_detection: excluded from this run — dataset lacks labeled negative pairs; system now includes a novel human-gated severity-tiered resolution design not present in comparable systems (Supermemory, Mem0 both auto-resolve via LLM with no human oversight — see paper Section X). Full evaluation of this feature is planned as follow-up work."
+      }
+    }
+  }
+}
