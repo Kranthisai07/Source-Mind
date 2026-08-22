@@ -65,7 +65,23 @@ def role_scoped_retrieval(
 
     for item in role_items:
         results = retriever.retrieve(item["question"], top_k=top_k)
+
+        # Score distinct SOURCE ARTIFACTS, not raw results.
+        #
+        # Systems that split a document into several memories return more than
+        # one result for the same artifact, so counting results made an
+        # artifact contribute once per memory to both sides of the ratio while
+        # a single-document baseline contributed once. Same retrieval, two
+        # different denominators. `id` is already the ground-truth artifact id
+        # for every retriever, so deduplicating on it puts both on the same
+        # footing.
+        seen_artifacts: set[str] = set()
         for r in results:
+            artifact_id = r.get("id", "")
+            if artifact_id in seen_artifacts:
+                continue
+            seen_artifacts.add(artifact_id)
+
             total_results += 1
             r_type = (r.get("metadata") or {}).get("artifact_type", "")
             if r_type in allowed_types:

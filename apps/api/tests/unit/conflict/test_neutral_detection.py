@@ -138,6 +138,29 @@ def test_conflict_prompt_contains_no_winner_language():
 
 
 @pytest.mark.unit
+def test_the_system_prompt_is_format_only():
+    """The system prompt must not smuggle in judgement.
+
+    It lives at module level, so inspect.getsource(_classify_relation) does
+    not see it — a guard that scanned only the user prompt would go stale the
+    moment someone put an instruction in the system prompt instead. It exists
+    to stop the model wrapping its JSON in a markdown fence, and it must stay
+    confined to that.
+    """
+    hits = _found(relations._CLASSIFY_SYSTEM_PROMPT)
+    assert not hits, f"winner-implying framing in the system prompt: {hits}"
+
+    # It should talk about shape, not about which statement wins.
+    lowered = relations._CLASSIFY_SYSTEM_PROMPT.lower()
+    assert "json" in lowered
+    for verdict_word in ("correct", "right", "better", "prefer", "outdated"):
+        assert verdict_word not in lowered, (
+            f"system prompt mentions {verdict_word!r}; judgement belongs in the "
+            "user prompt where the neutrality checks can see it"
+        )
+
+
+@pytest.mark.unit
 def test_the_resolver_generates_no_ai_suggestion_at_all():
     """ADR-010: the advisory mechanism is removed, not reworded.
 

@@ -92,6 +92,11 @@ async def search_memories(
             confidence_score=None,
             created_at=datetime.now(UTC),
             updated_at=None,
+            # hybrid_search attaches this when include_attribution is set, and
+            # MemoryResponse has always had the field, but the route never
+            # passed it through. The flag was accepted and its extra query
+            # paid for, then the result dropped on the floor here.
+            attribution=item.get("attribution"),
             relation_count=0,
         )
         results.append(

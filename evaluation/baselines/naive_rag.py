@@ -39,6 +39,12 @@ class NaiveRAGBaseline:
                 "Install with: pip install chromadb"
             )
         api_key = openai_api_key or os.environ.get("OPENAI_API_KEY", "")
+        # Current chromadb reads the key from CHROMA_OPENAI_API_KEY and raises
+        # if it is unset, regardless of the api_key argument below. Without
+        # this the whole baseline was skipped with "NaiveRAG unavailable",
+        # which reads like a missing dependency rather than a missing env var.
+        if api_key and not os.environ.get("CHROMA_OPENAI_API_KEY"):
+            os.environ["CHROMA_OPENAI_API_KEY"] = api_key
         embed_fn = OpenAIEmbeddingFunction(
             api_key=api_key,
             model_name=embedding_model,
@@ -66,6 +72,11 @@ class NaiveRAGBaseline:
                     "repo": item.get("repo", ""),
                     "artifact_type": item.get("artifact_type", ""),
                     "source_id": item.get("source_id", ""),
+                    # attribution_accuracy reads metadata.author off the
+                    # retrieved result. Without this the metric scored 0 for
+                    # this baseline for lack of anything to compare, which
+                    # looks like a finding but is only a missing field.
+                    "author": (item.get("metadata") or {}).get("author", ""),
                 }
                 for item in items
             ],

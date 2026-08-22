@@ -281,6 +281,88 @@ async def get_overview(
     return result_data
 
 
+async def compute_project_contribution(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+) -> list[dict[str, Any]]:
+    """Aggregate, workspace-level standing for each contributor.
+
+        ProjectContribution(c) = SUM over memories m attributed to c of
+                                 contribution_weight(c, m) * importance_score(m)
+
+    This is a VIEW ON TOP of the per-memory 5-signal attribution algorithm in
+    services/attribution/scorer.py, which is not touched or reinterpreted here.
+    Attribution says who shaped a memory; importance_score — already computed
+    from inbound relations, approvals, version count, recency and category —
+    says how much that memory matters to the workspace. Multiplying them lets
+    one pivotal contribution outweigh many incidental edits without this
+    function inventing any judgement of its own.
+
+    Weighting by an existing score matters: nothing here decides what is
+    important, it only reads what the system already determined.
+
+    Returned per contributor:
+      contributor_id, contributor_name, project_contribution_score,
+      memory_count, avg_importance_of_their_memories
+
+    Two properties of the data shape this query.
+
+    1. `attributions` is append-only (enforced by a DB trigger), so a
+       contributor accumulates one row per recomputation of the same memory.
+       Summing raw rows would count their share once per historical row and
+       inflate the score without bound. DISTINCT ON takes the latest row per
+       (memory, user) first. The table happens to hold no duplicates today,
+       which is exactly why this is easy to get wrong later.
+
+    2. Everything is resolved in ONE query. The obvious shape — list
+       contributors, then sum per contributor — is an N+1, which this module
+       has already been bitten by once.
+    """
+    result = await session.execute(
+        text("""
+            WITH workspace_memories AS (
+                SELECT id, COALESCE(importance_score, 0.0) AS importance
+                FROM memories
+                WHERE workspace_id = CAST(:ws AS uuid)
+                  AND current_version = TRUE
+                  AND deleted_at IS NULL
+            ),
+            latest_attribution AS (
+                SELECT DISTINCT ON (a.memory_id, a.user_id)
+                    a.memory_id,
+                    a.user_id,
+                    a.contribution_weight
+                FROM attributions a
+                JOIN workspace_memories wm ON wm.id = a.memory_id
+                ORDER BY a.memory_id, a.user_id, a.created_at DESC
+            )
+            SELECT
+                la.user_id::text                                  AS uid,
+                COALESCE(u.display_name, u.email)                 AS name,
+                SUM(la.contribution_weight * wm.importance)       AS project_score,
+                COUNT(DISTINCT la.memory_id)                      AS memory_count,
+                AVG(wm.importance)                                AS avg_importance
+            FROM latest_attribution la
+            JOIN workspace_memories wm ON wm.id = la.memory_id
+            JOIN users u ON u.id = la.user_id
+            GROUP BY la.user_id, u.display_name, u.email
+            ORDER BY project_score DESC
+        """),
+        {"ws": str(workspace_id)},
+    )
+
+    return [
+        {
+            "contributor_id": uid,
+            "contributor_name": name,
+            "project_contribution_score": round(float(score or 0.0), 6),
+            "memory_count": int(count or 0),
+            "avg_importance_of_their_memories": round(float(avg or 0.0), 6),
+        }
+        for uid, name, score, count, avg in result.fetchall()
+    ]
+
+
 async def get_contribution_map(
     session: AsyncSession,
     workspace_id: uuid.UUID,
@@ -347,6 +429,22 @@ async def get_contribution_map(
             "collaboration_rate": collab_rate,
             "last_contribution_at": str(last_contrib) if last_contrib else None,
         })
+
+    # Importance-weighted standing, merged in rather than served from a
+    # parallel endpoint that would drift from this one. One extra query for
+    # the whole workspace, not one per contributor.
+    project_scores = {
+        row["contributor_id"]: row
+        for row in await compute_project_contribution(session, workspace_id)
+    }
+    for contributor in contributors:
+        scored = project_scores.get(contributor["user_id"])
+        contributor["project_contribution_score"] = (
+            scored["project_contribution_score"] if scored else 0.0
+        )
+        contributor["avg_importance_of_their_memories"] = (
+            scored["avg_importance_of_their_memories"] if scored else 0.0
+        )
 
     return {"contributors": contributors}
 

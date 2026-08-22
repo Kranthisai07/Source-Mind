@@ -26,8 +26,9 @@ Usage:
 from __future__ import annotations
 
 import json
+import re
 import uuid
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import structlog
 from sqlalchemy import text
@@ -50,6 +51,28 @@ _LLM_RADIUS = 0.20        # cosine distance: trigger LLM classification
 _CONFLICT_RADIUS = 0.15   # cosine distance: trigger conflict check
 _MIN_CONFIDENCE = 0.85    # minimum LLM confidence to persist
 
+_CLASSIFY_MODEL = "claude-haiku-4-5-20251001"
+
+# 1024 to match fact_extractor. Observed replies used 47-166 tokens, but
+# conflict_summary is unbounded prose and a truncated reply is invalid
+# JSON, which lands in exactly the silent-failure path this function has
+# just had to be rescued from. Headroom is cheaper than that failure.
+_CLASSIFY_MAX_TOKENS = 1024
+
+# Format only. Everything about WHAT to decide stays in the user prompt,
+# which the neutrality tests scan; this governs only the shape of the
+# reply. Without it the model reliably wrapped its JSON in a markdown
+# fence, json.loads failed on the leading backticks, and the handler
+# below turned that into "unrelated" - so no relation and no conflict
+# was ever written, in any workspace, for as long as this code existed.
+_CLASSIFY_SYSTEM_PROMPT = (
+    "You classify how two statements from a team knowledge base relate."
+    "\n\nOutput format, strictly: reply with one raw JSON object and "
+    "nothing else. No markdown, no code fences, no backticks, and no "
+    "commentary before or after it. The first character of your reply "
+    "must be { and the last must be }."
+)
+
 
 class Classification(NamedTuple):
     """One LLM verdict about a pair of memories.
@@ -67,6 +90,36 @@ class Classification(NamedTuple):
     confidence: float
     is_conflict: bool = False
     conflict_summary: str = ""
+
+
+def _extract_json_object(raw: str) -> dict[str, Any]:
+    """Pull a JSON object out of a model reply.
+
+    Covers the shapes these replies actually take: a bare object, one
+    wrapped in a ```json fence, and one with prose on either side.
+    Stripping a literal "```json" prefix and "```" suffix
+    would handle only the middle case and would still fail on an
+    unterminated fence, so the fence is unwrapped when present and the
+    outermost braces are used either way.
+
+    Raises ValueError when there is no object at all, so the caller can
+    report a real failure instead of silently calling it "no
+    relationship".
+    """
+    text_ = raw.strip()
+
+    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", text_, re.DOTALL)
+    if fenced:
+        text_ = fenced.group(1).strip()
+
+    start, end = text_.find("{"), text_.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        raise ValueError(f"no JSON object in model reply: {raw[:200]!r}")
+
+    parsed = json.loads(text_[start : end + 1])
+    if not isinstance(parsed, dict):
+        raise ValueError(f"expected a JSON object, got {type(parsed).__name__}")
+    return parsed
 
 
 async def _classify_relation(
@@ -103,22 +156,40 @@ async def _classify_relation(
         '{"relation": string, "confidence": float, "is_conflict": bool, '
         '"conflict_summary": string}'
     )
+    # The call and the parse are distinct failures and are reported
+    # distinctly. Both return the same neutral default, but a parse
+    # failure means the model DID answer and its answer was thrown away -
+    # a defect, not an absence of relationship. At debug level that
+    # distinction stayed invisible while every relation and conflict in
+    # the system silently failed to be written.
     try:
         response = await client.messages.create(  # type: ignore[union-attr]
-            model="claude-haiku-4-5-20251001",
-            max_tokens=256,
+            model=_CLASSIFY_MODEL,
+            max_tokens=_CLASSIFY_MAX_TOKENS,
+            system=_CLASSIFY_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
-        data = json.loads(response.content[0].text)
-        return Classification(
-            relation=str(data.get("relation", "unrelated")),
-            confidence=float(data.get("confidence", 0.0)),
-            is_conflict=bool(data.get("is_conflict", False)),
-            conflict_summary=str(data.get("conflict_summary", "")),
-        )
     except Exception as exc:
-        log.debug("relation_classify_error", error=str(exc))
+        log.error("relation_classify_api_error", error=str(exc))
         return Classification(relation="unrelated", confidence=0.0)
+
+    raw_text = response.content[0].text
+    try:
+        data = _extract_json_object(raw_text)
+    except (json.JSONDecodeError, ValueError) as exc:
+        log.warning(
+            "relation_classify_unparseable",
+            error=str(exc),
+            raw_preview=raw_text[:200],
+        )
+        return Classification(relation="unrelated", confidence=0.0)
+
+    return Classification(
+        relation=str(data.get("relation", "unrelated")),
+        confidence=float(data.get("confidence", 0.0)),
+        is_conflict=bool(data.get("is_conflict", False)),
+        conflict_summary=str(data.get("conflict_summary", "")),
+    )
 
 
 async def _maybe_create_conflict(
