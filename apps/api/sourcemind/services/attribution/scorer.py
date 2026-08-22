@@ -15,9 +15,8 @@ ALLCAPS, version strings, known tech keywords). See ADR-007.
 
 from __future__ import annotations
 
-import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import structlog
@@ -138,7 +137,7 @@ def _signal1_char_diff(before: str | None, after: str) -> float:
         return 1.0 - (dist / denom)
     except Exception:
         # Fallback: simple char-level overlap
-        common = sum(a == b for a, b in zip(before, after))
+        common = sum(a == b for a, b in zip(before, after, strict=False))
         denom = max(len(before), len(after), 1)
         return common / denom
 
@@ -329,7 +328,7 @@ class AttributionScorer:
                 normalized[uid] = _FLOOR
                 changed = True
             for uid in normalized:
-                if uid not in [f for f in floored_ids]:
+                if uid not in floored_ids:
                     normalized[uid] *= scale
 
         # Final renormalize to ensure exact 1.0

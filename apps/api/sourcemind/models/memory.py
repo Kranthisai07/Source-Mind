@@ -10,7 +10,8 @@ import uuid
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import ForeignKey, Index, Integer, String, Text
-from sqlalchemy.dialects.postgresql import ARRAY, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from sourcemind.models.base import Base, SoftDeleteMixin, TimestampMixin
@@ -135,7 +136,10 @@ class Memory(Base, TimestampMixin, SoftDeleteMixin):
     importance_score: Mapped[float] = mapped_column(
         nullable=False,
         server_default="0.0",
-        comment="Computed importance weight [0.0–1.0]; recalculated on edit, relation creation, conflict resolution, and handoff",
+        comment=(
+            "Computed importance weight [0.0–1.0]; recalculated on edit, "
+            "relation creation, conflict resolution, and handoff"
+        ),
     )
 
     # ── Relationships ─────────────────────────────────────────────
@@ -180,4 +184,7 @@ class Memory(Base, TimestampMixin, SoftDeleteMixin):
 
     def __repr__(self) -> str:
         preview = self.content[:60] + "..." if len(self.content) > 60 else self.content
-        return f"<Memory id={self.id} v={self.version} current={self.current_version} content={preview!r}>"
+        return (
+            f"<Memory id={self.id} v={self.version} "
+            f"current={self.current_version} content={preview!r}>"
+        )

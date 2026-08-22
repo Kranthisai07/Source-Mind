@@ -113,8 +113,10 @@ def _split_text_chunks(text: str, source_metadata: dict[str, Any]) -> list[Chunk
     try:
         import spacy
         nlp = spacy.load("en_core_web_sm", disable=["ner", "lemmatizer"])
-    except Exception:
-        pass
+    except Exception as exc:
+        # Expected on Python 3.14, where spaCy does not import. Chunking
+        # silently changes shape when this happens, so it is recorded.
+        log.debug("chunker.spacy_unavailable", error=str(exc))
 
     def _sentencize(s: str) -> list[str]:
         if nlp is not None:
@@ -232,7 +234,9 @@ def _extract_imports(content: str, root: Any, language: str) -> str:  # pragma: 
     return "\n".join(lines)
 
 
-def _extract_code_units(content: str, root: Any, language: str) -> list[tuple[str, str, str]]:  # pragma: no cover
+def _extract_code_units(  # pragma: no cover
+    content: str, root: Any, language: str
+) -> list[tuple[str, str, str]]:
     """
     Extract (unit_type, unit_name, unit_content) from AST.
 

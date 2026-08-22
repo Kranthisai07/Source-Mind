@@ -10,7 +10,7 @@ GET    /v1/memories/:id/versions → full version history
 """
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 import structlog
@@ -46,7 +46,7 @@ _DEV_WORKSPACE_ID = UUID("00000000-0000-4000-8000-000000000010")
 def _make_meta(request_id: str, start: float) -> ResponseMeta:
     return ResponseMeta(
         request_id=request_id,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         latency_ms=(time.perf_counter() - start) * 1000,
     )
 
@@ -276,7 +276,7 @@ async def update_memory(
         tags=new_mem.tags,
         category=new_mem.category,
         confidence_score=new_mem.confidence_score,
-        created_at=new_mem.created_at or datetime.now(timezone.utc),
+        created_at=new_mem.created_at or datetime.now(UTC),
         updated_at=new_mem.updated_at,
         relation_count=0,
     )

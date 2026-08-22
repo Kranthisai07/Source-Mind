@@ -18,14 +18,12 @@ See ADR-007 for design rationale.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 import structlog
-from sqlalchemy import func, select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from sourcemind.models.memory import Memory
 
 log = structlog.get_logger(__name__)
 
@@ -70,9 +68,9 @@ def _s3_version_count(version_count: int) -> float:
 
 def _s4_recency(last_updated_at: datetime) -> float:
     """Exponential decay based on days since last update."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if last_updated_at.tzinfo is None:
-        last_updated_at = last_updated_at.replace(tzinfo=timezone.utc)
+        last_updated_at = last_updated_at.replace(tzinfo=UTC)
     age_days = (now - last_updated_at).total_seconds() / 86400.0
     return math.exp(-age_days / _RECENCY_HALF_LIFE_DAYS)
 

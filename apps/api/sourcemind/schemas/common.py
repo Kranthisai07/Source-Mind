@@ -11,11 +11,9 @@ request tracing, timing, and pagination cursors.
 """
 
 from datetime import datetime
-from typing import Any, Generic, TypeVar
+from typing import Any
 
 from pydantic import BaseModel, Field
-
-T = TypeVar("T")
 
 
 class ResponseMeta(BaseModel):
@@ -49,7 +47,7 @@ class PaginationMeta(ResponseMeta):
     limit: int = Field(description="Page size used for this request")
 
 
-class APIResponse(BaseModel, Generic[T]):
+class APIResponse[T](BaseModel):
     """
     Standard success response envelope.
 
@@ -61,14 +59,14 @@ class APIResponse(BaseModel, Generic[T]):
     meta: ResponseMeta
 
 
-class PaginatedResponse(BaseModel, Generic[T]):
+class PaginatedResponse[T](BaseModel):
     """Standard paginated list response envelope (data + cursor metadata)."""
 
     data: list[T]
     meta: PaginationMeta
 
 
-class ItemList(BaseModel, Generic[T]):
+class ItemList[T](BaseModel):
     """
     Lightweight `{items, total}` envelope used by simple list endpoints
     that do not need cursor-based pagination metadata.

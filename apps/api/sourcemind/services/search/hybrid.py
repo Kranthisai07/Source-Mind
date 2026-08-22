@@ -13,7 +13,6 @@ Access control:
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import struct
@@ -66,6 +65,7 @@ async def _get_query_embedding(
 
     if openai_client is None:
         from openai import AsyncOpenAI
+
         from sourcemind.core.config import get_settings
         settings = get_settings()
         openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
@@ -252,13 +252,17 @@ async def hybrid_search(
 
     # Step 2: Run searches
     if mode == "semantic":
-        semantic = await _semantic_search(session, embedding, workspace_id, _MAX_CANDIDATES, min_similarity)
+        semantic = await _semantic_search(
+            session, embedding, workspace_id, _MAX_CANDIDATES, min_similarity
+        )
         keyword: list[dict[str, Any]] = []
     elif mode == "keyword":
         semantic = []
         keyword = await _keyword_search(session, query, workspace_id, _MAX_CANDIDATES)
     else:  # hybrid — run sequentially; AsyncSession is not concurrency-safe
-        semantic = await _semantic_search(session, embedding, workspace_id, _MAX_CANDIDATES, min_similarity)
+        semantic = await _semantic_search(
+            session, embedding, workspace_id, _MAX_CANDIDATES, min_similarity
+        )
         keyword  = await _keyword_search(session, query, workspace_id, _MAX_CANDIDATES)
 
     # Step 3: Merge via RRF

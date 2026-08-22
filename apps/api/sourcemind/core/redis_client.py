@@ -10,8 +10,7 @@ from typing import Any
 
 import orjson
 import structlog
-from redis.asyncio import Redis, ConnectionPool
-from redis.asyncio.connection import SSLConnection
+from redis.asyncio import ConnectionPool, Redis
 
 from sourcemind.core.config import get_settings
 
@@ -132,6 +131,8 @@ def _mask_url(url: str) -> str:
                 scheme, creds = scheme_creds.split("://", 1)
                 user_pass = creds.rsplit(":", 1)
                 return f"{scheme}://{user_pass[0]}:***@{host}"
-    except Exception:
+    except Exception:  # noqa: S110 - see below
+        # Silent by design: this is the log-redaction helper itself, so
+        # logging the failure could leak the credentials being redacted.
         pass
     return url

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 import structlog

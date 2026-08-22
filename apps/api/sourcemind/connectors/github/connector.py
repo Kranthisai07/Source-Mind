@@ -12,8 +12,7 @@ Sync flow per repository:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 import structlog
 from sqlalchemy import select
@@ -77,7 +76,7 @@ class GitHubConnector:
             artifacts_found=0,
             artifacts_new=0,
             artifacts_skipped=0,
-            started_at=datetime.now(timezone.utc),
+            started_at=datetime.now(UTC),
         )
         self._session.add(sync_log)
         await self._session.flush()
@@ -110,10 +109,10 @@ class GitHubConnector:
             sync_log.artifacts_found = total_found
             sync_log.artifacts_new = total_new
             sync_log.artifacts_skipped = total_skipped
-            sync_log.completed_at = datetime.now(timezone.utc)
+            sync_log.completed_at = datetime.now(UTC)
 
             # Update connector timestamps
-            self._config.last_sync_at = datetime.now(timezone.utc)
+            self._config.last_sync_at = datetime.now(UTC)
             await self._session.flush()
 
         return sync_log
@@ -129,7 +128,6 @@ class GitHubConnector:
             Tuple of (found, new, skipped) artifact counts.
         """
         found = new = skipped = 0
-        mapper = GitHubMapper()
 
         # ── Commits ───────────────────────────────────────────────────────────
         async for raw_commit in self._client.get_commits(owner, repo, since=since):

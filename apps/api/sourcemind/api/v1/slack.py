@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import structlog
 from fastapi import APIRouter, Request, Response
-from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
+from slack_bolt.async_app import AsyncApp
 
 from sourcemind.core.config import get_settings
 from sourcemind.services.slack.bot import register_handlers

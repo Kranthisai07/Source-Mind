@@ -10,7 +10,7 @@ GET  /v1/workspaces/:id/analytics → contribution map + knowledge gaps
 
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 import structlog
@@ -38,7 +38,7 @@ router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 def _make_meta(request_id: str, start: float) -> ResponseMeta:
     return ResponseMeta(
         request_id=request_id,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         latency_ms=(time.perf_counter() - start) * 1000,
     )
 

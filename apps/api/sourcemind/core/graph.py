@@ -5,7 +5,6 @@ Used for attribution chains and relationship traversal.
 The async driver is initialized once at startup and shared across requests.
 """
 
-from typing import Any
 
 import structlog
 from neo4j import AsyncDriver, AsyncGraphDatabase, AsyncSession

@@ -170,6 +170,11 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S", "N"]
+# SQLAlchemy relationship targets are string forward references resolved by the
+# mapper registry at configure_mappers() time, not real names in module scope.
+# They already carry # type: ignore[name-defined] for mypy. Scoped to models/
+# on purpose: a genuine undefined name anywhere else must still fail the lint.
+"sourcemind/models/*.py" = ["F821"]
 
 # ─── mypy ─────────────────────────────────────────────────────
 [tool.mypy]

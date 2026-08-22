@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -291,7 +291,8 @@ async def _find_successor_by_relations(
             JOIN attributions a ON a.memory_id = m2.id
                 AND a.user_id != CAST(:dep_uid AS uuid)
             JOIN users u ON u.id = a.user_id
-            WHERE (mr.source_memory_id = CAST(:mid AS uuid) OR mr.target_memory_id = CAST(:mid AS uuid))
+            WHERE (mr.source_memory_id = CAST(:mid AS uuid)
+                   OR mr.target_memory_id = CAST(:mid AS uuid))
               AND m2.id != CAST(:mid AS uuid)
               AND m2.current_version = TRUE
               AND m2.deleted_at IS NULL
@@ -346,7 +347,7 @@ async def assign_memory(
     transfer_amount = departing_weight * 0.4
 
     # Insert new attribution record for new owner (APPEND-ONLY)
-    from sourcemind.models.attribution import Attribution, AttributionActionType
+    from sourcemind.models.attribution import Attribution
     new_attr = Attribution(
         memory_id=memory_id,
         user_id=new_owner_id,
@@ -433,7 +434,7 @@ async def create_handoff_record(
     summary: HandoffSummary,
 ) -> uuid.UUID:
     """Create a handoff_records row and seed handoff_assignments for tier 1+2."""
-    expires_at = datetime.now(timezone.utc) + timedelta(days=_HANDOFF_WINDOW_DAYS)
+    expires_at = datetime.now(UTC) + timedelta(days=_HANDOFF_WINDOW_DAYS)
 
     # Insert handoff_records
     result = await session.execute(

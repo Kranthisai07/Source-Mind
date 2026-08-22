@@ -15,6 +15,7 @@ from typing import Any
 
 import structlog
 from fastapi import APIRouter, Query, status
+from pydantic import BaseModel
 from sqlalchemy import text
 
 from sourcemind.core.dependencies import (
@@ -60,23 +61,28 @@ async def list_workspace_conflicts(
         params["cursor_score"] = float(cursor)
 
     where = " AND ".join(conditions)
-    result = await db.execute(
-        text(f"""
-            SELECT
-                mc.id::text, mc.status, mc.conflict_type, mc.severity,
-                mc.similarity_score, mc.explanation,
-                mc.memory_a_id::text, ma.content AS content_a,
-                mc.memory_b_id::text, mb.content AS content_b,
-                mc.created_at
-            FROM memory_conflicts mc
-            JOIN memories ma ON ma.id = mc.memory_a_id
-            JOIN memories mb ON mb.id = mc.memory_b_id
-            WHERE {where}
-            ORDER BY mc.similarity_score DESC
-            LIMIT :limit
-        """),
-        params,
-    )
+
+    # S608 is a false positive here. `where` is a join of string literals
+    # defined above in this function; every user-supplied value (status,
+    # cursor) is bound through `params` as :status / :cursor_score and
+    # never reaches the SQL text. The directive sits after the closing
+    # quotes because that is where ruff reads it for a multi-line string -
+    # putting it on the opening line makes it part of the query.
+    sql = f"""
+        SELECT
+            mc.id::text, mc.status, mc.conflict_type, mc.severity,
+            mc.similarity_score, mc.explanation,
+            mc.memory_a_id::text, ma.content AS content_a,
+            mc.memory_b_id::text, mb.content AS content_b,
+            mc.created_at
+        FROM memory_conflicts mc
+        JOIN memories ma ON ma.id = mc.memory_a_id
+        JOIN memories mb ON mb.id = mc.memory_b_id
+        WHERE {where}
+        ORDER BY mc.similarity_score DESC
+        LIMIT :limit
+    """  # noqa: S608
+    result = await db.execute(text(sql), params)
     rows = result.fetchall()
 
     conflicts = [
@@ -134,7 +140,11 @@ async def get_conflict(
     )
 
 
-@router.post("/conflicts/{conflict_id}/review", status_code=status.HTTP_200_OK, response_model=ConflictReviewResponse)
+@router.post(
+    "/conflicts/{conflict_id}/review",
+    status_code=status.HTTP_200_OK,
+    response_model=ConflictReviewResponse,
+)
 async def review_conflict(
     conflict_id: uuid.UUID,
     db: DBSession,
@@ -152,9 +162,6 @@ async def review_conflict(
     return ConflictReviewResponse(status="under_review", conflict_id=conflict_id)
 
 
-from pydantic import BaseModel
-
-
 class ResolveBody(BaseModel):
     resolution_type: str
     resolution_note: str | None = None
@@ -164,7 +171,11 @@ class ResolveBody(BaseModel):
     tag_b: str | None = None
 
 
-@router.post("/conflicts/{conflict_id}/resolve", status_code=status.HTTP_200_OK, response_model=ConflictResolveResponse)
+@router.post(
+    "/conflicts/{conflict_id}/resolve",
+    status_code=status.HTTP_200_OK,
+    response_model=ConflictResolveResponse,
+)
 async def resolve_conflict_endpoint(
     conflict_id: uuid.UUID,
     body: ResolveBody,

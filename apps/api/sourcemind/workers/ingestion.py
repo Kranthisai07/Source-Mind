@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 
@@ -105,7 +105,7 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
     doc_uuid = uuid.UUID(document_id)
     ws_uuid = uuid.UUID(workspace_id)
     user_uuid = uuid.UUID(user_id)
-    start = datetime.now(timezone.utc)
+    start = datetime.now(UTC)
 
     try:
         async with factory() as session:
@@ -232,10 +232,18 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                         current_stage="failed",
                     )
                     await session.commit()
-                except Exception:
-                    pass
+                except Exception as cleanup_exc:
+                    # Failing to RECORD the failure is its own incident:
+                    # the document is left mid-pipeline with no status.
+                    log.error(
+                        "ingestion.failure_status_update_failed",
+                        document_id=str(doc_uuid),
+                        error=str(cleanup_exc),
+                    )
 
-                raise task.retry(exc=exc, countdown=60 * (2 ** task.request.retries))  # type: ignore[union-attr]
+                raise task.retry(  # type: ignore[union-attr]
+                    exc=exc, countdown=60 * (2 ** task.request.retries)
+                ) from exc
 
     finally:
         await engine.dispose()
@@ -243,4 +251,4 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
 
 
 def _elapsed_ms(start: datetime) -> int:
-    return int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+    return int((datetime.now(UTC) - start).total_seconds() * 1000)

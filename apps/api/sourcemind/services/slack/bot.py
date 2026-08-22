@@ -16,22 +16,21 @@ App mentions:
 
 from __future__ import annotations
 
-import asyncio
 import re
 import uuid
 from typing import Any
 
 import structlog
-from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+from slack_bolt.async_app import AsyncApp
 
 from sourcemind.core.config import get_settings
-from sourcemind.core.database import init_db, close_db, get_session_factory
-from sourcemind.core.redis_client import init_redis, close_redis
+from sourcemind.core.database import close_db, get_session_factory, init_db
+from sourcemind.core.redis_client import close_redis, init_redis
 from sourcemind.services.slack.formatter import (
-    format_search_results,
     format_experts,
     format_help,
+    format_search_results,
 )
 
 
@@ -166,7 +165,12 @@ def register_handlers(app: AsyncApp, workspace_id: str, app_url: str) -> None:
                 blocks = await _do_who_knows(topic, workspace_id, app_url)
             except Exception as exc:
                 log.error("slack.mention.who_knows_error", error=str(exc))
-                blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": ":x: Lookup failed."}}]
+                blocks = [
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": ":x: Lookup failed."},
+                    }
+                ]
             await say(blocks=blocks)
             return
 

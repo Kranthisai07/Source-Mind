@@ -11,16 +11,14 @@ from typing import Any
 
 import structlog
 from pgvector.sqlalchemy import Vector  # noqa: F401 — registers type globally
-from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import NullPool, QueuePool
 
-from sourcemind.core.config import Environment, get_settings
+from sourcemind.core.config import get_settings
 
 logger = structlog.get_logger(__name__)
 
@@ -32,17 +30,19 @@ def _build_engine(settings: Any = None) -> AsyncEngine:
     """
     Construct the async SQLAlchemy engine.
 
-    Uses QueuePool for production, NullPool for tests to avoid
-    connection leaks between test cases.
+    Pooling is left at the SQLAlchemy async default
+    (AsyncAdaptedQueuePool), tuned by the pool_* settings passed below.
+
+    This previously computed a `pool_class` of NullPool for development
+    and QueuePool otherwise, and never passed it to create_async_engine.
+    The selection had no effect for as long as it existed. It is not
+    wired up here rather than deleted-and-forgotten because NullPool
+    rejects the pool_size / max_overflow / pool_timeout arguments below,
+    so enabling it is a real change with its own testing, not a one-line
+    fix.
     """
     if settings is None:
         settings = get_settings()
-
-    pool_class = (
-        NullPool
-        if settings.environment == Environment.DEVELOPMENT and settings.debug
-        else QueuePool
-    )
 
     # asyncpg does not support ?ssl=require as a query param — strip it and
     # pass via connect_args instead.
@@ -167,6 +167,10 @@ def _mask_url(url: str) -> str:
             scheme, creds = scheme_creds.split("://", 1)
             user, _ = creds.split(":", 1)
             return f"{scheme}://{user}:***@{host}"
-    except Exception:
+    except Exception:  # noqa: S110 - see below
+        # Deliberately silent, and deliberately not logged: this function
+        # exists to keep credentials out of logs, so reporting its own
+        # failure risks emitting the URL it failed to redact. Any parse
+        # failure falls through to the fully redacted constant.
         pass
     return "***"

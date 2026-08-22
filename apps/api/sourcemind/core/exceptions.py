@@ -29,8 +29,10 @@ class ErrorCode(StrEnum):
     # Authentication / Authorization (001–009)
     UNAUTHORIZED = "SM001"
     FORBIDDEN = "SM002"
-    TOKEN_EXPIRED = "SM003"
-    TOKEN_INVALID = "SM004"
+    # noqa S105: these are error-code constants, not credentials. The rule
+    # matches on the name containing "TOKEN".
+    TOKEN_EXPIRED = "SM003"  # noqa: S105
+    TOKEN_INVALID = "SM004"  # noqa: S105
     WORKSPACE_ACCESS_DENIED = "SM005"
 
     # Validation / Input (010–019)

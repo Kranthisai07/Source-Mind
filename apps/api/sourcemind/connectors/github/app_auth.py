@@ -37,7 +37,7 @@ class GitHubAppAuth:
         app_id: str | int,
         private_key_pem: str,
         installation_id: str | int,
-        redis_client: "Redis",
+        redis_client: Redis,
     ) -> None:
         self._app_id = str(app_id)
         self._private_key_pem = private_key_pem
