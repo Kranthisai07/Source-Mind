@@ -237,6 +237,28 @@ async def test_an_updates_verdict_retires_the_disputed_memory(
     )
 
 
+async def _set_importance(session, memory_id, value: float) -> None:
+    """Pin a memory's importance after detect() has run.
+
+    detect() now recomputes importance for the TARGET of every relation it
+    writes, which is correct - an inbound edge raises the target's score. The
+    disputed memory in these tests IS that target, so an importance seeded at
+    insert time is legitimately overwritten by the time the assertions run.
+
+    These tests are about the SEVERITY ladder, not about how importance is
+    derived, so the intended value is restored here and severity recomputed
+    from it. Seeding at insert and hoping it survives would be asserting
+    against a state production never produces.
+    """
+    await session.execute(
+        text(
+            "UPDATE memories SET importance_score = :v WHERE id = CAST(:id AS uuid)"
+        ),
+        {"v": value, "id": str(memory_id)},
+    )
+    await session.flush()
+
+
 async def _extra_conflict(session, workspace_id, memory_a, memory_b):
     """A conflict arriving from a source other than this detect() run.
 
@@ -354,6 +376,9 @@ async def test_blocks_derivation_clears_when_the_conflict_is_resolved(
         db_session, test_workspace.id, author_c, seed=0.60, importance=0.20
     )
     await _extra_conflict(db_session, test_workspace.id, disputed, rival_two)
+    # detect() rescored `disputed` as a relation target, so restore the high
+    # importance this test is about before scoring severity from it.
+    await _set_importance(db_session, disputed, 0.95)
     # Same call _maybe_create_conflict makes after writing a conflict:
     # score the whole cluster, not just the new row.
     await recompute_severity_for_memory(db_session, disputed)
@@ -440,6 +465,17 @@ async def test_three_way_conflict_creates_correct_pairwise_rows(
         [_MemoryRow(newcomer, test_workspace.id, "third claim", [0.09] * 3072)],
         test_workspace.id,
     )
+
+    # Both existing claims were relation targets, so detect() recomputed their
+    # importance. Restore the values under test and rescore severity from them.
+    from sourcemind.services.conflict.severity import (
+        recompute_severity_for_memory as _rescore,
+    )
+
+    await _set_importance(db_session, claim_a, 0.90)
+    await _set_importance(db_session, claim_b, 0.30)
+    await _rescore(db_session, claim_a)
+    await _rescore(db_session, claim_b)
 
     rows = await _conflicts_for(db_session, newcomer)
     assert len(rows) == 2, f"expected one row per existing claim, got {len(rows)}"

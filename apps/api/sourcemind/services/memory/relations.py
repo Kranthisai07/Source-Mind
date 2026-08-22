@@ -322,6 +322,14 @@ class RelationDetector:
         """
         new_ids = {str(m.id) for m in new_memories}
 
+        # Targets of relations written during this run. An inbound edge
+        # raises the TARGET's importance, and the target is a
+        # pre-existing memory that the post-processing loop below never
+        # visits, because that loop iterates new_memories - the SOURCE
+        # side of every edge. A set, so a memory gaining several inbound
+        # edges is rescored once rather than once per edge.
+        related_targets: set[uuid.UUID] = set()
+
         for memory in new_memories:
             if memory.embedding is None:
                 continue
@@ -418,6 +426,8 @@ class RelationDetector:
                                         {"id": cand_id_str},
                                     )
 
+                            related_targets.add(cand_id)
+
                             log.info(
                                 "relation_detected",
                                 from_id=str(memory.id),
@@ -454,3 +464,21 @@ class RelationDetector:
             # first or severity is computed from the stale value.
             await recompute_importance(session, memory.id)
             await recompute_severity_for_memory(session, memory.id)
+
+        # The other side of every edge written above.
+        #
+        # _s1_inbound_relations is an importance input, and it counts rows
+        # WHERE target_memory_id = this memory. So writing an edge changes
+        # the target's score and leaves the source's inbound count
+        # untouched - exactly the memory the loop above does not reach.
+        # Left unrescored, a memory that everything else derives from kept
+        # the same score as one nothing points at, and importance_score
+        # stayed at a single value across the whole workspace.
+        #
+        # Same shape as the conflict-cluster rescore in
+        # _maybe_create_conflict, which calls recompute_severity_for_memory
+        # on cand_id for the same reason: iterating one side of a
+        # relationship silently skips the other.
+        for target_id in related_targets - {m.id for m in new_memories}:
+            await recompute_importance(session, target_id)
+            await recompute_severity_for_memory(session, target_id)
