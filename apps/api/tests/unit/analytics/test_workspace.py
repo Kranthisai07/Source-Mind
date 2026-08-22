@@ -128,17 +128,33 @@ async def test_contribution_map_includes_all_active_contributors():
         (uid2, "Bob", "bob@acme.dev", 5, 8, 0.4, "2025-03-08", 3),
     ]
 
-    mock_result = MagicMock()
-    mock_result.fetchall = MagicMock(return_value=contributor_rows)
+    # get_contribution_map now runs a second query for the importance-weighted
+    # project score, so the stub has to answer per query rather than returning
+    # the same rows to every execute(). Its columns differ (5, not 8).
+    project_rows = [
+        (uid1, "Alice", 4.2, 15, 0.28),
+        (uid2, "Bob", 1.1, 8, 0.14),
+    ]
+
+    async def execute_side_effect(stmt, params=None, **kwargs):
+        r = MagicMock()
+        rows = project_rows if "latest_attribution" in str(stmt) else contributor_rows
+        r.fetchall = MagicMock(return_value=rows)
+        return r
 
     mock_session = AsyncMock()
-    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.execute = AsyncMock(side_effect=execute_side_effect)
 
     result = await get_contribution_map(mock_session, ws_id)
     assert len(result["contributors"]) == 2
     names = [c["name"] for c in result["contributors"]]
     assert "Alice" in names
     assert "Bob" in names
+
+    # The aggregate rides along on the existing payload.
+    alice = next(c for c in result["contributors"] if c["name"] == "Alice")
+    assert alice["project_contribution_score"] == 4.2
+    assert alice["avg_importance_of_their_memories"] == 0.28
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -204,23 +204,55 @@ async def _fetch_attributions(
     if not memory_ids:
         return {}
 
+    # Shape matters: this feeds MemoryResponse.attribution, typed as
+    # list[ContributionBreakdown], which requires a nested `user` object and a
+    # `percentage`. The previous flat {contributor, contribution_weight} could
+    # never validate, which went unnoticed because the route dropped the value
+    # before it reached the response model.
+    #
+    # DISTINCT ON because `attributions` is append-only: a contributor
+    # accumulates one row per recomputation, and without it a single person
+    # appears several times and the percentages no longer sum to 100.
     result = await session.execute(
         text("""
             SELECT
-                a.memory_id::text,
-                COALESCE(u.display_name, u.email) AS contributor,
-                a.contribution_weight
-            FROM attributions a
-            JOIN users u ON u.id = a.user_id
-            WHERE a.memory_id = ANY((:ids)::uuid[])
-            ORDER BY a.contribution_weight DESC
+                memory_id::text,
+                user_id::text,
+                contributor,
+                avatar_url,
+                contribution_weight
+            FROM (
+                SELECT DISTINCT ON (a.memory_id, a.user_id)
+                    a.memory_id,
+                    a.user_id,
+                    COALESCE(u.display_name, u.email) AS contributor,
+                    u.avatar_url,
+                    a.contribution_weight
+                FROM attributions a
+                JOIN users u ON u.id = a.user_id
+                WHERE a.memory_id = ANY((:ids)::uuid[])
+                ORDER BY a.memory_id, a.user_id, a.created_at DESC
+            ) latest
+            ORDER BY contribution_weight DESC
         """),
         {"ids": memory_ids},
     )
     attr: dict[str, list[dict[str, Any]]] = {}
-    for mem_id, contributor, weight in result.fetchall():
-        attr.setdefault(mem_id, []).append(
-            {"contributor": contributor, "contribution_weight": float(weight)}
+    for mem_id, user_id, contributor, avatar_url, weight in result.fetchall():
+        bucket = attr.setdefault(mem_id, [])
+        bucket.append(
+            {
+                "user": {
+                    "id": user_id,
+                    "display_name": contributor,
+                    "avatar_url": avatar_url,
+                },
+                "contribution_weight": float(weight),
+                "percentage": round(float(weight) * 100.0, 2),
+                # Rows arrive ordered by weight descending, so the first
+                # contributor seen for a memory is its primary one.
+                "is_primary": len(bucket) == 0,
+            }
         )
     return attr
 
