@@ -234,6 +234,7 @@ markers = [
   "integration: integration tests (requires docker)",
   "e2e: end-to-end tests",
   "slow: tests that take >5s",
+  "costs_api: makes REAL paid LLM API calls; skip with -m 'not costs_api'",
 ]
 
 # ─── coverage ─────────────────────────────────────────────────
