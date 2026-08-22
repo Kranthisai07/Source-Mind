@@ -1,0 +1,104 @@
+{
+  "generated_at": "2026-08-22T21:42:29.008791+00:00",
+  "ground_truth_items": 40,
+  "retrievers": [
+    "naive_rag",
+    "sourcemind"
+  ],
+  "excluded_metrics": {
+    "attribution_accuracy": "attribution_accuracy: excluded from this run - ingestion attributes every memory to the authenticated API caller rather than the artifact's original author, because create_initial_attribution() writes a single contributor at weight 1.0 and the 5-signal algorithm runs only on PATCH. The metric would therefore report 0.000 for SourceMind by construction, measuring a wiring gap rather than attribution quality. Tracked in ARCHITECTURE.md; scheduled as follow-up work.",
+    "conflict_detection": "conflict_detection: excluded from this run — dataset lacks labeled negative pairs; system now includes a novel human-gated severity-tiered resolution design not present in comparable systems (Supermemory, Mem0 both auto-resolve via LLM with no human oversight — see paper Section X). Full evaluation of this feature is planned as follow-up work."
+  },
+  "results": {
+    "naive_rag": {
+      "knowledge_retention": {
+        "metric": "knowledge_retention",
+        "score": 0.275,
+        "hits": 11,
+        "total": 40,
+        "top_k": 5
+      },
+      "role_scoped_retrieval_engineer": {
+        "metric": "role_scoped_retrieval",
+        "role": "engineer",
+        "score": 1.0,
+        "total_queries": 40,
+        "in_scope_results": 200,
+        "total_results": 200
+      },
+      "role_scoped_retrieval_manager": {
+        "metric": "role_scoped_retrieval",
+        "role": "manager",
+        "score": 0.0,
+        "total_queries": 0,
+        "in_scope_results": 0,
+        "total_results": 0
+      },
+      "latency": {
+        "metric": "latency",
+        "p50_ms": 172.95,
+        "p95_ms": 223.06,
+        "p99_ms": 243.27,
+        "mean_ms": 175.1,
+        "min_ms": 130.7,
+        "max_ms": 243.27,
+        "total_queries": 40
+      },
+      "attribution_accuracy": {
+        "metric": "attribution_accuracy",
+        "status": "excluded",
+        "reason": "attribution_accuracy: excluded from this run - ingestion attributes every memory to the authenticated API caller rather than the artifact's original author, because create_initial_attribution() writes a single contributor at weight 1.0 and the 5-signal algorithm runs only on PATCH. The metric would therefore report 0.000 for SourceMind by construction, measuring a wiring gap rather than attribution quality. Tracked in ARCHITECTURE.md; scheduled as follow-up work."
+      },
+      "conflict_detection": {
+        "metric": "conflict_detection",
+        "status": "excluded",
+        "reason": "conflict_detection: excluded from this run — dataset lacks labeled negative pairs; system now includes a novel human-gated severity-tiered resolution design not present in comparable systems (Supermemory, Mem0 both auto-resolve via LLM with no human oversight — see paper Section X). Full evaluation of this feature is planned as follow-up work."
+      }
+    },
+    "sourcemind": {
+      "knowledge_retention": {
+        "metric": "knowledge_retention",
+        "score": 0.2,
+        "hits": 8,
+        "total": 40,
+        "top_k": 5
+      },
+      "role_scoped_retrieval_engineer": {
+        "metric": "role_scoped_retrieval",
+        "role": "engineer",
+        "score": 1.0,
+        "total_queries": 40,
+        "in_scope_results": 140,
+        "total_results": 140
+      },
+      "role_scoped_retrieval_manager": {
+        "metric": "role_scoped_retrieval",
+        "role": "manager",
+        "score": 0.0,
+        "total_queries": 0,
+        "in_scope_results": 0,
+        "total_results": 0
+      },
+      "latency": {
+        "metric": "latency",
+        "p50_ms": 592.98,
+        "p95_ms": 621.34,
+        "p99_ms": 647.21,
+        "mean_ms": 593.74,
+        "min_ms": 567.96,
+        "max_ms": 647.21,
+        "total_queries": 40
+      },
+      "attribution_accuracy": {
+        "metric": "attribution_accuracy",
+        "status": "excluded",
+        "reason": "attribution_accuracy: excluded from this run - ingestion attributes every memory to the authenticated API caller rather than the artifact's original author, because create_initial_attribution() writes a single contributor at weight 1.0 and the 5-signal algorithm runs only on PATCH. The metric would therefore report 0.000 for SourceMind by construction, measuring a wiring gap rather than attribution quality. Tracked in ARCHITECTURE.md; scheduled as follow-up work."
+      },
+      "conflict_detection": {
+        "metric": "conflict_detection",
+        "status": "excluded",
+        "reason": "conflict_detection: excluded from this run — dataset lacks labeled negative pairs; system now includes a novel human-gated severity-tiered resolution design not present in comparable systems (Supermemory, Mem0 both auto-resolve via LLM with no human oversight — see paper Section X). Full evaluation of this feature is planned as follow-up work."
+      }
+    }
+  }
+}
