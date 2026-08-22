@@ -27,8 +27,13 @@ class ConnectorDocument(BaseModel):
     title: str = Field(description="Short human-readable title")
     content: str = Field(description="Full text to ingest")
     idempotency_key: str = Field(description="SHA-256(source_tool+source_type+source_id)")
-    memory_type: str = Field(default="", description="Semantic memory category (e.g. 'technical_decision')")
-    tags: list[str] = Field(default_factory=list, description="Searchable labels derived from artifact metadata")
+    memory_type: str = Field(
+        default="", description="Semantic memory category (e.g. 'technical_decision')"
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Searchable labels derived from artifact metadata",
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
@@ -156,7 +161,7 @@ class GitHubMapper:
         comments: list[dict[str, Any]] | None = None,
         reviews: list[dict[str, Any]] | None = None,
         review_comments: list[dict[str, Any]] | None = None,
-    ) -> "ConnectorDocument":
+    ) -> ConnectorDocument:
         """Map a PR with enriched comments/reviews to a :class:`ConnectorDocument`.
 
         Produces richer content than :meth:`from_pull_request` by appending

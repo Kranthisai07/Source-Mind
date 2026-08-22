@@ -54,7 +54,10 @@ class Settings(BaseSettings):
     log_level: LogLevel = LogLevel.INFO
 
     # ── Server ────────────────────────────────────────────────────
-    host: str = "0.0.0.0"
+    # noqa S104: binding all interfaces is required inside a container -
+    # Railway routes to the service by its published port, and 127.0.0.1
+    # would be unreachable from outside the container.
+    host: str = "0.0.0.0"  # noqa: S104
     port: int = 8000
     workers: int = 1
     cors_origins: list[str] = Field(
@@ -195,7 +198,9 @@ class Settings(BaseSettings):
 
     # ── Slack ─────────────────────────────────────────────────────
     slack_bot_token: Annotated[str, Field(repr=False)] = Field(default="", alias="SLACK_BOT_TOKEN")
-    slack_signing_secret: Annotated[str, Field(repr=False)] = Field(default="", alias="SLACK_SIGNING_SECRET")
+    slack_signing_secret: Annotated[str, Field(repr=False)] = Field(
+        default="", alias="SLACK_SIGNING_SECRET"
+    )
     slack_app_token: Annotated[str, Field(repr=False)] = Field(default="", alias="SLACK_APP_TOKEN")
     slack_default_workspace_id: str = Field(default="", alias="SLACK_DEFAULT_WORKSPACE_ID")
 

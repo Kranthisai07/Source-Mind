@@ -5,11 +5,12 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy import DateTime, ForeignKey, Integer, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from sourcemind.models.base import Base, TimestampMixin
+from sourcemind.models.base import Base
 
 
 class ConnectorConfig(Base):
@@ -45,7 +46,7 @@ class ConnectorConfig(Base):
         DateTime(timezone=True), nullable=False, server_default="NOW()",
     )
 
-    sync_logs: Mapped[list["ConnectorSyncLog"]] = relationship(
+    sync_logs: Mapped[list[ConnectorSyncLog]] = relationship(
         "ConnectorSyncLog", back_populates="connector", lazy="noload",
     )
 
@@ -87,7 +88,7 @@ class ConnectorSyncLog(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    connector: Mapped["ConnectorConfig"] = relationship(
+    connector: Mapped[ConnectorConfig] = relationship(
         "ConnectorConfig", back_populates="sync_logs", lazy="noload",
     )
 
@@ -134,7 +135,9 @@ class ArtifactLink(Base):
     source_id: Mapped[str] = mapped_column(Text(), nullable=False)
     source_url: Mapped[str | None] = mapped_column(Text(), nullable=True)
     source_author: Mapped[str | None] = mapped_column(Text(), nullable=True)
-    source_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_timestamp: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     resolved_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),

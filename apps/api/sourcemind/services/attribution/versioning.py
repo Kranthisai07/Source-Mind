@@ -15,7 +15,6 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 import structlog
 from sqlalchemy import text
@@ -114,8 +113,12 @@ async def create_new_version(
     # 5. Copy memory_relations (both directions)
     await session.execute(
         text("""
-            INSERT INTO memory_relations (source_memory_id, target_memory_id, relation_type, confidence, similarity_score, detected_by)
-            SELECT CAST(:new_id AS uuid), target_memory_id, relation_type, confidence, similarity_score, detected_by
+            INSERT INTO memory_relations (
+                source_memory_id, target_memory_id, relation_type,
+                confidence, similarity_score, detected_by
+            )
+            SELECT CAST(:new_id AS uuid), target_memory_id, relation_type,
+                   confidence, similarity_score, detected_by
             FROM memory_relations
             WHERE source_memory_id = CAST(:old_id AS uuid)
             ON CONFLICT DO NOTHING
@@ -124,8 +127,12 @@ async def create_new_version(
     )
     await session.execute(
         text("""
-            INSERT INTO memory_relations (source_memory_id, target_memory_id, relation_type, confidence, similarity_score, detected_by)
-            SELECT source_memory_id, CAST(:new_id AS uuid), relation_type, confidence, similarity_score, detected_by
+            INSERT INTO memory_relations (
+                source_memory_id, target_memory_id, relation_type,
+                confidence, similarity_score, detected_by
+            )
+            SELECT source_memory_id, CAST(:new_id AS uuid), relation_type,
+                   confidence, similarity_score, detected_by
             FROM memory_relations
             WHERE target_memory_id = CAST(:old_id AS uuid)
             ON CONFLICT DO NOTHING

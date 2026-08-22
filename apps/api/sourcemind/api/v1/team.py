@@ -12,15 +12,14 @@ POST /v1/workspaces/:id/handoff/complete           → finalize departure
 
 import time
 import uuid
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 import structlog
 from fastapi import APIRouter, status
 from pydantic import BaseModel
 from sqlalchemy import select, text
 
-from sourcemind.core.dependencies import CurrentUser, DBSession, IdempotencyKey, RequestID
+from sourcemind.core.dependencies import CurrentUser, DBSession, RequestID
 from sourcemind.core.exceptions import UserNotFoundError
 from sourcemind.models.user import User
 from sourcemind.schemas.common import APIResponse, ResponseMeta
@@ -65,7 +64,7 @@ async def get_current_user_profile(
         data=UserResponse.model_validate(user),
         meta=ResponseMeta(
             request_id=request_id,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             latency_ms=(time.perf_counter() - start) * 1000,
         ),
     )
@@ -252,10 +251,10 @@ async def assign_handoff_memory(
     Transfer 40% of the departing user's attribution share for a memory
     to the new owner. Attribution records are append-only.
     """
-    from sourcemind.services.attribution.handoff import assign_memory
-
     # Resolve departing user from handoff_records
     from sqlalchemy import text
+
+    from sourcemind.services.attribution.handoff import assign_memory
     hr_result = await db.execute(
         text("SELECT departing_user_id FROM handoff_records WHERE id = CAST(:hid AS uuid)"),
         {"hid": str(body.handoff_record_id)},

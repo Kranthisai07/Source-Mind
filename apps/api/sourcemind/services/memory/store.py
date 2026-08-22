@@ -15,7 +15,7 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sourcemind.models.document import Document, IngestionStatus
+from sourcemind.models.document import IngestionStatus
 from sourcemind.models.memory import Memory
 
 if TYPE_CHECKING:
@@ -214,6 +214,9 @@ async def update_document_status(
         )
         params["current_stage"] = current_stage
 
-    sql = f"UPDATE documents SET {', '.join(updates)} WHERE id = CAST(:doc_id AS uuid)"
+    # noqa S608: `updates` holds only literal fragments written above; the
+    # caller's values are bound via `params`. What varies is which columns
+    # are set, never the content of any value.
+    sql = f"UPDATE documents SET {', '.join(updates)} WHERE id = CAST(:doc_id AS uuid)"  # noqa: S608
     await session.execute(text(sql), params)
     await session.flush()

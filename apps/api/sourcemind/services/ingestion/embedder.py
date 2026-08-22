@@ -136,7 +136,9 @@ class EmbeddingService:
                 batch_embeddings = await _embed_batch(self._client, batch)
                 all_embeddings.extend(batch_embeddings)
 
-            for fact_idx, text, embedding in zip(uncached_indices, uncached_texts, all_embeddings):
+            for fact_idx, text, embedding in zip(
+                uncached_indices, uncached_texts, all_embeddings, strict=True
+            ):
                 key = _cache_key(text)
                 await redis.setex(key, _CACHE_TTL, _pack(embedding))
                 results[fact_idx] = EmbeddingResult(

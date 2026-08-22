@@ -17,7 +17,7 @@ Access control:
 """
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 import structlog
@@ -90,7 +90,7 @@ async def search_memories(
             tags=None,
             category=None,
             confidence_score=None,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             updated_at=None,
             relation_count=0,
         )

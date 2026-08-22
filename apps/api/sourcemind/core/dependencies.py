@@ -15,6 +15,7 @@ import httpx
 import structlog
 from fastapi import Depends, Header, Query, Request
 from jose import JWTError, jwt
+from redis.asyncio import Redis
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,7 +27,6 @@ from sourcemind.core.exceptions import (
     WorkspaceAccessDeniedError,
 )
 from sourcemind.core.redis_client import get_redis_dep
-from redis.asyncio import Redis
 
 # In-memory JWKS cache: {url: {"keys": [...], "fetched_at": float}}
 _jwks_cache: dict[str, dict] = {}
@@ -39,6 +39,7 @@ logger = structlog.get_logger(__name__)
 async def get_openai_client() -> object:
     """Provide an AsyncOpenAI client for injection into route handlers."""
     from openai import AsyncOpenAI
+
     from sourcemind.core.config import get_settings
     settings = get_settings()
     return AsyncOpenAI(api_key=settings.openai_api_key)
@@ -47,6 +48,7 @@ async def get_openai_client() -> object:
 async def get_anthropic_client() -> object:
     """Provide an AsyncAnthropic client for injection into route handlers."""
     from anthropic import AsyncAnthropic
+
     from sourcemind.core.config import get_settings
     settings = get_settings()
     return AsyncAnthropic(api_key=settings.anthropic_api_key)

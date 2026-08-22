@@ -157,4 +157,7 @@ class WorkspaceMember(Base, TimestampMixin):
     )
 
     def __repr__(self) -> str:
-        return f"<WorkspaceMember user={self.user_id} workspace={self.workspace_id} role={self.role!r}>"
+        return (
+            f"<WorkspaceMember user={self.user_id} "
+            f"workspace={self.workspace_id} role={self.role!r}>"
+        )

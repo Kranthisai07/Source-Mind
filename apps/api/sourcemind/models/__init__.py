@@ -1,23 +1,26 @@
 """
 SQLAlchemy ORM models for SourceMind.
 
-Import order matters for Alembic autogenerate — all models must be imported
-here so that Base.metadata has full visibility during migration generation.
+Every model module must be imported here so that Base.metadata sees all of
+them during Alembic autogenerate. It is the IMPORT that matters, not its
+position: relationships are declared as string forward references and are
+resolved by the mapper registry at configure_mappers() time, so this block is
+safe to keep alphabetically sorted (and ruff's isort rule will sort it).
 """
 
-from sourcemind.models.base import Base, TimestampMixin, SoftDeleteMixin
-from sourcemind.models.organization import Organization, OrganizationPlan
-from sourcemind.models.workspace import Workspace, WorkspaceRole, WorkspaceMember
-from sourcemind.models.user import User
-from sourcemind.models.document import Document, DocumentSourceType, IngestionStatus
-from sourcemind.models.memory import Memory
 from sourcemind.models.attribution import (
     Attribution,
-    AttributionEdit,
     AttributionActionType,
+    AttributionEdit,
 )
+from sourcemind.models.base import Base, SoftDeleteMixin, TimestampMixin
+from sourcemind.models.document import Document, DocumentSourceType, IngestionStatus
+from sourcemind.models.memory import Memory
+from sourcemind.models.memory_conflict import ConflictStatus, ConflictType, MemoryConflict
 from sourcemind.models.memory_relation import MemoryRelation, RelationType
-from sourcemind.models.memory_conflict import MemoryConflict, ConflictType, ConflictStatus
+from sourcemind.models.organization import Organization, OrganizationPlan
+from sourcemind.models.user import User
+from sourcemind.models.workspace import Workspace, WorkspaceMember, WorkspaceRole
 
 __all__ = [
     "Base",

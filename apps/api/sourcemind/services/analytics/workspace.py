@@ -312,10 +312,11 @@ async def get_contribution_map(
                 COALESCE(u.display_name, u.email)                                       AS name,
                 u.email                                                                 AS email,
                 COUNT(DISTINCT m.id) FILTER (WHERE ae.edit_position = 1)                AS created,
-                COUNT(DISTINCT m.id)                                                    AS influenced,
-                AVG(a.contribution_weight)                                              AS avg_weight,
-                MAX(ae.created_at)                                                      AS last_contribution,
-                COUNT(DISTINCT m.id) FILTER (WHERE mcc.contributor_count > 1)           AS collab_count
+                COUNT(DISTINCT m.id)                          AS influenced,
+                AVG(a.contribution_weight)                    AS avg_weight,
+                MAX(ae.created_at)                            AS last_contribution,
+                COUNT(DISTINCT m.id)
+                    FILTER (WHERE mcc.contributor_count > 1)  AS collab_count
             FROM attributions a
             JOIN users u ON u.id = a.user_id
             JOIN workspace_memories m ON m.id = a.memory_id
@@ -385,10 +386,16 @@ async def get_knowledge_gaps(
     if single_count > 0:
         gaps.append({
             "gap_type": "single_contributor",
-            "description": f"{single_count} memories are owned exclusively by one person (>90% attribution) with no other contributors.",
+            "description": (
+                f"{single_count} memories are owned exclusively by one person "
+                "(>90% attribution) with no other contributors."
+            ),
             "affected_memories": single_count,
             "risk_level": "high" if single_count > 10 else "medium",
-            "recommendation": "Encourage knowledge sharing. Consider pair-editing critical memories to distribute ownership.",
+            "recommendation": (
+                "Encourage knowledge sharing. Consider pair-editing critical "
+                "memories to distribute ownership."
+            ),
         })
 
     # no_recent_update (important memories never updated, > 90 days old)
@@ -408,10 +415,16 @@ async def get_knowledge_gaps(
     if stale_count > 0:
         gaps.append({
             "gap_type": "no_recent_update",
-            "description": f"{stale_count} important memories (importance > 0.7) have never been updated and are older than 90 days.",
+            "description": (
+                f"{stale_count} important memories (importance > 0.7) have never "
+                "been updated and are older than 90 days."
+            ),
             "affected_memories": stale_count,
             "risk_level": "medium",
-            "recommendation": "Review and refresh stale high-importance memories to ensure accuracy.",
+            "recommendation": (
+                "Review and refresh stale high-importance memories to ensure "
+                "accuracy."
+            ),
         })
 
     # high_conflict_area (tag-based, simplified)
@@ -439,10 +452,16 @@ async def get_knowledge_gaps(
         tag, total, conflicts = row
         gaps.append({
             "gap_type": "high_conflict_area",
-            "description": f"Tag '{tag}' has {conflicts}/{total} memories with open conflicts (>{20}% conflict rate).",
+            "description": (
+                f"Tag '{tag}' has {conflicts}/{total} memories with open "
+                f"conflicts (>{20}% conflict rate)."
+            ),
             "affected_memories": total,
             "risk_level": "high",
-            "recommendation": f"Resolve open conflicts in the '{tag}' knowledge area to improve consistency.",
+            "recommendation": (
+                f"Resolve open conflicts in the '{tag}' knowledge area to "
+                "improve consistency."
+            ),
         })
 
     return {"gaps": gaps}

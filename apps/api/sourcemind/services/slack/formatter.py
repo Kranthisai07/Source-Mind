@@ -40,10 +40,10 @@ def _strip_md(text: str) -> str:
     # Bold must be parked behind a sentinel first. Rewriting **bold** to
     # *bold* and then applying the italic rule turns it straight into _bold_,
     # so every bold span silently rendered as italic in Slack.
-    _BOLD = "\x00BOLD\x00"
-    text = re.sub(r"\*\*([^*]+)\*\*", rf"{_BOLD}\1{_BOLD}", text)  # bold → sentinel
-    text = re.sub(r"\*([^*]+)\*", r"_\1_", text)                    # italic → Slack italic
-    text = text.replace(_BOLD, "*")                                 # sentinel → Slack bold
+    bold_sentinel = "\x00BOLD\x00"
+    text = re.sub(r"\*\*([^*]+)\*\*", rf"{bold_sentinel}\1{bold_sentinel}", text)
+    text = re.sub(r"\*([^*]+)\*", r"_\1_", text)      # italic → Slack italic
+    text = text.replace(bold_sentinel, "*")           # sentinel → Slack bold
     text = re.sub(r"~~([^~]+)~~", r"~\1~", text)        # strike stays
     text = re.sub(r"^[-*+]\s+", "• ", text, flags=re.MULTILINE)
     text = re.sub(r"^\d+\.\s+", "• ", text, flags=re.MULTILINE)
@@ -105,7 +105,10 @@ def format_search_results(
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f":mag: *{len(results)} result{'s' if len(results) != 1 else ''} for:* _{query}_",
+                "text": (
+                    f":mag: *{len(results)} "
+                    f"result{'s' if len(results) != 1 else ''} for:* _{query}_"
+                ),
             },
         },
         {"type": "divider"},
@@ -157,7 +160,10 @@ def format_search_results(
             "type": "context",
             "elements": [{
                 "type": "mrkdwn",
-                "text": f":information_source: Showing 5 of {len(results)} results. <{base_url}/memories?q={query}|See all →>",
+                "text": (
+                    f":information_source: Showing 5 of {len(results)} results. "
+                    f"<{base_url}/memories?q={query}|See all →>"
+                ),
             }],
         })
 
@@ -165,7 +171,10 @@ def format_search_results(
         "type": "context",
         "elements": [{
             "type": "mrkdwn",
-            "text": ":brain: Powered by <https://sourcemind.ai|SourceMind> · knowledge memory for engineering teams",
+            "text": (
+                ":brain: Powered by <https://sourcemind.ai|SourceMind> · "
+                "knowledge memory for engineering teams"
+            ),
         }],
     })
 
@@ -179,8 +188,13 @@ def format_experts(
 ) -> list[dict]:
     """
     Build Slack Block Kit blocks for who-would-know results.
+
+    NOTE: app_url is accepted for signature parity with the other
+    formatters but is unused, because these blocks contain no links back
+    to the dashboard. format_search_results does link. If expert blocks
+    should link to profiles, that is a feature to add, not a dead local
+    to keep.
     """
-    base_url = (app_url or _DASHBOARD_URL).rstrip("/")
 
     if not experts:
         return [
@@ -226,7 +240,8 @@ def format_experts(
         text = (
             f"{rank_icon}  *{name}*"
             + (f"  `@{login}`" if login and login != name else "")
-            + f"\n`{bar}` {conf_pct}% confidence · {mem_count} memor{'y' if mem_count == 1 else 'ies'}"
+            + f"\n`{bar}` {conf_pct}% confidence · "
+            + f"{mem_count} memor{'y' if mem_count == 1 else 'ies'}"
         )
         if preview:
             text += f"\n_{_emoji(category)} {preview}_"
@@ -254,7 +269,10 @@ def format_help() -> list[dict]:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": "*:brain: SourceMind Slack Bot*\nAI-powered knowledge memory for your engineering team.",
+                "text": (
+                    "*:brain: SourceMind Slack Bot*\n"
+                    "AI-powered knowledge memory for your engineering team."
+                ),
             },
         },
         {"type": "divider"},

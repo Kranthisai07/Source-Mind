@@ -5,13 +5,12 @@ All models inherit from Base. Shared audit fields are provided via mixins
 rather than repeated on every table.
 """
 
-import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, func, text
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, MappedColumn, mapped_column
+from sqlalchemy import DateTime, func
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):

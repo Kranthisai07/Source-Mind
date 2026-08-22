@@ -13,7 +13,6 @@ GET    /v1/connectors/:id/sync-logs             — paginated sync history
 from __future__ import annotations
 
 import uuid
-from typing import Any
 
 import structlog
 from fastapi import APIRouter, Query, status

@@ -187,8 +187,8 @@ async def _validate_url(url: str) -> None:
                     f"URL returned HTTP {response.status_code}. "
                     "Ensure the URL is publicly accessible."
                 )
-    except httpx.TimeoutException:
-        raise ValidationError("URL did not respond within 5 seconds.")
+    except httpx.TimeoutException as exc:
+        raise ValidationError("URL did not respond within 5 seconds.") from exc
     except ValidationError:
         raise
     except Exception as exc:

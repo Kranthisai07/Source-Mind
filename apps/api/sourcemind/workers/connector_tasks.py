@@ -7,16 +7,17 @@ import uuid
 
 import structlog
 
+from sourcemind.connectors.github.app_auth import GitHubAppAuth
+from sourcemind.connectors.github.connector import GitHubConnector
 from sourcemind.core.config import get_settings
+from sourcemind.core.redis_client import close_redis, get_redis, init_redis
+from sourcemind.models.connector import ConnectorConfig
+
 # Bind to the CONFIGURED app, not celery's current_app. @shared_task resolves
 # against whatever app happens to be current, which in the API process is a
 # default Celery instance pointing at localhost:6379 — publishing then fails
 # with "connection refused" instead of reaching the real broker.
 from sourcemind.workers.celery_app import app as celery_app
-from sourcemind.core.redis_client import close_redis, get_redis, init_redis
-from sourcemind.connectors.github.app_auth import GitHubAppAuth
-from sourcemind.connectors.github.connector import GitHubConnector
-from sourcemind.models.connector import ConnectorConfig
 
 log = structlog.get_logger(__name__)
 
@@ -72,7 +73,7 @@ def sync_github_connector(
             connector_id=connector_id,
             error=str(exc),
         )
-        raise self.retry(exc=exc)
+        raise self.retry(exc=exc) from exc
 
 
 async def _run_sync(
