@@ -14,6 +14,11 @@ from sourcemind.models.attribution import (
     AttributionEdit,
 )
 from sourcemind.models.base import Base, SoftDeleteMixin, TimestampMixin
+from sourcemind.models.connector import (
+    ArtifactLink,
+    ConnectorConfig,
+    ConnectorSyncLog,
+)
 from sourcemind.models.document import Document, DocumentSourceType, IngestionStatus
 from sourcemind.models.memory import Memory
 from sourcemind.models.memory_conflict import ConflictStatus, ConflictType, MemoryConflict
@@ -44,4 +49,7 @@ __all__ = [
     "MemoryConflict",
     "ConflictType",
     "ConflictStatus",
+    "ConnectorConfig",
+    "ConnectorSyncLog",
+    "ArtifactLink",
 ]
