@@ -139,6 +139,26 @@ async def receive(
     session.add(doc)
     await session.flush()  # generate doc.id
 
+    # ── Commit BEFORE dispatching ─────────────────────────────────
+    #
+    # The worker is a different process on a different connection, and it
+    # picks the task up within milliseconds. Until this transaction commits,
+    # the document does not exist as far as that connection is concerned.
+    #
+    # This used to flush and dispatch, leaving the commit to the request
+    # teardown in core/database.py::get_db_session — which runs only after
+    # receive() returns, after the route returns, and after the response is
+    # serialised. The worker therefore raced a transaction that had not been
+    # committed yet, failed its SELECT, logged pipeline_doc_not_found and
+    # returned early WITHOUT touching the row. The document was left at
+    # 'pending'/'queued' with no error recorded, for ever.
+    #
+    # A document must be durable before anything is scheduled against it.
+    # Committing here also means a failure to enqueue leaves an orphaned
+    # document rather than an orphaned task: the document is recoverable and
+    # visible, the task was neither.
+    await session.commit()
+
     # ── Enqueue Celery task ───────────────────────────────────────
     from sourcemind.workers.ingestion import process_document
 
@@ -151,8 +171,11 @@ async def receive(
         priority=5,
     )
 
+    # Second commit: the job id is what the client polls on, so it has to be
+    # durable too. Safe to touch `doc` after the commit above because the
+    # session factory sets expire_on_commit=False.
     doc.ingestion_job_id = task.id
-    await session.flush()
+    await session.commit()
 
     log.info(
         "document_received",
