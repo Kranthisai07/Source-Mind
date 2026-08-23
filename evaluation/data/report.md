@@ -10,6 +10,17 @@ Ground-truth items: 300
 | naive_rag | 0.313 | 0.992 | 0.598 | 222.950 |
 | sourcemind | 0.260 | 0.978 | 0.392 | 1082.460 |
 
+## Recall, four ways
+
+Both systems scored over the identical set of items SourceMind actually holds. 56 of 300 documents produced no memories, so SourceMind can never retrieve them; scoring it over 300 charges it for an ingestion gap rather than a retrieval one. NaiveRAG still indexes all 300 - the excluded documents remain in its index as distractors - so only the scored queries differ.
+
+| Basis | naive_rag | sourcemind |
+|-------|-----------|------------|
+| All 300 items (raw) | 0.313 (94/300) | 0.260 (78/300) |
+| Held 244 items (like-for-like) | 0.295 (72/244) | 0.320 (78/244) |
+
+56 documents produced no memories and are excluded from the second row for both systems.
+
 ## Excluded Metrics
 
 **attribution_accuracy** — excluded by design, not missing.
