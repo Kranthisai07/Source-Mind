@@ -522,11 +522,28 @@ Signal 4 running on the regex backend is NOT counted as degraded: that is the
 designed path under ADR-007 when spaCy is unavailable, which is always the
 case on Python 3.14.
 
-Worth knowing when reading attribution numbers: the ingestion pipeline calls
-`create_initial_attribution()`, which writes a single contributor at weight
-1.0 with every signal hardcoded to 1.0. The 5-signal algorithm runs only in
-`recompute_attribution()`, on `PATCH /v1/memories/:id`. Ingesting a corpus
-therefore exercises none of it.
+**Attribution on ingestion — the accurate version.**
+`create_initial_attribution()` now scores the creation with the same 5-signal
+algorithm every later edit uses, rather than writing a hardcoded copy of its
+output. That corrected exactly one value: `structural_score`, which was always
+1.0 and is 0.0 for content containing no entities.
+
+The earlier framing — "attribution never computes on ingestion" — was wrong in
+a way worth recording. Four of the five signals are constant for ANY first
+creation, and that is the correct answer rather than a stub: S1 returns early
+with no `before` to diff against, S2 compares the contribution to the latest
+version which is the same string when there is only one edit, S3 is 0.8^0, and
+creating is not approving. Only S4 varies.
+
+The real gap is upstream. **Bulk ingestion only ever produces
+single-contributor, single-edit memories, so the algorithm's multi-contributor
+discrimination has not yet been exercised on real evaluation data.** With one
+contributor there is nothing to discriminate and normalisation trivially
+returns 100%. This is the same root cause behind `attribution_accuracy`'s
+exclusion from the evaluation and conflict detection's unreachability there:
+every ingested memory belongs to one author, the API caller. Demonstrating the
+algorithm needs a corpus with genuine multi-author edit histories, which the
+GitHub-artifact dataset does not provide.
 
 ---
 

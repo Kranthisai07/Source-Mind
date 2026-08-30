@@ -36,7 +36,9 @@ async def create_initial_attribution(
 
     Creates:
       1. AttributionEdit — records the creation event (content_before=None)
-      2. Attribution — snapshot assigning 100% weight to the submitter
+      2. Attribution — snapshot scored by the 5-signal algorithm. The sole
+         contributor normalises to 100% weight, but the per-signal values are
+         computed rather than assumed.
 
     Both records are flushed (not committed) so they participate in the
     same transaction as the Memory insert.
@@ -54,16 +56,65 @@ async def create_initial_attribution(
     session.add(edit)
     await session.flush()  # needed to get edit.id
 
-    # 2. Create the attribution snapshot referencing the edit
+    # 2. Score the creation with the SAME algorithm every later edit uses.
+    #
+    # This previously wrote the tuple (1.0, 1.0, 1.0, 1.0, 0.0) by hand - a
+    # hardcoded duplicate of what the scorer computes for a first creation,
+    # not a placeholder standing in for it. Removing the duplicate changes
+    # exactly one value in practice, structural_score, and makes the rest
+    # derived rather than asserted so they stay correct if the algorithm
+    # changes.
+    #
+    # Four of the five signals are constant here by construction, and that is
+    # the correct answer rather than a degenerate one:
+    #
+    #   S1 char diff  1.0  - _signal1_char_diff returns early on empty
+    #                        `before`; there is nothing to diff against, so the
+    #                        creator changed 100% of the content.
+    #   S2 semantic   1.0  - compute_scores compares each contribution against
+    #                        the LATEST version. With one edit those are the
+    #                        same string, so the cosine is 1.0 by identity.
+    #   S3 temporal   1.0  - 0.8^(1-1). This genuinely is position 1.
+    #   S4 structural 1.0 or 0.0 - the only signal that varies. Every entity is
+    #                        new when there is no `before`, so it is 1.0 when
+    #                        the NER backend finds any entity and 0.0 when the
+    #                        content has none. The old constant 1.0 was wrong
+    #                        for entity-free content.
+    #   S5 approval   0.0  - creating is not approving.
+    #
+    # contribution_weight normalises to 1.0 whatever the raw signals say,
+    # because there is exactly one contributor. The algorithm discriminates
+    # between contributors; with one of them there is nothing to discriminate.
+    from sourcemind.services.attribution.scorer import EditEvent, get_scorer
+
+    scored = get_scorer().compute_scores(
+        [
+            EditEvent(
+                user_id=str(user_id),
+                content_before=None,
+                content_after=content,
+                edit_position=1,
+                action_type=AttributionActionType.CREATE.value,
+            )
+        ]
+    )
+    if not scored:
+        # compute_scores returns [] only for an empty edit list, which cannot
+        # happen here. Fail loudly rather than silently writing nothing.
+        raise RuntimeError(
+            f"scorer returned no attribution for memory {memory_id}"
+        )
+    signals = scored[0]
+
     attribution = Attribution(
         memory_id=memory_id,
         user_id=user_id,
-        contribution_weight=1.0,
-        char_diff_score=1.0,
-        semantic_score=1.0,
-        temporal_score=1.0,
-        structural_score=1.0,
-        approval_score=0.0,  # No explicit approval yet
+        contribution_weight=signals.contribution_weight,
+        char_diff_score=signals.char_diff_score,
+        semantic_score=signals.semantic_score,
+        temporal_score=signals.temporal_score,
+        structural_score=signals.structural_score,
+        approval_score=signals.approval_score,
         trigger_action=AttributionActionType.CREATE,
         edit_id=edit.id,
     )

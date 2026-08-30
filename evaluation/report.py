@@ -74,6 +74,37 @@ def generate_report(results_path: str, output_path: str | None = None) -> str:
         lines.append("| " + " | ".join(row) + " |")
 
     lines.append("")
+
+    # ── Like-for-like recall ─────────────────────────────────────────────────
+    lfl = data.get("like_for_like_recall")
+    if lfl:
+        lines.append("## Recall, four ways")
+        lines.append("")
+        lines.append(lfl["note"])
+        lines.append("")
+        lines.append("| Basis | naive_rag | sourcemind |")
+        lines.append("|-------|-----------|------------|")
+        nr_all = results.get("naive_rag", {}).get("knowledge_retention", {})
+        sm_all = results.get("sourcemind", {}).get("knowledge_retention", {})
+        nr_held = lfl["naive_rag_over_held"]
+        sm_held = lfl["sourcemind_over_held"]
+        lines.append(
+            f"| All {nr_all.get('total', '?')} items (raw) | "
+            f"{_fmt(nr_all.get('score'))} ({nr_all.get('hits')}/{nr_all.get('total')}) | "
+            f"{_fmt(sm_all.get('score'))} ({sm_all.get('hits')}/{sm_all.get('total')}) |"
+        )
+        lines.append(
+            f"| Held {lfl['held_items']} items (like-for-like) | "
+            f"{_fmt(nr_held['score'])} ({nr_held['hits']}/{nr_held['total']}) | "
+            f"{_fmt(sm_held['score'])} ({sm_held['hits']}/{sm_held['total']}) |"
+        )
+        lines.append("")
+        lines.append(
+            f"{lfl['excluded_items']} documents produced no memories and are "
+            "excluded from the second row for both systems."
+        )
+        lines.append("")
+
     lines.append("## Excluded Metrics")
     lines.append("")
     excluded = data.get("excluded_metrics", {})
