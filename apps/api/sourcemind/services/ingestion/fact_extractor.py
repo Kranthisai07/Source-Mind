@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import structlog
 
@@ -52,6 +52,39 @@ Minimum 1 fact. Maximum 10 facts. Target 3–7.
 If the content contains no extractable facts, return: []\
 """
 
+class ChunkExtraction(NamedTuple):
+    """One extraction attempt against one chunk.
+
+    `outcome` is the point of this type. Four different conditions used to
+    return a bare [] - a genuine empty, a non-list response, unparseable JSON,
+    and an API error - and the caller could not tell them apart. A document
+    whose extraction collapsed was recorded as a successfully processed empty
+    document, indistinguishable from spam.
+    """
+
+    facts: list[str]
+    outcome: str          # "facts" | "empty" | "failed"
+    detail: str = ""
+
+
+class ExtractionResult(NamedTuple):
+    """Everything extract() knows about a document's extraction.
+
+    `facts` alone cannot express "nothing to extract" versus "extraction
+    broke", so the failure counts travel with it.
+    """
+
+    facts: list[str]
+    total_chunks: int
+    failed_chunks: int
+    failure_reasons: list[str]
+
+    @property
+    def wholly_failed(self) -> bool:
+        """No facts AND at least one chunk failed outright."""
+        return not self.facts and self.failed_chunks > 0
+
+
 _MODEL_PRIMARY = "claude-sonnet-4-6"
 _DEDUP_THRESHOLD = 0.92  # SBERT cosine similarity above which facts are considered duplicates
 
@@ -61,21 +94,20 @@ def _cache_key(content: str) -> str:
     return f"fact_extract:v1:{h}"
 
 
-async def _extract_from_chunk(
+async def _attempt_extraction(
     client: object,
     chunk_content: str,
     document_date: str | None,
     source_label: str,
-) -> list[str]:
-    """Extract facts from a single chunk. Uses Redis cache."""
-    key = _cache_key(chunk_content)
-    redis = get_redis()
+) -> ChunkExtraction:
+    """One extraction attempt. Never returns a bare list.
 
-    cached = await redis.get(key)
-    if cached:
-        log.debug("fact_extract_cache_hit")
-        return json.loads(cached)
-
+    The API call and the parse are reported separately, following the same
+    split established in services/memory/relations.py::_classify_relation: an
+    unparseable answer means the model DID respond and the response was thrown
+    away, which is a defect, while an empty array is the model correctly
+    reporting that there is nothing to extract.
+    """
     user_prompt = (
         f"Document date: {document_date or 'unknown'}\n"
         f"Source: {source_label}\n\n"
@@ -90,33 +122,98 @@ async def _extract_from_chunk(
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
-
-        raw = response.content[0].text.strip()
-        facts: list[str] = json.loads(raw)
-
-        if not isinstance(facts, list):
-            log.warning("fact_extract_invalid_type", raw_preview=raw[:200])
-            return []
-
-        facts = [f for f in facts if isinstance(f, str) and f.strip()]
-
-        # Cache for 7 days
-        await redis.setex(key, 60 * 60 * 24 * 7, json.dumps(facts))
-
-        log.debug(
-            "fact_extract_done",
-            facts=len(facts),
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
-        )
-        return facts
-
-    except json.JSONDecodeError as exc:
-        log.warning("fact_extract_json_error", error=str(exc))
-        return []
     except Exception as exc:
         log.error("fact_extract_api_error", error=str(exc))
-        return []
+        return ChunkExtraction([], "failed", f"api_error: {exc}")
+
+    raw = response.content[0].text.strip()
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        log.warning(
+            "fact_extract_json_error", error=str(exc), raw_preview=raw[:200]
+        )
+        return ChunkExtraction([], "failed", f"json_error: {exc}")
+
+    if not isinstance(parsed, list):
+        log.warning("fact_extract_invalid_type", raw_preview=raw[:200])
+        return ChunkExtraction(
+            [], "failed", f"expected a list, got {type(parsed).__name__}"
+        )
+
+    facts = [f for f in parsed if isinstance(f, str) and f.strip()]
+
+    if not facts:
+        # A valid, parsed, empty answer. Not a failure - the model was asked
+        # to return [] for content with nothing in it, and did. Logged at info
+        # because it is a real outcome worth seeing, not an error.
+        log.info("fact_extract_empty", chars=len(chunk_content))
+        return ChunkExtraction([], "empty", "model returned an empty array")
+
+    log.debug(
+        "fact_extract_done",
+        facts=len(facts),
+        input_tokens=response.usage.input_tokens,
+        output_tokens=response.usage.output_tokens,
+    )
+    return ChunkExtraction(facts, "facts")
+
+
+async def _extract_from_chunk(
+    client: object,
+    chunk_content: str,
+    document_date: str | None,
+    source_label: str,
+) -> ChunkExtraction:
+    """Extract facts from one chunk, retrying once if nothing came back.
+
+    Extraction is not deterministic: re-running it on substantive content that
+    had produced nothing has been observed to yield real facts. Accepting the
+    first empty answer therefore silently drops content, and because an empty
+    result was treated as success there was no signal that it had happened.
+
+    So anything other than facts is attempted a second time. Two empties are
+    taken as genuinely empty; two failures as a real failure. Only the cache
+    write happens once, at the end, and only for outcomes we trust.
+    """
+    key = _cache_key(chunk_content)
+    redis = get_redis()
+
+    cached = await redis.get(key)
+    if cached is not None:
+        log.debug("fact_extract_cache_hit")
+        return ChunkExtraction(json.loads(cached), "facts", "cached")
+
+    first = await _attempt_extraction(client, chunk_content, document_date, source_label)
+    if first.outcome == "facts":
+        await redis.setex(key, 60 * 60 * 24 * 7, json.dumps(first.facts))
+        return first
+
+    second = await _attempt_extraction(client, chunk_content, document_date, source_label)
+
+    if second.outcome == "facts":
+        # The first attempt was a transient failure. Worth saying loudly: this
+        # is how much of an apparently empty corpus is actually flakiness.
+        log.warning(
+            "fact_extract_recovered_on_retry",
+            first_outcome=first.outcome,
+            first_detail=first.detail,
+            facts=len(second.facts),
+        )
+        await redis.setex(key, 60 * 60 * 24 * 7, json.dumps(second.facts))
+        return second
+
+    if first.outcome == "empty" and second.outcome == "empty":
+        # Two independent, valid empty answers. Genuinely nothing to extract.
+        await redis.setex(key, 60 * 60 * 24 * 7, json.dumps([]))
+        return ChunkExtraction([], "empty", "empty on both attempts")
+
+    # At least one hard failure and no facts either time. Never cached - a
+    # failure must not be replayed for seven days as though it were an answer.
+    detail = f"attempt1={first.outcome}:{first.detail} attempt2={second.outcome}:{second.detail}"
+    log.error("fact_extract_failed_twice", detail=detail)
+    return ChunkExtraction([], "failed", detail)
 
 
 # Module-level cache for the SBERT dedup model. Loading it costs 2–5s,
@@ -180,15 +277,18 @@ class FactExtractor:
         document_date: str | None = None,
         source_url: str | None = None,
         content_type: str = "text",
-    ) -> list[str]:
+    ) -> ExtractionResult:
         """
         Stage 4 entry point.
 
-        Processes all chunks in parallel, deduplicates results.
-        Skips failed chunks without crashing the pipeline.
+        Processes all chunks in parallel and deduplicates. Returns an
+        ExtractionResult rather than a bare list so the caller can tell an
+        empty document from a broken one; `facts` alone cannot express that
+        difference, which is how a failed extraction came to be recorded as a
+        successfully processed empty document.
         """
         if not chunks:
-            return []
+            return ExtractionResult([], 0, 0, [])
 
         source_label = source_url or content_type
 
@@ -199,11 +299,26 @@ class FactExtractor:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_facts: list[str] = []
+        failed = 0
+        reasons: list[str] = []
+
         for i, result in enumerate(results):
             if isinstance(result, BaseException):
-                log.warning("fact_extract_chunk_skipped", chunk_index=i, error=str(result))
-            else:
-                all_facts.extend(result)  # type: ignore[arg-type]
+                # gather() raised rather than the extractor returning - still a
+                # failed chunk, not an empty one.
+                failed += 1
+                reasons.append(f"chunk {i}: {type(result).__name__}: {result}")
+                log.warning(
+                    "fact_extract_chunk_skipped", chunk_index=i, error=str(result)
+                )
+                continue
+
+            if result.outcome == "failed":
+                failed += 1
+                reasons.append(f"chunk {i}: {result.detail}")
+                continue
+
+            all_facts.extend(result.facts)
 
         unique_facts = await _deduplicate_facts(all_facts)
 
@@ -212,5 +327,6 @@ class FactExtractor:
             chunks=len(chunks),
             total_facts=len(all_facts),
             unique_facts=len(unique_facts),
+            failed_chunks=failed,
         )
-        return unique_facts
+        return ExtractionResult(unique_facts, len(chunks), failed, reasons)

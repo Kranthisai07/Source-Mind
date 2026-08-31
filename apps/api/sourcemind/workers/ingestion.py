@@ -138,15 +138,62 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                 await update_document_status(
                     session, doc_uuid, IngestionStatus.PROCESSING, current_stage="extracting_facts"
                 )
-                facts = await fact_extractor.extract(
+                extraction = await fact_extractor.extract(
                     chunks,
                     source_url=doc.source_url,
                     content_type=doc.source_type,
                 )
-                log.info("pipeline_facts", document_id=document_id, facts=len(facts))
+                facts = extraction.facts
+                log.info(
+                    "pipeline_facts",
+                    document_id=document_id,
+                    facts=len(facts),
+                    failed_chunks=extraction.failed_chunks,
+                )
+
+                # A document with nothing to extract and one whose extraction
+                # broke are different events and must not land in the same
+                # state. Both used to be recorded as COMPLETED with
+                # memory_count=0 and error_message NULL, which made a total
+                # extraction failure indistinguishable from spam - and left no
+                # way to tell how much of an apparently empty corpus was
+                # actually flakiness.
+                if extraction.wholly_failed:
+                    detail = "; ".join(extraction.failure_reasons)[:480]
+                    log.error(
+                        "pipeline_extraction_failed",
+                        document_id=document_id,
+                        failed_chunks=extraction.failed_chunks,
+                        total_chunks=extraction.total_chunks,
+                        detail=detail,
+                    )
+                    await update_document_status(
+                        session,
+                        doc_uuid,
+                        IngestionStatus.FAILED,
+                        memory_count=0,
+                        chunk_count=len(chunks),
+                        error_message=f"fact extraction failed: {detail}",
+                        current_stage="failed",
+                    )
+                    await session.commit()
+                    return {
+                        "status": "failed",
+                        "document_id": document_id,
+                        "memories_created": 0,
+                        "error": "fact extraction failed",
+                        "duration_ms": _elapsed_ms(start),
+                    }
 
                 if not facts:
-                    log.warning("pipeline_no_facts", document_id=document_id)
+                    # Genuinely nothing to extract: every chunk parsed cleanly
+                    # and the model reported no facts, twice.
+                    log.info(
+                        "pipeline_no_facts",
+                        document_id=document_id,
+                        chunks=extraction.total_chunks,
+                        reason="model returned no facts on both attempts",
+                    )
                     await update_document_status(
                         session,
                         doc_uuid,
@@ -162,6 +209,16 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                         "memories_created": 0,
                         "duration_ms": _elapsed_ms(start),
                     }
+
+                if extraction.failed_chunks:
+                    # Partial: some chunks produced facts, others broke. The
+                    # document is usable, but incomplete, and says so.
+                    log.warning(
+                        "pipeline_partial_extraction",
+                        document_id=document_id,
+                        failed_chunks=extraction.failed_chunks,
+                        total_chunks=extraction.total_chunks,
+                    )
 
                 # Stage 5: EMBED
                 await update_document_status(
