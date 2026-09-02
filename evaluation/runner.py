@@ -57,6 +57,37 @@ CONFLICT_EXCLUSION_NOTE = (
 _ID_MAP_PATH = Path("evaluation/data/sourcemind_id_map.json")
 
 
+def _load_api_env() -> None:
+    """Load apps/api/.env regardless of where this runner was launched from.
+
+    The runner has to run from the repository root - its dataset and output
+    paths are repo-relative - but pydantic-settings resolves .env relative to
+    the CURRENT WORKING DIRECTORY. From the root it therefore found no .env and
+    fell back to a Redis URL of redis.railway.internal:6379, which resolves
+    only inside Railway's network.
+
+    Nothing surfaced, because the runner reaches SourceMind over HTTP and only
+    touches Celery in _reenqueue. The consequence was that the retry-on-
+    disappearance path failed for the whole of run 3 with an unresolvable
+    broker, and the one vanished task was recorded as retry_unavailable rather
+    than actually retried.
+
+    override=False so anything explicitly exported still wins.
+    """
+    env_path = Path(__file__).resolve().parent.parent / "apps" / "api" / ".env"
+    if not env_path.is_file():
+        return
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(env_path, override=False)
+    except Exception as exc:  # pragma: no cover - depends on the install
+        print(f"  ! could not load {env_path}: {exc}")
+
+
+_load_api_env()
+
+
 # ── Auth ─────────────────────────────────────────────────────────────────────
 
 class TokenProvider:
@@ -292,24 +323,60 @@ class SourceMindRetriever:
         Returns False when the broker is not reachable from here, so the
         caller records an honest failure rather than pretending it retried.
         """
-        try:
-            from sourcemind.workers.ingestion import process_document
+        from sourcemind.workers.ingestion import process_document
 
-            process_document.apply_async(
-                kwargs={
-                    "document_id": document_id,
-                    "workspace_id": self._workspace_id,
-                    "user_id": os.environ.get(
-                        "SOURCEMIND_EVAL_USER_ID",
-                        "00000000-0000-4000-8000-000000000001",
-                    ),
-                },
-                priority=5,
-            )
-            return True
-        except Exception as exc:
-            print(f"    ! re-enqueue unavailable: {type(exc).__name__}: {exc}")
-            return False
+        kwargs = {
+            "document_id": document_id,
+            "workspace_id": self._workspace_id,
+            "user_id": os.environ.get(
+                "SOURCEMIND_EVAL_USER_ID",
+                "00000000-0000-4000-8000-000000000001",
+            ),
+        }
+
+        # ignore_result=True keeps the result backend out of the path. This
+        # runs at the END of a multi-hour ingestion, and the Celery redis
+        # result-store connection has gone stale by then:
+        #
+        #   RuntimeError: Retry limit exceeded while trying to reconnect to the
+        #   Celery redis result store backend.
+        #
+        # Nothing here reads a task result - completion is observed by polling
+        # the job endpoint - so the backend is pure overhead and one more thing
+        # to go stale.
+        last: Exception | None = None
+        for attempt in (1, 2):
+            try:
+                if attempt == 1:
+                    process_document.apply_async(
+                        kwargs=kwargs, priority=5, ignore_result=True
+                    )
+                else:
+                    # A dedicated connection rather than the pooled one, which
+                    # may be holding a dead socket. force_close_all() is NOT
+                    # the way to do this: it closes the pool without reopening
+                    # it, and the next acquire fails with "Acquire on closed
+                    # pool".
+                    from sourcemind.workers.celery_app import app as celery_app
+
+                    with celery_app.connection_for_write() as conn:
+                        process_document.apply_async(
+                            kwargs=kwargs,
+                            priority=5,
+                            ignore_result=True,
+                            connection=conn,
+                        )
+                return True
+            except Exception as exc:
+                last = exc
+                if attempt == 1:
+                    time.sleep(2.0)
+
+        # Flattened: this exception's message starts with a newline, which split
+        # the log line and made the error look empty.
+        detail = " ".join(str(last).split())
+        print(f"    ! re-enqueue unavailable: {type(last).__name__}: {detail}")
+        return False
 
     # Submission timeout and attempts.
     #

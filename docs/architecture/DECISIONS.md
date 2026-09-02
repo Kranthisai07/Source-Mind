@@ -124,14 +124,148 @@ to verify. The skip behaviour itself is covered separately by
 
 ---
 
+## D-002 — Consolidated evaluation (run 3): hypothesis REFUTED
+
+**Status:** Measured 2026-09-02. Recorded as a refutation, deliberately.
+
+### The prediction, made before the run
+
+> Expect Knowledge Retention (like-for-like) to improve versus run 2's 0.299,
+> driven specifically by improved retrieval discrimination from the
+> thin-content fix. Expect ingestion coverage (ingested/300) to hold at or
+> above run 2's 251.
+
+Recorded in merge commit `8c3f48c` **before** the run started, so it could be
+falsified rather than fitted afterwards.
+
+### Result: coverage confirmed, retention refuted
+
+|                          | run 1 | run 2 | run 3 |
+|--------------------------|-------|-------|-------|
+| ingested / 300           | 244   | 251   | **260** |
+| failed                   | 56    | 49    | 40 |
+| memories                 | 1116  | 1158  | **1107** |
+| retention raw            | 0.260 | 0.250 | **0.240** |
+| retention like-for-like  | **0.3197** | 0.2988 | **0.2769** |
+| naive_rag like-for-like  | 0.2951 | 0.2869 | 0.2962 |
+| role scope engineer      | 0.9777 | 0.979 | 0.9793 |
+| role scope manager       | 0.392 | 0.3587 | 0.3768 |
+| latency p50 / p95 (ms)   | 1063/1082 | 1038/1063 | 1097/1153 |
+
+NaiveRAG raw retention was **0.3133 (94/300) in all three runs**, which is the
+control: the harness and dataset are stable, so SourceMind movement is
+attributable to the changes rather than drift.
+
+For the first time SourceMind **trails** NaiveRAG like-for-like (0.2769 vs
+0.2962), having led in both earlier runs.
+
+### The denominator confound was checked, not assumed
+
+Run 3 scores over 260 held items against run 2's 251, and the extra items are
+ones that previously failed — plausibly harder. Re-scored on the **241 items
+held in both run 1 and run 3**:
+
+```
+run 3 sourcemind, common 241 : 0.2905 (70/241)
+run 3 naive_rag,  common 241 : 0.2905 (70/241)
+run 1 sourcemind, its 244    : 0.3197 (78/244)
+```
+
+Composition explains part of the drop (0.2769 → 0.2905 on comparable items) but
+not all of it. Against run 1 on a near-identical denominator retrieval genuinely
+regressed, and the margin over NaiveRAG went from +2.5 points to exactly zero.
+
+### THE FINDING: retrieval here is volume-bound, not discrimination-bound
+
+The thin-content fix **did** fix the mechanism it targeted. Embedding separation
+among the attractor commits went 0.0810 → 0.2986 locally and 0.0810 → 0.2747 on
+the deployed worker, taking every pair outside the 0.15 conflict threshold. That
+was measured, not inferred, and it held in production.
+
+**Fixing it did not improve recall.** The reason is understood rather than
+guessed: skipping extraction for thin content trades memory COUNT for memory
+DISTINCTNESS. Run 3 holds more documents (260 vs 251) but fewer memories (1107
+vs 1158), because a thin document now contributes one memory instead of two or
+three. Better-separated vectors, less surface area to match against — and the
+second effect outweighed the first.
+
+So: **more distinct memories to match against matters more, in this system as it
+currently stands, than each memory being cleanly separated from its
+near-duplicates.** The discrimination bug was real and is fixed; it was not the
+binding constraint on recall.
+
+This is more useful to the record than a confirmation would have been. It says
+precisely what not to assume next time: that fixing a demonstrated mechanism
+moves the headline metric.
+
+### Open question this leaves
+
+Whether to keep the thin-content skip is now genuinely open. It is correct on
+its own terms and fixed a real defect, but on this corpus it costs recall.
+Keeping it, reverting it, or making it conditional on corpus density should be
+decided deliberately rather than by inertia.
+
+### Harness defect found and fixed during this run
+
+The retry-on-disappearance path failed for the entire run:
+
+```
+! re-enqueue unavailable: RuntimeError:
+```
+
+Two bugs behind one symptom. The message only *looked* empty because it starts
+with a newline, which split the log line. The real cause was the
+**run-from-repo-root trap, striking a fourth time**: the runner must run from
+the repository root for its dataset paths, but pydantic-settings resolves
+`.env` relative to the working directory, so it silently used
+`redis.railway.internal:6379` — resolvable only inside Railway's network —
+instead of the public proxy. Celery could never reach the broker, so run 3's one
+vanished task was recorded as `retry_unavailable` rather than genuinely
+retried.
+
+Fixed: `runner.py` now loads `apps/api/.env` explicitly at import,
+independent of cwd, and `_reenqueue` uses `ignore_result=True`
+(nothing reads task results; the stale result backend was pure overhead) with a
+fresh connection on retry. Verified working from the repo root — the exact
+context that failed.
+
+---
+
 ## Deferred — not done, with reasons
 
-### "Option 2"
+### "Option 2" — metadata / structured-identifier boosted retrieval
 
-Deferred. The original text of this option is **not recoverable** — it was
-described in conversation before this file existed, and is not reconstructed
-here rather than risk misstating it. It should be re-specified before being
-picked up.
+**Priority raised by D-002.** Still deferred, but it is now the most promising
+remaining lever and its requirements are sharper than before.
+
+The original wording is **not recoverable** — it was described in conversation
+before this file existed, and is not reconstructed here rather than risk
+misstating it. What D-002 establishes about what it must achieve, however, is
+recorded precisely:
+
+**It must preserve or increase memory count while improving discrimination, not
+trade one for the other.** D-001 improved discrimination by reducing memory
+count and recall fell. Any fix that repeats that trade should be expected to
+fail the same way.
+
+That points away from *skipping* extraction for thin content and toward keeping
+the original multi-fact extraction while fixing boilerplate dilution separately
+— boosting structured identifiers (commit hashes, PR numbers, error strings) at
+retrieval time, so a fact's distinguishing token carries weight without
+shrinking the corpus.
+
+Two things to settle before building it:
+
+1. Whether the thin-content skip (D-001) should be reverted first, since the
+   two approaches are alternatives rather than complements on thin content.
+2. Whether identifier boosting belongs in the BM25 half of the hybrid, the
+   dense half, or the RRF fusion — the diagnosis in D-002 does not distinguish
+   these, and guessing would repeat the mistake D-002 documents.
+
+This is architecture work and should be scoped once, deliberately, rather than
+attempted as another test-and-rerun cycle. Three multi-hour evaluation runs
+have already been spent reaching a well-understood result; the next one should
+be spent on a properly scoped change.
 
 ### Retirement false positives in `detect()`
 
