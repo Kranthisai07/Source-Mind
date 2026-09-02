@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import re
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import structlog
@@ -84,36 +83,6 @@ class ExtractionResult(NamedTuple):
     def wholly_failed(self) -> bool:
         """No facts AND at least one chunk failed outright."""
         return not self.facts and self.failed_chunks > 0
-
-
-# Below this, a single-chunk document is treated as already atomic.
-#
-# A one-line commit title extracts into two or three facts that each restate
-# the full context, because the prompt requires every fact to stand alone with
-# pronouns resolved. The result is boilerplate differing only in an identifier:
-#
-#   "The GitHub repository 'facebook/react' contains commit 561ed529b3a6 ..."
-#   "The GitHub repository facebook/react received commit 75ae73e68c02 ..."
-#
-# Those two sit 0.081 apart in cosine distance - inside the 0.15 conflict
-# threshold - so the identifier contributes almost nothing to the embedding and
-# every such fact answers every similarly-shaped query equally well. Embedding
-# the original line once keeps the distinguishing text at full weight instead
-# of diluting it across restatements.
-_THIN_CONTENT_CHARS = 150
-
-# A sentence end followed by a capital. Deliberately crude: it only has to
-# separate "one statement" from "several", and anything cleverer would need
-# the sentence segmentation that is unavailable here anyway.
-_SENTENCE_BOUNDARY = re.compile(r"[.!?][\"')\]]?\s+[A-Z]")
-
-
-def _is_atomic_thin(content: str) -> bool:
-    """True when the content is short enough, and single enough, to stand as one fact."""
-    stripped = content.strip()
-    if len(stripped) >= _THIN_CONTENT_CHARS:
-        return False
-    return _SENTENCE_BOUNDARY.search(stripped) is None
 
 
 _MODEL_PRIMARY = "claude-sonnet-4-6"
@@ -320,18 +289,6 @@ class FactExtractor:
         """
         if not chunks:
             return ExtractionResult([], 0, 0, [])
-
-        # Only when the WHOLE document is one thin chunk. A long document can
-        # end with a short trailing chunk, and embedding that fragment on its
-        # own would be worse than extracting from it.
-        if len(chunks) == 1 and _is_atomic_thin(chunks[0].content):
-            content = chunks[0].content.strip()
-            log.info(
-                "fact_extract_skipped_atomic",
-                chars=len(content),
-                reason="single thin chunk, already one statement",
-            )
-            return ExtractionResult([content], 1, 0, [])
 
         source_label = source_url or content_type
 

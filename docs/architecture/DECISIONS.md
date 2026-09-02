@@ -14,7 +14,10 @@ deliberately left undone.
 
 ## D-001 — Skip fact extraction for already-atomic thin content
 
-**Status:** Done (2026-09-02)
+**Status:** **REVERTED by D-003 (2026-09-02).** The diagnosis below is still
+accurate and the measurements still stand; the *behaviour* it describes is no
+longer in the codebase. Read this entry as the record of a correctly-identified
+mechanism, not as a description of how ingestion works today.
 **Referred to previously as "Option 1".**
 
 ### Problem
@@ -124,14 +127,407 @@ to verify. The skip behaviour itself is covered separately by
 
 ---
 
+## D-002 — Consolidated evaluation (run 3): hypothesis REFUTED
+
+**Status:** Measured 2026-09-02. Recorded as a refutation, deliberately.
+
+### The prediction, made before the run
+
+> Expect Knowledge Retention (like-for-like) to improve versus run 2's 0.299,
+> driven specifically by improved retrieval discrimination from the
+> thin-content fix. Expect ingestion coverage (ingested/300) to hold at or
+> above run 2's 251.
+
+Recorded in merge commit `8c3f48c` **before** the run started, so it could be
+falsified rather than fitted afterwards.
+
+### Result: coverage confirmed, retention refuted
+
+|                          | run 1 | run 2 | run 3 |
+|--------------------------|-------|-------|-------|
+| ingested / 300           | 244   | 251   | **260** |
+| failed                   | 56    | 49    | 40 |
+| memories                 | 1116  | 1158  | **1107** |
+| retention raw            | 0.260 | 0.250 | **0.240** |
+| retention like-for-like  | **0.3197** | 0.2988 | **0.2769** |
+| naive_rag like-for-like  | 0.2951 | 0.2869 | 0.2962 |
+| role scope engineer      | 0.9777 | 0.979 | 0.9793 |
+| role scope manager       | 0.392 | 0.3587 | 0.3768 |
+| latency p50 / p95 (ms)   | 1063/1082 | 1038/1063 | 1097/1153 |
+
+NaiveRAG raw retention was **0.3133 (94/300) in all three runs**, which is the
+control: the harness and dataset are stable, so SourceMind movement is
+attributable to the changes rather than drift.
+
+For the first time SourceMind **trails** NaiveRAG like-for-like (0.2769 vs
+0.2962), having led in both earlier runs.
+
+### The denominator confound was checked, not assumed
+
+Run 3 scores over 260 held items against run 2's 251, and the extra items are
+ones that previously failed — plausibly harder. Re-scored on the **241 items
+held in both run 1 and run 3**:
+
+```
+run 3 sourcemind, common 241 : 0.2905 (70/241)
+run 3 naive_rag,  common 241 : 0.2905 (70/241)
+run 1 sourcemind, its 244    : 0.3197 (78/244)
+```
+
+Composition explains part of the drop (0.2769 → 0.2905 on comparable items) but
+not all of it. Against run 1 on a near-identical denominator retrieval genuinely
+regressed, and the margin over NaiveRAG went from +2.5 points to exactly zero.
+
+### THE FINDING: retrieval here is volume-bound, not discrimination-bound
+
+The thin-content fix **did** fix the mechanism it targeted. Embedding separation
+among the attractor commits went 0.0810 → 0.2986 locally and 0.0810 → 0.2747 on
+the deployed worker, taking every pair outside the 0.15 conflict threshold. That
+was measured, not inferred, and it held in production.
+
+**Fixing it did not improve recall.** The reason is understood rather than
+guessed: skipping extraction for thin content trades memory COUNT for memory
+DISTINCTNESS. Run 3 holds more documents (260 vs 251) but fewer memories (1107
+vs 1158), because a thin document now contributes one memory instead of two or
+three. Better-separated vectors, less surface area to match against — and the
+second effect outweighed the first.
+
+So: **more distinct memories to match against matters more, in this system as it
+currently stands, than each memory being cleanly separated from its
+near-duplicates.** The discrimination bug was real and is fixed; it was not the
+binding constraint on recall.
+
+This is more useful to the record than a confirmation would have been. It says
+precisely what not to assume next time: that fixing a demonstrated mechanism
+moves the headline metric.
+
+### Open question this leaves — since ANSWERED by D-003
+
+Whether to keep the thin-content skip is now genuinely open. It is correct on
+its own terms and fixed a real defect, but on this corpus it costs recall.
+Keeping it, reverting it, or making it conditional on corpus density should be
+decided deliberately rather than by inertia.
+
+**Resolved:** D-003 reverted it outright, and moved the discrimination work to
+the retrieval layer where it does not trade against corpus size.
+
+### Harness defect found and fixed during this run
+
+The retry-on-disappearance path failed for the entire run:
+
+```
+! re-enqueue unavailable: RuntimeError:
+```
+
+Two bugs behind one symptom. The message only *looked* empty because it starts
+with a newline, which split the log line. The real cause was the
+**run-from-repo-root trap, striking a fourth time**: the runner must run from
+the repository root for its dataset paths, but pydantic-settings resolves
+`.env` relative to the working directory, so it silently used
+`redis.railway.internal:6379` — resolvable only inside Railway's network —
+instead of the public proxy. Celery could never reach the broker, so run 3's one
+vanished task was recorded as `retry_unavailable` rather than genuinely
+retried.
+
+Fixed: `runner.py` now loads `apps/api/.env` explicitly at import,
+independent of cwd, and `_reenqueue` uses `ignore_result=True`
+(nothing reads task results; the stale result backend was pure overhead) with a
+fresh connection on retry. Verified working from the repo root — the exact
+context that failed.
+
+---
+
+## D-003 — D-001's skip reverted; discrimination moves to the retrieval layer
+
+**Status:** Done (2026-09-02)
+
+### Decision
+
+The thin-content skip introduced in D-001 is **removed outright** — no flag, no
+dormant code path. Thin documents go back through normal multi-fact extraction
+and produce two or three memories each, as before D-001.
+
+### Why
+
+D-001 correctly identified a real embedding-collapse problem and demonstrably
+fixed it: cosine separation among the attractor commits went 0.0810 → 0.2986
+locally and 0.0810 → 0.2747 on the deployed worker, with every pair moved
+outside the 0.15 conflict threshold.
+
+D-002 then showed the fix cost more than it gained. Skipping extraction traded
+memory COUNT for memory DISTINCTNESS, and on this corpus the count mattered
+more: like-for-like retention fell 0.2988 → 0.2769, and on the 241 items common
+to runs 1 and 3 SourceMind went from 0.3197 to 0.2905 — from beating NaiveRAG
+by 2.5 points to tying it exactly.
+
+The discrimination problem is real. Ingestion is the wrong layer to solve it
+at, because every lever there trades against corpus size. It belongs at the
+**retrieval** layer, where discrimination can improve without removing anything
+from the index — see the Option 2 entry below.
+
+### No flag, deliberately
+
+A disabled flag would be worse than removal. `ENABLE_THIN_CONTENT_SKIP = False`
+sitting in the code is a trap: a future reader has to dig through this log to
+learn why it exists and whether flipping it is safe, and nothing tests that
+path. This session has spent considerable effort removing exactly that class of
+latent state — dead code, stale comments, misleading defaults — and adding a
+fresh instance to preserve an option would contradict the reasoning.
+
+D-001 and D-003 together hold the complete record: the mechanism, the
+measurement, and the reason for reverting. Anyone who needs the behaviour back
+for a denser corpus can rebuild it correctly, and better informed than we were —
+by then the Option 2 fusion work may have made it unnecessary, or the two may
+need to compose differently than either would have alone.
+
+### What was kept
+
+- **The diagnosis and its measurements**, in D-001 above. Note these were
+  produced by throwaway scratchpad scripts, not committed tests — they are a
+  written record of what was measured, not an executable regression guard, and
+  they do not need to be executable to be trustworthy.
+- **The retirement false-positive audit** in the Deferred section (13 of 40
+  confidently wrong at 0.95 confidence, 0 cross-repository).
+- **One test**, `test_cache_is_read_and_written_for_extracted_content`,
+  relocated into `test_extraction_empty_vs_failed.py`. It verifies that
+  extraction's Redis cache still reads and writes, which is true independently
+  of the skip and worth keeping. The other four tests in the deleted
+  `test_thin_content_skip.py` asserted the reverted behaviour and went
+  with it.
+- **The eight widened test fixtures**, left widened. Re-checked individually:
+  each verifies retry, parse-failure or cache mechanics, and multi-sentence
+  content exercises those paths unambiguously. They are the better fixtures on
+  their own merits, so re-narrowing them would be churn. The comment that
+  pointed at the deleted file was corrected.
+
+---
+
+## D-004 — Query-adaptive fusion weighting, plus the keyword arm it needed
+
+**Status:** Done (2026-09-02). Implements the Option 2 specification below,
+with one documented departure from it.
+
+### What the investigation found before anything was written
+
+The specification said to change the RRF fusion weights and nothing else -
+explicitly not BM25, not the embedding stage, both retrievers left as they are.
+Reading `hybrid.py` first, as the work order required, turned up the reason
+that could not work on its own.
+
+**The keyword arm was returning zero rows for 294 of the 300 evaluation
+questions** - 100 of 100 pull requests, 99 of 100 commits, and all five
+attractor commits. The cause is `plainto_tsquery`, which joins terms with
+AND. The real question
+
+> What did commit 926fa8554175 change in facebook/react?
+
+becomes `'commit' & '926fa8554175' & 'chang' & 'facebook/react'`, and the
+conjunction fails whenever the stored memory lacks any one filler word, even
+though the hash itself matches exactly. Fusion weighting cannot recover from
+that, because zero multiplied by any weight is still zero.
+
+That was measured rather than argued. Four fusion variants were run over
+identical candidate lists:
+
+| variant | 5 attractors | 95-query sample |
+|---------|--------------|-----------------|
+| A - baseline, equal weights, AND keyword arm | 1/5 = 0.200 | 18/95 = 0.1895 |
+| **B - weighted 0.7/0.3, AND keyword arm (the spec as written)** | **1/5 = 0.200** | **18/95 = 0.1895** |
+| C - weighted 0.7/0.3, identifier keyword arm | 5/5 = 1.000 | 64/95 = 0.6737 |
+| D - **equal** weights, identifier keyword arm | 5/5 = 1.000 | 63/95 = 0.6632 |
+
+B is identical to A on every query tested - the same 18 hits, not approximately
+the same number. D against A isolates the keyword arm at **+47.4pp**; C against
+D isolates the reweighting the specification actually asked for, at **+1.05pp**,
+one query in 95.
+
+So the gain is almost entirely in the part the specification excluded. This was
+reported and the scope decision taken deliberately before implementing.
+
+### What was built
+
+Both mechanisms, C:
+
+1. **Identifier detection** (`_extract_identifiers`) - a cheap regex over
+   the raw query, no model call, matching abbreviated and full commit hashes and
+   `#NNNNN` issue/PR/discussion references.
+2. **An identifier-aware keyword arm** - when the query carries identifiers,
+   `_keyword_search` searches on those alone, OR-ed, under the
+   `simple` configuration so they are not stemmed. Without identifiers the
+   original `plainto_tsquery` AND behaviour is used, unchanged.
+3. **Weighted RRF** - `_rrf_merge` takes `w_semantic` and
+   `w_keyword`, both defaulting to 1.0, so the six pre-existing tests and
+   any other caller get exactly the previous behaviour.
+
+The weights are 0.6 / 1.4 rather than 0.3 / 0.7. Same ratio, scaled to sum to
+2.0 to match the `1.0 + 1.0` default, so result scores stay on one scale
+whether or not the boost fired. RRF ordering is invariant under scaling both
+weights by a common factor, so this ranks identically to the ratio that was
+measured.
+
+### The regex detail that would have been a latent bug
+
+The obvious pattern `\b[0-9a-f]{7,40}\b` also matches ordinary English
+words built only from the hex letters - **defaced**, **effaced**, **deadbeef** -
+which would fire the keyword boost on prose. Requiring at least one digit *and*
+at least one a-f letter rejects all of them and still accepts
+`926fa8554175`. This corpus happens to contain none of those words, so
+the naive form would have passed every test here and broken on someone else's
+data. There is a test for it.
+
+### Measured, through the live code path
+
+Not the simulation - `hybrid_search` itself, against the run-3 workspace,
+with the change in the working tree and then stashed for the before figures.
+
+**The five attractor commits, which is the direct proof it addresses D-002's
+diagnosed mechanism:**
+
+| commit | before | after |
+|--------|--------|-------|
+| 926fa8554175 | absent from top 20 | **rank 1** |
+| 75ae73e68c02 | absent from top 20 | **rank 1** |
+| cafd63bcf755 | rank 10 | **rank 1** |
+| 561ed529b3a6 | rank 12 | **rank 1** |
+| 142cfde89eda | rank 1 | rank 1 |
+
+recall@5 on the five: **0.200 -> 1.000**.
+
+**95-query sample, all four artifact types, real before/after:**
+
+| type | n | before | after | delta |
+|------|---|--------|-------|-------|
+| commit | 25 | 0.240 | 0.920 | +68.0pp |
+| pull_request | 25 | 0.280 | 0.920 | +64.0pp |
+| issue | 25 | 0.080 | 0.520 | +44.0pp |
+| discussion | 20 | 0.150 | 0.250 | +10.0pp |
+| **overall** | **95** | **0.1895** | **0.6737** | **+48.4pp** |
+
+46 queries gained. **Zero queries regressed** - no query that hit before missed
+after.
+
+### Against the expected magnitude: it does NOT match, and that is not a win
+
+The specification predicted +2 to +7.5pp, from the DAT paper. The measured
+result is +48.4pp. **The literature did not predict this and it should not be
+read as confirming it.**
+
+DAT measures reweighting two functioning retrievers against each other. That is
+variant C-minus-D, and it came in at **+1.05pp** - below the cited range, not
+above it. The +48.4pp headline is variant D, which is not reweighting at all: it
+is repairing an arm that was returning nothing. A different intervention with a
+different mechanism, and the cited range never applied to it.
+
+Stated plainly: the technique the specification named delivered about a fiftieth
+of the measured gain. The investigation the specification demanded before
+implementing is what found the rest.
+
+### Caution test
+
+Required by the specification: confirm no regression where dense retrieval
+already works. The evaluation dataset cannot supply it - **all 300 questions
+contain an identifier**, so the trigger fires on every one and there is no
+untriggered class in it to test.
+
+Fifteen conceptual queries were written against real corpus subject matter
+instead, each asserted identifier-free, and the full top-10 captured before and
+after: ids, ranks, match types and scores to ten decimal places.
+
+**126 result rows compared, zero differences.** The change is inert for
+non-identifier queries, as the code path requires - no identifiers means the
+keyword arm takes the original branch and `_rrf_merge` is called with its
+defaults.
+
+Worth being clear about what this does and does not establish. It confirms the
+additive-only property. It does **not** test the paper's warning that a BM25
+boost can hurt when dense retrieval is already strong, because that warning
+applies to queries where the boost fires, and this corpus has no
+identifier-bearing query where the dense arm is already strong enough to be
+damaged. On a corpus with both properties, that risk is still open.
+
+### Not yet run
+
+No production deployment and no 300-item evaluation. Three multi-hour runs have
+already been spent; whether a fourth is worth it is a separate decision, taken
+with these numbers in hand.
+
+---
+
 ## Deferred — not done, with reasons
 
-### "Option 2"
+### Option 2 — query-adaptive fusion weighting
 
-Deferred. The original text of this option is **not recoverable** — it was
-described in conversation before this file existed, and is not reconstructed
-here rather than risk misstating it. It should be re-specified before being
-picked up.
+**Status: IMPLEMENTED by D-004 (2026-09-02).** Kept here because the
+specification is what the implementation was built and judged against - D-004
+records where it held and where it did not. The trigger and location below were
+both correct; the expected magnitude was not, and the constraint against
+touching the keyword arm made the change a measured no-op on its own.
+
+**This is researched prior art, not original reasoning.** The technique is
+established and named in the literature — "Dynamic Weighted Reciprocal Rank
+Fusion", "Adaptive RRF with IDF Weighting", and "DAT (Dynamic Alpha Tuning)"
+(Hsu & Tzeng, 2025) all describe the same core idea: adjust the relative weight
+given to BM25 versus semantic search **per query**, instead of applying one
+fixed blend to every query. It is a standard production feature elsewhere —
+Qdrant supports per-request alpha weighting between sparse and dense retrievers,
+and Elasticsearch supports boost parameters on individual sub-queries in the
+same request. Applying it to our own RRF implementation is adopting a known
+pattern, not inventing one.
+
+**Trigger mechanism.** Query IDF (inverse document frequency), or the simpler
+proxy of identifier patterns detected in the query text — regex for issue and PR
+numbers (`#\d+`) and commit-hash-shaped tokens. High-IDF, identifier-bearing
+queries shift weight toward BM25 exact matching; low-IDF conversational queries
+stay weighted toward semantic search, which is today's default behaviour. The
+published "vstash" system uses average query-term IDF as exactly this signal,
+which independently confirms that identifier-bearing queries are the class this
+technique is built for — a commit hash or PR number is about as high-IDF as a
+token gets. **Rule-based, not a learned classifier**: the trigger is meant to be
+cheap.
+
+**Where it lives.** The RRF fusion step specifically — `hybrid.py`'s merge
+logic. Not the embedding or indexing stage, and not either retriever
+individually. Both retrievers stay exactly as they are; only the weight given to
+each result list changes per query. This answers the first open sub-question,
+and it now has independent literature and production precedent behind it rather
+than only internal logic.
+
+**Expected magnitude, from the literature and not a promise.** The DAT paper
+reports +2 to +7.5 percentage points on Precision@1 and MRR, measured
+specifically on "hybrid-sensitive" queries — the subset where BM25 and dense
+retrieval actually disagree, which is precisely the attractor-commit scenario.
+Real, bounded, and non-trivial, but not transformative. Expectations should be
+set there before implementing.
+
+**Caution that must be tested for.** One paper found that fusing BM25 more
+strongly into an already-strong dense retriever can *hurt*: where the dense
+ranking is already good, extra lexical signal promotes
+lexically-similar-but-semantically-irrelevant results. That is not a reason to
+avoid the change — our dense retriever is specifically failing on this query
+class, which is the whole finding of D-002 — but the implementation must verify
+it does not regress queries where dense retrieval currently works, not merely
+improve identifier-bearing queries in isolation.
+
+**It satisfies the D-002 constraint.** Unlike D-001, this improves
+discrimination without reducing memory count: nothing is removed from the index,
+only reweighted at query time. Multi-fact extraction stays exactly as it is.
+
+### Cross-encoder reranking — complementary, deferred
+
+A **separate** technique, not a replacement for the above. The established
+production pattern is two-stage: hybrid retrieval (BM25 + dense, fused via RRF)
+fetches a wide candidate pool of roughly the top 100, then a cross-encoder that
+reads query and candidate together reranks the top 30–50 before the final
+result.
+
+The two compose rather than compete. Fusion weighting determines **which
+documents reach the candidate pool**; reranking determines **the final ordering
+among them**. Neither substitutes for the other, and a reranker cannot rescue a
+document that fusion never retrieved — which matters here, since D-002 found the
+correct artifact absent from the top 20 entirely for 108 of 176 misses.
+
+Worth doing, not urgent, and it should follow the fusion work rather than
+precede it.
 
 ### Retirement false positives in `detect()`
 

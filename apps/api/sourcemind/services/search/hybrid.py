@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 import struct
 import time
 import uuid
@@ -34,6 +35,50 @@ _EMBED_CACHE_TTL = 60 * 60 * 24 * 7  # 7 days for queries
 _RRF_K = 60
 _MAX_CANDIDATES = 50
 _VIEWER_LIMIT = 200
+
+# Query-adaptive fusion (D-004). Identifier-bearing queries are reweighted
+# toward the keyword arm; everything else keeps the historical equal weighting.
+#
+# Commit-hash-shaped tokens. The digit and letter lookaheads are load-bearing:
+# a bare [0-9a-f]{7,40} also matches ordinary English words built only from the
+# hex letters - "defaced", "effaced", "deadbeef" - which would fire the boost on
+# prose. Requiring at least one digit AND at least one a-f letter rejects all of
+# those while still accepting real abbreviated hashes like 926fa8554175.
+_HEX_IDENT = re.compile(
+    r"\b(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b", re.IGNORECASE
+)
+# Issue / PR / discussion references: "#36554".
+_NUM_IDENT = re.compile(r"#(\d+)")
+
+# Weights applied to each arm's RRF contribution when identifiers are present.
+# Ratio is 0.7 keyword / 0.3 semantic: the keyword arm matching an exact
+# identifier is near-conclusive evidence, while the dense arm cannot separate
+# artifacts that differ only by that identifier (D-002's attractor commits sat
+# 0.081 apart before D-001, and the dense arm still ranks the correct one as low
+# as 33rd). It is not 1.0/0.0 because the identifier can appear in several
+# memories - the PR that closes an issue cites the issue number - and the dense
+# arm is what orders those among themselves.
+#
+# Expressed scaled to sum to 2.0, matching the default 1.0 + 1.0 so that result
+# scores stay on one scale whether or not the boost fired. RRF ordering is
+# invariant under scaling both weights by a common factor, so 0.6/1.4 ranks
+# identically to 0.3/0.7.
+_IDENT_W_SEMANTIC = 0.6
+_IDENT_W_KEYWORD = 1.4
+
+
+def _extract_identifiers(query: str) -> list[str]:
+    """Structured identifiers in a query, as tsquery-safe lexemes.
+
+    Returns [] for ordinary conversational queries, which is what keeps this
+    change inert for them.
+    """
+    found = _HEX_IDENT.findall(query) + _NUM_IDENT.findall(query)
+    # De-duplicate, preserving order, so the tsquery stays minimal.
+    seen: dict[str, None] = {}
+    for tok in found:
+        seen.setdefault(tok.lower(), None)
+    return list(seen)
 
 
 def _emb_cache_key(content: str) -> str:
@@ -126,10 +171,43 @@ async def _keyword_search(
     query: str,
     workspace_id: uuid.UUID,
     limit: int,
+    identifiers: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """PostgreSQL tsvector BM25 keyword search."""
-    result = await session.execute(
-        text("""
+    """PostgreSQL tsvector BM25 keyword search.
+
+    ``plainto_tsquery`` joins every term with AND, so a conversational wrapper
+    around an identifier - "What did commit 926fa8554175 change in X?" becomes
+    'commit' & '926fa8554175' & 'chang' & 'x' - fails as a conjunction whenever
+    the stored memory happens not to contain one of the filler words. Measured
+    on the evaluation corpus, that returned zero rows for 294 of 300 questions
+    and left this arm contributing nothing to fusion at all.
+
+    When the caller has detected identifiers, this searches on those alone,
+    OR-ed together, under the 'simple' configuration: identifiers must not be
+    stemmed, and any one of them matching is meaningful. Without identifiers the
+    original AND behaviour is used unchanged.
+    """
+    if identifiers:
+        # Safe to interpolate into tsquery syntax: every token came from
+        # _extract_identifiers, so it is [0-9a-f]+ or digits, and the assembled
+        # string is still bound as a parameter rather than concatenated into SQL.
+        tsquery = " | ".join(identifiers)
+        sql = """
+            SELECT
+                id::text,
+                content,
+                ts_rank(content_tsv, to_tsquery('simple', :query)) AS score
+            FROM memories
+            WHERE workspace_id = (:ws_id)::uuid
+              AND current_version = TRUE
+              AND deleted_at IS NULL
+              AND content_tsv @@ to_tsquery('simple', :query)
+            ORDER BY score DESC
+            LIMIT :limit
+        """
+    else:
+        tsquery = query
+        sql = """
             SELECT
                 id::text,
                 content,
@@ -141,9 +219,12 @@ async def _keyword_search(
               AND content_tsv @@ plainto_tsquery('english', :query)
             ORDER BY score DESC
             LIMIT :limit
-        """),
+        """
+
+    result = await session.execute(
+        text(sql),
         {
-            "query": query,
+            "query": tsquery,
             "ws_id": str(workspace_id),
             "limit": limit,
         },
@@ -162,21 +243,28 @@ async def _keyword_search(
 def _rrf_merge(
     semantic: list[dict[str, Any]],
     keyword: list[dict[str, Any]],
+    w_semantic: float = 1.0,
+    w_keyword: float = 1.0,
 ) -> list[dict[str, Any]]:
-    """Reciprocal Rank Fusion. See ADR-005."""
+    """Reciprocal Rank Fusion. See ADR-005, and D-004 for the weights.
+
+    The weights default to 1.0 / 1.0, which is the equal weighting this used
+    before they existed - callers that do not pass them get the old behaviour
+    exactly.
+    """
     scores: dict[str, float] = {}
     content_map: dict[str, str] = {}
     match_types: dict[str, set[str]] = {}
 
     for rank, item in enumerate(semantic):
         mid = item["id"]
-        scores[mid] = scores.get(mid, 0.0) + 1.0 / (_RRF_K + rank + 1)
+        scores[mid] = scores.get(mid, 0.0) + w_semantic / (_RRF_K + rank + 1)
         content_map[mid] = item["content"]
         match_types.setdefault(mid, set()).add("semantic")
 
     for rank, item in enumerate(keyword):
         mid = item["id"]
-        scores[mid] = scores.get(mid, 0.0) + 1.0 / (_RRF_K + rank + 1)
+        scores[mid] = scores.get(mid, 0.0) + w_keyword / (_RRF_K + rank + 1)
         content_map.setdefault(mid, item["content"])
         match_types.setdefault(mid, set()).add("keyword")
 
@@ -279,6 +367,10 @@ async def hybrid_search(
     """
     t0 = time.monotonic()
 
+    # Step 0: Detect structured identifiers. Cheap regex, no model call - see
+    # D-004 on why the trigger is rule-based rather than a learned classifier.
+    identifiers = _extract_identifiers(query)
+
     # Step 1: Embed query
     embedding, emb_cached = await _get_query_embedding(query, openai_client)
 
@@ -290,15 +382,26 @@ async def hybrid_search(
         keyword: list[dict[str, Any]] = []
     elif mode == "keyword":
         semantic = []
-        keyword = await _keyword_search(session, query, workspace_id, _MAX_CANDIDATES)
+        keyword = await _keyword_search(
+            session, query, workspace_id, _MAX_CANDIDATES, identifiers
+        )
     else:  # hybrid — run sequentially; AsyncSession is not concurrency-safe
         semantic = await _semantic_search(
             session, embedding, workspace_id, _MAX_CANDIDATES, min_similarity
         )
-        keyword  = await _keyword_search(session, query, workspace_id, _MAX_CANDIDATES)
+        keyword = await _keyword_search(
+            session, query, workspace_id, _MAX_CANDIDATES, identifiers
+        )
 
-    # Step 3: Merge via RRF
-    merged = _rrf_merge(semantic, keyword)
+    # Step 3: Merge via RRF, weighted toward the keyword arm when the query
+    # carries an identifier. Without one, both weights stay 1.0 and this is the
+    # same equal-weight fusion as before - strictly additive for the common case.
+    if identifiers:
+        merged = _rrf_merge(
+            semantic, keyword, _IDENT_W_SEMANTIC, _IDENT_W_KEYWORD
+        )
+    else:
+        merged = _rrf_merge(semantic, keyword)
     top = merged[:limit]
 
     # Step 4: Access control
@@ -325,6 +428,9 @@ async def hybrid_search(
         returned=len(top),
         latency_ms=latency_ms,
         emb_cached=emb_cached,
+        identifier_boost=bool(identifiers),
+        identifiers_found=len(identifiers),
+        keyword_hits=len(keyword),
     )
 
     return {
