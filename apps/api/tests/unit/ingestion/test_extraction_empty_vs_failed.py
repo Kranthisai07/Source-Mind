@@ -26,10 +26,11 @@ from sourcemind.services.ingestion.chunker import ChunkResult
 from sourcemind.services.ingestion.fact_extractor import FactExtractor
 
 
-# Multi-sentence on purpose. A single sentence under 150 characters is now
-# routed past extraction entirely as already-atomic content, which is covered
-# by test_thin_content_skip.py. These tests are about retry, parse failure and
-# caching, so their fixture has to actually reach the extraction call.
+# Multi-sentence on purpose. These tests are about retry, parse failure and
+# caching; multi-sentence content exercises those paths unambiguously and keeps
+# the fixture honest about what is being verified. (It was originally widened
+# to dodge D-001's thin-content skip, which D-003 reverted - the width is kept
+# because it is the better fixture, not because it is still required.)
 _EXTRACTABLE = (
     "The ingestion pipeline stores memories in PostgreSQL. Retrieval fuses "
     "pgvector similarity with BM25 ranking. The fusion uses Reciprocal Rank "
@@ -213,3 +214,69 @@ async def test_api_error_then_success_is_recovered():
     assert result.facts == ["Postgres 18 is the primary datastore."]
     assert result.failed_chunks == 0
     assert result.wholly_failed is False
+
+# A long, multi-chunk source. Kept verbatim from the evaluation corpus so the
+# cache test exercises realistic content rather than a synthetic string.
+_LONG_SOURCE = (
+    "[facebook/react] Commit 142cfde89eda by Dhakshin2007: Fix FragmentInstance "
+    "listener leak: normalize boolean vs object capture options per DOM spec "
+    "(#36047)\n\n## Summary\n\n`FragmentInstance.addEventListener` and "
+    "`removeEventListener` fail to cross-match listeners when the `capture` "
+    "option is passed as a boolean in one call and an options object in the "
+    "other. This violates the DOM Living Standard, which specifies that "
+    "addEventListener(type, fn, true) and addEventListener(type, fn, "
+    "{capture: true}) are identical. The result is a listener leak."
+)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cache_is_read_and_written_for_extracted_content():
+    """Extraction is the expensive path, so its cache has to work.
+
+    Losing this cache would mean re-paying the model for every chunk of every
+    document on re-ingestion. A cold call must consult Redis, call the API once
+    and store the result; a warm call must serve the stored value without
+    touching the API.
+
+    (Relocated from test_thin_content_skip.py, deleted with D-003. The rest of
+    that file asserted the reverted skip behaviour; this test does not depend
+    on it and is still true.)
+    """
+    facts = [
+        "FragmentInstance.addEventListener fails to cross-match boolean capture options.",
+        "Commit 142cfde89eda was authored by Dhakshin2007 under PR #36047.",
+    ]
+    client = AsyncMock()
+    client.messages.create = AsyncMock(return_value=_facts_response(facts))
+
+    # ── cold: cache missed, so the API is called and the result stored ──
+    with _redis_miss() as redis:
+        redis.return_value.get = AsyncMock(return_value=None)
+        redis.return_value.setex = AsyncMock()
+
+        cold = await FactExtractor(client).extract(
+            [_chunk(_LONG_SOURCE)], content_type="text"
+        )
+
+        redis.return_value.get.assert_awaited(), "cache must be consulted"
+        redis.return_value.setex.assert_awaited_once(), "result must be cached"
+        cached_payload = redis.return_value.setex.await_args.args[2]
+
+    assert client.messages.create.await_count == 1
+    assert json.loads(cached_payload) == cold.facts
+
+    # ── warm: the stored value is served without touching the API ──
+    warm_client = AsyncMock()
+    warm_client.messages.create = AsyncMock(return_value=_facts_response(["unused"]))
+    with _redis_miss() as redis:
+        redis.return_value.get = AsyncMock(return_value=cached_payload)
+        redis.return_value.setex = AsyncMock()
+
+        warm = await FactExtractor(warm_client).extract(
+            [_chunk(_LONG_SOURCE)], content_type="text"
+        )
+
+    warm_client.messages.create.assert_not_awaited(), "a cache hit must skip the API"
+    assert warm.facts == cold.facts
+    assert warm.failed_chunks == 0

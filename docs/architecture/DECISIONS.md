@@ -14,7 +14,10 @@ deliberately left undone.
 
 ## D-001 — Skip fact extraction for already-atomic thin content
 
-**Status:** Done (2026-09-02)
+**Status:** **REVERTED by D-003 (2026-09-02).** The diagnosis below is still
+accurate and the measurements still stand; the *behaviour* it describes is no
+longer in the codebase. Read this entry as the record of a correctly-identified
+mechanism, not as a description of how ingestion works today.
 **Referred to previously as "Option 1".**
 
 ### Problem
@@ -198,12 +201,15 @@ This is more useful to the record than a confirmation would have been. It says
 precisely what not to assume next time: that fixing a demonstrated mechanism
 moves the headline metric.
 
-### Open question this leaves
+### Open question this leaves — since ANSWERED by D-003
 
 Whether to keep the thin-content skip is now genuinely open. It is correct on
 its own terms and fixed a real defect, but on this corpus it costs recall.
 Keeping it, reverting it, or making it conditional on corpus density should be
 decided deliberately rather than by inertia.
+
+**Resolved:** D-003 reverted it outright, and moved the discrimination work to
+the retrieval layer where it does not trade against corpus size.
 
 ### Harness defect found and fixed during this run
 
@@ -231,41 +237,143 @@ context that failed.
 
 ---
 
+## D-003 — D-001's skip reverted; discrimination moves to the retrieval layer
+
+**Status:** Done (2026-09-02)
+
+### Decision
+
+The thin-content skip introduced in D-001 is **removed outright** — no flag, no
+dormant code path. Thin documents go back through normal multi-fact extraction
+and produce two or three memories each, as before D-001.
+
+### Why
+
+D-001 correctly identified a real embedding-collapse problem and demonstrably
+fixed it: cosine separation among the attractor commits went 0.0810 → 0.2986
+locally and 0.0810 → 0.2747 on the deployed worker, with every pair moved
+outside the 0.15 conflict threshold.
+
+D-002 then showed the fix cost more than it gained. Skipping extraction traded
+memory COUNT for memory DISTINCTNESS, and on this corpus the count mattered
+more: like-for-like retention fell 0.2988 → 0.2769, and on the 241 items common
+to runs 1 and 3 SourceMind went from 0.3197 to 0.2905 — from beating NaiveRAG
+by 2.5 points to tying it exactly.
+
+The discrimination problem is real. Ingestion is the wrong layer to solve it
+at, because every lever there trades against corpus size. It belongs at the
+**retrieval** layer, where discrimination can improve without removing anything
+from the index — see the Option 2 entry below.
+
+### No flag, deliberately
+
+A disabled flag would be worse than removal. `ENABLE_THIN_CONTENT_SKIP = False`
+sitting in the code is a trap: a future reader has to dig through this log to
+learn why it exists and whether flipping it is safe, and nothing tests that
+path. This session has spent considerable effort removing exactly that class of
+latent state — dead code, stale comments, misleading defaults — and adding a
+fresh instance to preserve an option would contradict the reasoning.
+
+D-001 and D-003 together hold the complete record: the mechanism, the
+measurement, and the reason for reverting. Anyone who needs the behaviour back
+for a denser corpus can rebuild it correctly, and better informed than we were —
+by then the Option 2 fusion work may have made it unnecessary, or the two may
+need to compose differently than either would have alone.
+
+### What was kept
+
+- **The diagnosis and its measurements**, in D-001 above. Note these were
+  produced by throwaway scratchpad scripts, not committed tests — they are a
+  written record of what was measured, not an executable regression guard, and
+  they do not need to be executable to be trustworthy.
+- **The retirement false-positive audit** in the Deferred section (13 of 40
+  confidently wrong at 0.95 confidence, 0 cross-repository).
+- **One test**, `test_cache_is_read_and_written_for_extracted_content`,
+  relocated into `test_extraction_empty_vs_failed.py`. It verifies that
+  extraction's Redis cache still reads and writes, which is true independently
+  of the skip and worth keeping. The other four tests in the deleted
+  `test_thin_content_skip.py` asserted the reverted behaviour and went
+  with it.
+- **The eight widened test fixtures**, left widened. Re-checked individually:
+  each verifies retry, parse-failure or cache mechanics, and multi-sentence
+  content exercises those paths unambiguously. They are the better fixtures on
+  their own merits, so re-narrowing them would be churn. The comment that
+  pointed at the deleted file was corrected.
+
+---
+
 ## Deferred — not done, with reasons
 
-### "Option 2" — metadata / structured-identifier boosted retrieval
+### Option 2 — query-adaptive fusion weighting
 
-**Priority raised by D-002.** Still deferred, but it is now the most promising
-remaining lever and its requirements are sharper than before.
+**Status: SPECIFIED, ready to scope for implementation.** Both previously-open
+sub-questions now have evidence-backed answers rather than guesses.
 
-The original wording is **not recoverable** — it was described in conversation
-before this file existed, and is not reconstructed here rather than risk
-misstating it. What D-002 establishes about what it must achieve, however, is
-recorded precisely:
+**This is researched prior art, not original reasoning.** The technique is
+established and named in the literature — "Dynamic Weighted Reciprocal Rank
+Fusion", "Adaptive RRF with IDF Weighting", and "DAT (Dynamic Alpha Tuning)"
+(Hsu & Tzeng, 2025) all describe the same core idea: adjust the relative weight
+given to BM25 versus semantic search **per query**, instead of applying one
+fixed blend to every query. It is a standard production feature elsewhere —
+Qdrant supports per-request alpha weighting between sparse and dense retrievers,
+and Elasticsearch supports boost parameters on individual sub-queries in the
+same request. Applying it to our own RRF implementation is adopting a known
+pattern, not inventing one.
 
-**It must preserve or increase memory count while improving discrimination, not
-trade one for the other.** D-001 improved discrimination by reducing memory
-count and recall fell. Any fix that repeats that trade should be expected to
-fail the same way.
+**Trigger mechanism.** Query IDF (inverse document frequency), or the simpler
+proxy of identifier patterns detected in the query text — regex for issue and PR
+numbers (`#\d+`) and commit-hash-shaped tokens. High-IDF, identifier-bearing
+queries shift weight toward BM25 exact matching; low-IDF conversational queries
+stay weighted toward semantic search, which is today's default behaviour. The
+published "vstash" system uses average query-term IDF as exactly this signal,
+which independently confirms that identifier-bearing queries are the class this
+technique is built for — a commit hash or PR number is about as high-IDF as a
+token gets. **Rule-based, not a learned classifier**: the trigger is meant to be
+cheap.
 
-That points away from *skipping* extraction for thin content and toward keeping
-the original multi-fact extraction while fixing boilerplate dilution separately
-— boosting structured identifiers (commit hashes, PR numbers, error strings) at
-retrieval time, so a fact's distinguishing token carries weight without
-shrinking the corpus.
+**Where it lives.** The RRF fusion step specifically — `hybrid.py`'s merge
+logic. Not the embedding or indexing stage, and not either retriever
+individually. Both retrievers stay exactly as they are; only the weight given to
+each result list changes per query. This answers the first open sub-question,
+and it now has independent literature and production precedent behind it rather
+than only internal logic.
 
-Two things to settle before building it:
+**Expected magnitude, from the literature and not a promise.** The DAT paper
+reports +2 to +7.5 percentage points on Precision@1 and MRR, measured
+specifically on "hybrid-sensitive" queries — the subset where BM25 and dense
+retrieval actually disagree, which is precisely the attractor-commit scenario.
+Real, bounded, and non-trivial, but not transformative. Expectations should be
+set there before implementing.
 
-1. Whether the thin-content skip (D-001) should be reverted first, since the
-   two approaches are alternatives rather than complements on thin content.
-2. Whether identifier boosting belongs in the BM25 half of the hybrid, the
-   dense half, or the RRF fusion — the diagnosis in D-002 does not distinguish
-   these, and guessing would repeat the mistake D-002 documents.
+**Caution that must be tested for.** One paper found that fusing BM25 more
+strongly into an already-strong dense retriever can *hurt*: where the dense
+ranking is already good, extra lexical signal promotes
+lexically-similar-but-semantically-irrelevant results. That is not a reason to
+avoid the change — our dense retriever is specifically failing on this query
+class, which is the whole finding of D-002 — but the implementation must verify
+it does not regress queries where dense retrieval currently works, not merely
+improve identifier-bearing queries in isolation.
 
-This is architecture work and should be scoped once, deliberately, rather than
-attempted as another test-and-rerun cycle. Three multi-hour evaluation runs
-have already been spent reaching a well-understood result; the next one should
-be spent on a properly scoped change.
+**It satisfies the D-002 constraint.** Unlike D-001, this improves
+discrimination without reducing memory count: nothing is removed from the index,
+only reweighted at query time. Multi-fact extraction stays exactly as it is.
+
+### Cross-encoder reranking — complementary, deferred
+
+A **separate** technique, not a replacement for the above. The established
+production pattern is two-stage: hybrid retrieval (BM25 + dense, fused via RRF)
+fetches a wide candidate pool of roughly the top 100, then a cross-encoder that
+reads query and candidate together reranks the top 30–50 before the final
+result.
+
+The two compose rather than compete. Fusion weighting determines **which
+documents reach the candidate pool**; reranking determines **the final ordering
+among them**. Neither substitutes for the other, and a reranker cannot rescue a
+document that fusion never retrieved — which matters here, since D-002 found the
+correct artifact absent from the top 20 entirely for 108 of 176 misses.
+
+Worth doing, not urgent, and it should follow the fusion work rather than
+precede it.
 
 ### Retirement false positives in `detect()`
 
