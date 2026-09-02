@@ -311,7 +311,45 @@ class SourceMindRetriever:
             print(f"    ! re-enqueue unavailable: {type(exc).__name__}: {exc}")
             return False
 
+    # Submission timeout and attempts.
+    #
+    # Measured POST latency against Railway is ~880ms typical, with occasional
+    # stalls at 21s, 49s and 109s and no server-side error to go with them. At
+    # a 60s timeout those stalls were recorded as failed ingestions for items
+    # the server had accepted, so the ceiling is well clear of the worst
+    # observed stall and a timeout is retried rather than written off.
+    _SUBMIT_TIMEOUT_S = 180.0
+    _SUBMIT_ATTEMPTS = 3
+
     def _submit(self, httpx: Any, item: dict[str, Any]) -> tuple[str, str] | None:
+        """POST the document, retrying a stalled or dropped request.
+
+        The idempotency key is regenerated per attempt on purpose: content
+        deduplication already prevents a duplicate document, so a retry that
+        the server did receive returns the existing record rather than
+        creating a second one.
+        """
+        last_error: Exception | None = None
+        for attempt in range(1, self._SUBMIT_ATTEMPTS + 1):
+            try:
+                return self._submit_once(httpx, item)
+            except Exception as exc:  # network stall, reset, timeout
+                last_error = exc
+                if attempt < self._SUBMIT_ATTEMPTS:
+                    print(
+                        f"    ~ submit {item['id']} attempt {attempt} "
+                        f"{type(exc).__name__}; retrying"
+                    )
+                    time.sleep(2.0 * attempt)
+
+        print(
+            f"    ! submit {item['id']}: gave up after "
+            f"{self._SUBMIT_ATTEMPTS} attempts: {type(last_error).__name__}: "
+            f"{last_error}"
+        )
+        return None
+
+    def _submit_once(self, httpx: Any, item: dict[str, Any]) -> tuple[str, str] | None:
         response = httpx.post(
             f"{self._api_url}/v1/memories",
             params={"workspace_id": self._workspace_id},
@@ -320,7 +358,7 @@ class SourceMindRetriever:
                 "Idempotency-Key": str(uuid.uuid4()),
             },
             json={"content": item["content"], "source_type": "text"},
-            timeout=60.0,
+            timeout=self._SUBMIT_TIMEOUT_S,
         )
         if response.status_code >= 400:
             print(f"    ! submit {item['id']}: HTTP {response.status_code} {response.text[:160]}")
@@ -335,11 +373,17 @@ class SourceMindRetriever:
         """Poll until the job reports completion. None on timeout or failure."""
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
-            response = httpx.get(
-                f"{self._api_url}/v1/memories/jobs/{job_id}",
-                headers=self._tokens.headers(),
-                timeout=30.0,
-            )
+            try:
+                response = httpx.get(
+                    f"{self._api_url}/v1/memories/jobs/{job_id}",
+                    headers=self._tokens.headers(),
+                    timeout=60.0,
+                )
+            except Exception:
+                # A stalled poll is not a failed job. Keep polling until the
+                # deadline rather than abandoning a document mid-flight.
+                time.sleep(2.0)
+                continue
             if response.status_code >= 400:
                 time.sleep(1.0)
                 continue

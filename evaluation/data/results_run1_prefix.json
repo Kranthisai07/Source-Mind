@@ -1,0 +1,177 @@
+{
+  "generated_at": "2026-08-22T23:32:17.718339+00:00",
+  "ground_truth_items": 300,
+  "retrievers": [
+    "naive_rag",
+    "sourcemind"
+  ],
+  "excluded_metrics": {
+    "attribution_accuracy": "attribution_accuracy: excluded from this run - ingestion attributes every memory to the authenticated API caller rather than the artifact's original author, because create_initial_attribution() writes a single contributor at weight 1.0 and the 5-signal algorithm runs only on PATCH. The metric would therefore report 0.000 for SourceMind by construction, measuring a wiring gap rather than attribution quality. Tracked in ARCHITECTURE.md; scheduled as follow-up work.",
+    "conflict_detection": "conflict_detection: excluded from this run — dataset lacks labeled negative pairs; system now includes a novel human-gated severity-tiered resolution design not present in comparable systems (Supermemory, Mem0 both auto-resolve via LLM with no human oversight — see paper Section X). Full evaluation of this feature is planned as follow-up work."
+  },
+  "results": {
+    "naive_rag": {
+      "knowledge_retention": {
+        "metric": "knowledge_retention",
+        "score": 0.3133,
+        "hits": 94,
+        "total": 300,
+        "top_k": 5
+      },
+      "role_scoped_retrieval_engineer": {
+        "metric": "role_scoped_retrieval",
+        "role": "engineer",
+        "score": 0.992,
+        "total_queries": 200,
+        "in_scope_results": 992,
+        "total_results": 1000
+      },
+      "role_scoped_retrieval_manager": {
+        "metric": "role_scoped_retrieval",
+        "role": "manager",
+        "score": 0.598,
+        "total_queries": 100,
+        "in_scope_results": 299,
+        "total_results": 500
+      },
+      "latency": {
+        "metric": "latency",
+        "p50_ms": 182.42,
+        "p95_ms": 222.95,
+        "p99_ms": 228.24,
+        "mean_ms": 179.36,
+        "min_ms": 136.27,
+        "max_ms": 228.24,
+        "total_queries": 50
+      },
+      "attribution_accuracy": {
+        "metric": "attribution_accuracy",
+        "status": "excluded",
+        "reason": "attribution_accuracy: excluded from this run - ingestion attributes every memory to the authenticated API caller rather than the artifact's original author, because create_initial_attribution() writes a single contributor at weight 1.0 and the 5-signal algorithm runs only on PATCH. The metric would therefore report 0.000 for SourceMind by construction, measuring a wiring gap rather than attribution quality. Tracked in ARCHITECTURE.md; scheduled as follow-up work."
+      },
+      "conflict_detection": {
+        "metric": "conflict_detection",
+        "status": "excluded",
+        "reason": "conflict_detection: excluded from this run — dataset lacks labeled negative pairs; system now includes a novel human-gated severity-tiered resolution design not present in comparable systems (Supermemory, Mem0 both auto-resolve via LLM with no human oversight — see paper Section X). Full evaluation of this feature is planned as follow-up work."
+      }
+    },
+    "sourcemind": {
+      "knowledge_retention": {
+        "metric": "knowledge_retention",
+        "score": 0.26,
+        "hits": 78,
+        "total": 300,
+        "top_k": 5
+      },
+      "role_scoped_retrieval_engineer": {
+        "metric": "role_scoped_retrieval",
+        "role": "engineer",
+        "score": 0.9777,
+        "total_queries": 200,
+        "in_scope_results": 876,
+        "total_results": 896
+      },
+      "role_scoped_retrieval_manager": {
+        "metric": "role_scoped_retrieval",
+        "role": "manager",
+        "score": 0.392,
+        "total_queries": 100,
+        "in_scope_results": 196,
+        "total_results": 500
+      },
+      "latency": {
+        "metric": "latency",
+        "p50_ms": 1062.83,
+        "p95_ms": 1082.46,
+        "p99_ms": 1084.26,
+        "mean_ms": 1062.41,
+        "min_ms": 1029.44,
+        "max_ms": 1084.26,
+        "total_queries": 50
+      },
+      "attribution_accuracy": {
+        "metric": "attribution_accuracy",
+        "status": "excluded",
+        "reason": "attribution_accuracy: excluded from this run - ingestion attributes every memory to the authenticated API caller rather than the artifact's original author, because create_initial_attribution() writes a single contributor at weight 1.0 and the 5-signal algorithm runs only on PATCH. The metric would therefore report 0.000 for SourceMind by construction, measuring a wiring gap rather than attribution quality. Tracked in ARCHITECTURE.md; scheduled as follow-up work."
+      },
+      "conflict_detection": {
+        "metric": "conflict_detection",
+        "status": "excluded",
+        "reason": "conflict_detection: excluded from this run — dataset lacks labeled negative pairs; system now includes a novel human-gated severity-tiered resolution design not present in comparable systems (Supermemory, Mem0 both auto-resolve via LLM with no human oversight — see paper Section X). Full evaluation of this feature is planned as follow-up work."
+      }
+    }
+  },
+  "like_for_like_recall": {
+    "note": "Both systems scored over the identical set of items SourceMind actually holds. 56 of 300 documents produced no memories, so SourceMind can never retrieve them; scoring it over 300 charges it for an ingestion gap rather than a retrieval one. NaiveRAG still indexes all 300 - the excluded documents remain in its index as distractors - so only the scored queries differ.",
+    "held_items": 244,
+    "excluded_items": 56,
+    "excluded_item_ids": [
+      "django/django/commits/032549216074d25628a9d63f44767fa1ed801286",
+      "django/django/pull/21351",
+      "django/django/pull/21353",
+      "django/django/pull/21354",
+      "django/django/pull/21355",
+      "django/django/pull/21356",
+      "django/django/pull/21363",
+      "django/django/pull/21365",
+      "django/django/pull/21368",
+      "facebook/react/issues/36146",
+      "facebook/react/issues/36158",
+      "facebook/react/issues/36162",
+      "facebook/react/issues/36175",
+      "facebook/react/issues/36186",
+      "facebook/react/issues/36187",
+      "facebook/react/issues/36205",
+      "facebook/react/issues/36206",
+      "facebook/react/issues/36207",
+      "facebook/react/issues/36211",
+      "facebook/react/issues/36226",
+      "facebook/react/issues/36251",
+      "facebook/react/issues/36381",
+      "facebook/react/pull/36540",
+      "microsoft/TypeScript/commits/4f7b4175fe38424fffebb0a20355633bc077d52c",
+      "microsoft/TypeScript/commits/71586adc7bec6b358809b5301ad2c6f0d7703174",
+      "microsoft/TypeScript/issues/63454",
+      "microsoft/TypeScript/issues/63457",
+      "microsoft/TypeScript/issues/63459",
+      "microsoft/TypeScript/issues/63468",
+      "microsoft/TypeScript/issues/63473",
+      "microsoft/TypeScript/issues/63486",
+      "rust-lang/rust/commits/8f02e856be945d5d879b2ff9b7d19dd6bfb1c0e5",
+      "rust-lang/rust/issues/156685",
+      "rust-lang/rust/issues/156758",
+      "rust-lang/rust/issues/156806",
+      "rust-lang/rust/issues/156987",
+      "rust-lang/rust/pull/156972",
+      "rust-lang/rust/pull/157026",
+      "rust-lang/rust/pull/157037",
+      "rust-lang/rust/pull/157041",
+      "vercel/next.js/commits/ae76532c46662a05e9de92334f0560e9bf58447d",
+      "vercel/next.js/commits/daf10c3712b0baf648b4fb9a20f29ab3327ef46f",
+      "vercel/next.js/discussions/48885",
+      "vercel/next.js/discussions/66306",
+      "vercel/next.js/discussions/88535",
+      "vercel/next.js/discussions/93990",
+      "vercel/next.js/discussions/94014",
+      "vercel/next.js/discussions/94103",
+      "vercel/next.js/discussions/94115",
+      "vercel/next.js/issues/93903",
+      "vercel/next.js/issues/94024",
+      "vercel/next.js/issues/94060",
+      "vercel/next.js/pull/94142",
+      "vercel/next.js/pull/94160",
+      "vercel/next.js/pull/94167",
+      "vercel/next.js/pull/94180"
+    ],
+    "naive_rag_over_held": {
+      "score": 0.2951,
+      "hits": 72,
+      "total": 244
+    },
+    "sourcemind_over_held": {
+      "score": 0.3197,
+      "hits": 78,
+      "total": 244
+    }
+  }
+}
