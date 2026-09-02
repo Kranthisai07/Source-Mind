@@ -38,7 +38,10 @@ def _mock_anthropic_response(facts: list[str]) -> MagicMock:
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_extract_facts_returns_list():
-    chunk = _make_chunk("The project uses PostgreSQL 16 for primary storage.")
+    chunk = _make_chunk(
+        "The project uses PostgreSQL 16 for primary storage. "
+        "Redis 7.2 backs the cache and the Celery broker."
+    )
 
     mock_client = AsyncMock()
     mock_client.messages.create = AsyncMock(
@@ -63,7 +66,11 @@ async def test_extract_facts_returns_list():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_json_parse_failure_skips_chunk_without_crash():
-    chunk = _make_chunk("Some content that triggers a bad response.")
+    chunk = _make_chunk(
+        "Some content that triggers a bad response. It spans two sentences so "
+        "that it reaches the extraction call rather than the atomic-content "
+        "shortcut."
+    )
 
     bad_response = MagicMock()
     bad_response.content = [MagicMock(text="NOT VALID JSON AT ALL")]
@@ -104,7 +111,10 @@ async def test_empty_chunk_list_returns_empty():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cache_hit_skips_api_call():
-    chunk = _make_chunk("Cached content.")
+    chunk = _make_chunk(
+        "Cached content. It is deliberately multi-sentence so the cache lookup "
+        "is reached at all."
+    )
 
     mock_client = AsyncMock()
 
@@ -125,7 +135,10 @@ async def test_cache_hit_skips_api_call():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_api_error_on_chunk_doesnt_crash_pipeline():
-    chunks = [_make_chunk("Good chunk."), _make_chunk("Chunk that errors.")]
+    chunks = [
+        _make_chunk("Good chunk. It has two sentences so extraction runs."),
+        _make_chunk("Chunk that errors. It also has two sentences."),
+    ]
 
     # Chunks run concurrently, so responses cannot be matched to chunks by
     # position. Dispatch on the prompt instead: the erroring chunk fails both

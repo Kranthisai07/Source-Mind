@@ -29,6 +29,7 @@ patched out so no real ingestion work is queued.
 from __future__ import annotations
 
 import asyncio
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -64,10 +65,15 @@ async def committing_engine():
     """
     from sourcemind.core.config import get_settings
 
+    # Sized for the burst test, which opens 20 concurrent sessions. At 5+5 the
+    # pool was exhausted and the test failed with a QueuePool timeout rather
+    # than on the property under test - a defect in the scaffolding, not in
+    # commit ordering. It only surfaced once Railway latency rose enough for
+    # connections to be held longer.
     engine = create_async_engine(
         get_settings().async_database_url,
-        pool_size=5,
-        max_overflow=5,
+        pool_size=25,
+        max_overflow=10,
         pool_pre_ping=True,
         connect_args={"statement_cache_size": 0},
     )
@@ -75,6 +81,18 @@ async def committing_engine():
         yield engine
     finally:
         await engine.dispose()
+
+
+# The visibility checks are serialised. Each opens its own connection, and with
+# twenty submissions in flight that meant ~20 simultaneous extra connections to
+# Railway on top of the session pool - enough to trip the proxy (WinError 121).
+#
+# Serialising does not weaken the assertion. The check runs inside apply_async,
+# and under the OLD code the commit happened at request teardown, long after
+# every dispatch in the burst; a few milliseconds of queueing cannot make an
+# uncommitted row appear. Confirmed by the revert check: without the fix the
+# burst still fails 20/20.
+_CHECK_LOCK = threading.Lock()
 
 
 def _visible_from_another_connection(document_id: str) -> bool:
@@ -88,9 +106,15 @@ def _visible_from_another_connection(document_id: str) -> bool:
     async def check() -> bool:
         from sourcemind.core.config import get_settings
 
+        # NullPool explicitly: poolclass=None means "use the default", which
+        # would pool connections this short-lived engine never reuses. Each
+        # check runs in its own thread and loop, so the connection must be
+        # released the moment it is done.
+        from sqlalchemy.pool import NullPool
+
         engine = create_async_engine(
             get_settings().async_database_url,
-            poolclass=None,
+            poolclass=NullPool,
             connect_args={"statement_cache_size": 0},
         )
         try:
@@ -107,8 +131,9 @@ def _visible_from_another_connection(document_id: str) -> bool:
         finally:
             await engine.dispose()
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(lambda: asyncio.run(check())).result(timeout=60)
+    with _CHECK_LOCK:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(lambda: asyncio.run(check())).result(timeout=60)
 
 
 async def _cleanup(engine, document_ids: list[str]) -> None:

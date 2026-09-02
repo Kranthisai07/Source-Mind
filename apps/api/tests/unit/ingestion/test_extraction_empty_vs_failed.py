@@ -26,7 +26,18 @@ from sourcemind.services.ingestion.chunker import ChunkResult
 from sourcemind.services.ingestion.fact_extractor import FactExtractor
 
 
-def _chunk(content: str = "Some content to extract from.") -> ChunkResult:
+# Multi-sentence on purpose. A single sentence under 150 characters is now
+# routed past extraction entirely as already-atomic content, which is covered
+# by test_thin_content_skip.py. These tests are about retry, parse failure and
+# caching, so their fixture has to actually reach the extraction call.
+_EXTRACTABLE = (
+    "The ingestion pipeline stores memories in PostgreSQL. Retrieval fuses "
+    "pgvector similarity with BM25 ranking. The fusion uses Reciprocal Rank "
+    "Fusion with a smoothing constant of 60."
+)
+
+
+def _chunk(content: str = _EXTRACTABLE) -> ChunkResult:
     return ChunkResult(
         content=content,
         token_count=len(content.split()),
