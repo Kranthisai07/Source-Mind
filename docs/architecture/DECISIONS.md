@@ -302,12 +302,166 @@ need to compose differently than either would have alone.
 
 ---
 
+## D-004 — Query-adaptive fusion weighting, plus the keyword arm it needed
+
+**Status:** Done (2026-09-02). Implements the Option 2 specification below,
+with one documented departure from it.
+
+### What the investigation found before anything was written
+
+The specification said to change the RRF fusion weights and nothing else -
+explicitly not BM25, not the embedding stage, both retrievers left as they are.
+Reading `hybrid.py` first, as the work order required, turned up the reason
+that could not work on its own.
+
+**The keyword arm was returning zero rows for 294 of the 300 evaluation
+questions** - 100 of 100 pull requests, 99 of 100 commits, and all five
+attractor commits. The cause is `plainto_tsquery`, which joins terms with
+AND. The real question
+
+> What did commit 926fa8554175 change in facebook/react?
+
+becomes `'commit' & '926fa8554175' & 'chang' & 'facebook/react'`, and the
+conjunction fails whenever the stored memory lacks any one filler word, even
+though the hash itself matches exactly. Fusion weighting cannot recover from
+that, because zero multiplied by any weight is still zero.
+
+That was measured rather than argued. Four fusion variants were run over
+identical candidate lists:
+
+| variant | 5 attractors | 95-query sample |
+|---------|--------------|-----------------|
+| A - baseline, equal weights, AND keyword arm | 1/5 = 0.200 | 18/95 = 0.1895 |
+| **B - weighted 0.7/0.3, AND keyword arm (the spec as written)** | **1/5 = 0.200** | **18/95 = 0.1895** |
+| C - weighted 0.7/0.3, identifier keyword arm | 5/5 = 1.000 | 64/95 = 0.6737 |
+| D - **equal** weights, identifier keyword arm | 5/5 = 1.000 | 63/95 = 0.6632 |
+
+B is identical to A on every query tested - the same 18 hits, not approximately
+the same number. D against A isolates the keyword arm at **+47.4pp**; C against
+D isolates the reweighting the specification actually asked for, at **+1.05pp**,
+one query in 95.
+
+So the gain is almost entirely in the part the specification excluded. This was
+reported and the scope decision taken deliberately before implementing.
+
+### What was built
+
+Both mechanisms, C:
+
+1. **Identifier detection** (`_extract_identifiers`) - a cheap regex over
+   the raw query, no model call, matching abbreviated and full commit hashes and
+   `#NNNNN` issue/PR/discussion references.
+2. **An identifier-aware keyword arm** - when the query carries identifiers,
+   `_keyword_search` searches on those alone, OR-ed, under the
+   `simple` configuration so they are not stemmed. Without identifiers the
+   original `plainto_tsquery` AND behaviour is used, unchanged.
+3. **Weighted RRF** - `_rrf_merge` takes `w_semantic` and
+   `w_keyword`, both defaulting to 1.0, so the six pre-existing tests and
+   any other caller get exactly the previous behaviour.
+
+The weights are 0.6 / 1.4 rather than 0.3 / 0.7. Same ratio, scaled to sum to
+2.0 to match the `1.0 + 1.0` default, so result scores stay on one scale
+whether or not the boost fired. RRF ordering is invariant under scaling both
+weights by a common factor, so this ranks identically to the ratio that was
+measured.
+
+### The regex detail that would have been a latent bug
+
+The obvious pattern `\b[0-9a-f]{7,40}\b` also matches ordinary English
+words built only from the hex letters - **defaced**, **effaced**, **deadbeef** -
+which would fire the keyword boost on prose. Requiring at least one digit *and*
+at least one a-f letter rejects all of them and still accepts
+`926fa8554175`. This corpus happens to contain none of those words, so
+the naive form would have passed every test here and broken on someone else's
+data. There is a test for it.
+
+### Measured, through the live code path
+
+Not the simulation - `hybrid_search` itself, against the run-3 workspace,
+with the change in the working tree and then stashed for the before figures.
+
+**The five attractor commits, which is the direct proof it addresses D-002's
+diagnosed mechanism:**
+
+| commit | before | after |
+|--------|--------|-------|
+| 926fa8554175 | absent from top 20 | **rank 1** |
+| 75ae73e68c02 | absent from top 20 | **rank 1** |
+| cafd63bcf755 | rank 10 | **rank 1** |
+| 561ed529b3a6 | rank 12 | **rank 1** |
+| 142cfde89eda | rank 1 | rank 1 |
+
+recall@5 on the five: **0.200 -> 1.000**.
+
+**95-query sample, all four artifact types, real before/after:**
+
+| type | n | before | after | delta |
+|------|---|--------|-------|-------|
+| commit | 25 | 0.240 | 0.920 | +68.0pp |
+| pull_request | 25 | 0.280 | 0.920 | +64.0pp |
+| issue | 25 | 0.080 | 0.520 | +44.0pp |
+| discussion | 20 | 0.150 | 0.250 | +10.0pp |
+| **overall** | **95** | **0.1895** | **0.6737** | **+48.4pp** |
+
+46 queries gained. **Zero queries regressed** - no query that hit before missed
+after.
+
+### Against the expected magnitude: it does NOT match, and that is not a win
+
+The specification predicted +2 to +7.5pp, from the DAT paper. The measured
+result is +48.4pp. **The literature did not predict this and it should not be
+read as confirming it.**
+
+DAT measures reweighting two functioning retrievers against each other. That is
+variant C-minus-D, and it came in at **+1.05pp** - below the cited range, not
+above it. The +48.4pp headline is variant D, which is not reweighting at all: it
+is repairing an arm that was returning nothing. A different intervention with a
+different mechanism, and the cited range never applied to it.
+
+Stated plainly: the technique the specification named delivered about a fiftieth
+of the measured gain. The investigation the specification demanded before
+implementing is what found the rest.
+
+### Caution test
+
+Required by the specification: confirm no regression where dense retrieval
+already works. The evaluation dataset cannot supply it - **all 300 questions
+contain an identifier**, so the trigger fires on every one and there is no
+untriggered class in it to test.
+
+Fifteen conceptual queries were written against real corpus subject matter
+instead, each asserted identifier-free, and the full top-10 captured before and
+after: ids, ranks, match types and scores to ten decimal places.
+
+**126 result rows compared, zero differences.** The change is inert for
+non-identifier queries, as the code path requires - no identifiers means the
+keyword arm takes the original branch and `_rrf_merge` is called with its
+defaults.
+
+Worth being clear about what this does and does not establish. It confirms the
+additive-only property. It does **not** test the paper's warning that a BM25
+boost can hurt when dense retrieval is already strong, because that warning
+applies to queries where the boost fires, and this corpus has no
+identifier-bearing query where the dense arm is already strong enough to be
+damaged. On a corpus with both properties, that risk is still open.
+
+### Not yet run
+
+No production deployment and no 300-item evaluation. Three multi-hour runs have
+already been spent; whether a fourth is worth it is a separate decision, taken
+with these numbers in hand.
+
+---
+
 ## Deferred — not done, with reasons
 
 ### Option 2 — query-adaptive fusion weighting
 
-**Status: SPECIFIED, ready to scope for implementation.** Both previously-open
-sub-questions now have evidence-backed answers rather than guesses.
+**Status: IMPLEMENTED by D-004 (2026-09-02).** Kept here because the
+specification is what the implementation was built and judged against - D-004
+records where it held and where it did not. The trigger and location below were
+both correct; the expected magnitude was not, and the constraint against
+touching the keyword arm made the change a measured no-op on its own.
 
 **This is researched prior art, not original reasoning.** The technique is
 established and named in the literature — "Dynamic Weighted Reciprocal Rank
