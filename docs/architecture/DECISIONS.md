@@ -485,7 +485,11 @@ with these numbers in hand.
 | naive_rag like-for-like  | 0.2951 | 0.2869 | 0.2962 | 0.2948 |
 | role scope engineer      | 0.9777 | 0.979 | 0.9793 | 0.9787 |
 | role scope manager       | 0.392 | 0.3587 | 0.3768 | 0.443 |
-| latency p50 / p95 (ms)   | 1063/1082 | 1038/1063 | 1097/1153 | 155.7/174.2 |
+| latency p50 / p95 (ms) [*] | 1063/1082 | 1038/1063 | 1097/1153 | 155.7/174.2 |
+
+[*] The latency row is **not a valid code comparison** - see the corrected
+latency section below. It is dominated by deployment state, and unchanged run-2
+and run-3 data now measures ~8x faster than the figures shown here.
 
 NaiveRAG raw retention was **0.3133 (94/300) in all four runs**. The control has
 now held four times, so movement in the SourceMind column is attributable to the
@@ -554,18 +558,69 @@ retrieval heavily. That is a property of the dataset, not a property of the
 system, and a future dataset should include conversational queries so the
 untriggered path is measured rather than assumed.
 
-### Latency: a large drop, only partly ours
+### Latency: the drop is NOT ours, and the earlier explanation is withdrawn
 
-p50 went 1097ms -> 155.7ms and p95 1153ms -> 174.2ms against run 3. NaiveRAG
-also roughly halved over the same interval (p95 560.9 -> 274.7) with no code
-change at all, so **roughly a 2x factor is environmental** - network conditions
-between this machine and Railway - and must not be claimed.
+**This section originally attributed roughly 3x of the run3 -> run4 latency drop
+to the keyword arm, offered as a likely mechanism. It was measured on
+2026-09-03 and is false. The correction follows; the original claim is not
+preserved as if it still stood.**
 
-Net of that, SourceMind still improved about 3x more than the environment
-explains. The plausible mechanism is that the old keyword arm ran a multi-term
-AND `tsquery` that matched nothing yet still had to be evaluated, whereas
-the new one is a single indexed lexeme lookup. Offered as the likely explanation,
-not as a measured attribution - isolating it was not attempted.
+**1. The fix costs approximately nothing.** Measured in-process - no HTTP, no
+auth, no API round trip, embeddings pre-warmed into Redis so no OpenAI call sits
+inside a timed span - over 20 queries x 5 repetitions against the same database
+the deployed API uses. The strict isolation runs the *same* 10 identifier
+queries down both code paths, which needs no source change:
+`_keyword_search(identifiers=None)` is the pre-D-004 behaviour and
+`_rrf_merge` with default weights is the pre-D-004 merge.
+
+| path | median | p95 |
+|------|--------|-----|
+| new (D-004) | 244.77ms | 249.18ms |
+| old (pre-D-004) | 243.81ms | 246.81ms |
+| **delta** | **+0.96ms** | +2.37ms |
+
++0.96ms on a ~244ms operation is 0.4%, and it is **smaller than the measurement
+noise** - the spread between queries within a single set is ~7ms. The
+fix-authored code bounds it directly: `_extract_identifiers` 0.0107ms and
+the weighted `_rrf_merge` 0.1207ms, against 0.1263ms for the unweighted
+merge. The weighted merge timed marginally *faster*, which is simply noise. Total
+fix cost: 0.13ms.
+
+**2. The keyword-arm mechanism is refuted.** The arm costs **97.71ms on the new
+identifier path against 97.51ms on the old AND-conjunction path**. There is no
+difference. The claim that the old multi-term `tsquery` was expensive to
+evaluate was wrong.
+
+**3. The drop is not code-attributable at all.** The run-2 and run-3 workspaces
+were re-benchmarked through the deployed API, same queries, same endpoint, same
+data that produced the original figures:
+
+| workspace | recorded at the time | measured 2026-09-03 |
+|-----------|----------------------|---------------------|
+| run 2 | 1037.6ms p50 | **132.6ms** |
+| run 3 | 1097.0ms p50 | **127.3ms** |
+| run 4 | 155.7ms p50 | 149.3ms |
+
+Unchanged data now measures 8x faster than it did at the time. Run 3's workspace
+is currently **faster than run 4's** (127.3ms against 149.3ms), so D-004 did not
+improve latency - if anything run 4's larger corpus is marginally slower.
+
+The ~1030ms figures in runs 1-3 also look like a fixed cost rather than load:
+run 1 ranged 1029.44-1084.26ms and run 2 1029.96-1068.07ms, a hard floor near
+1030ms with only ~55ms of spread. Network variance does not look like that. The
+cause was not identified - the candidates are Railway deployment or container
+state, and confirming it would need Railway-side metrics this session cannot
+reach.
+
+**4. Consequence for the record: the latency row in the run 1-4 comparison table
+is not a valid code comparison and must not be read as one.** It is dominated by
+deployment and infrastructure state between runs. Any future latency claim needs
+the in-process isolation used here, or two runs on one deployment.
+
+**Incidental finding, unexplained:** attribution enrichment
+(`include_attribution=true`, which the harness always sends) costs +28.1ms
+on run 4's workspace against +4.0ms on run 3's, for similar memory counts. Not
+chased.
 
 ### Role-scoped retrieval
 
