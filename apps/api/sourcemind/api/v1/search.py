@@ -45,7 +45,12 @@ _DEV_WORKSPACE_ID = UUID("00000000-0000-4000-8000-000000000010")
     description=(
         "Search workspace memories using Reciprocal Rank Fusion of vector "
         "similarity and BM25 keyword ranking. "
-        "Results are filtered to the requesting user's workspace and role."
+        # Deliberately does NOT say "and role". Role never filters which
+        # memories are returned - it only truncates content for viewers (see
+        # hybrid_search step 4). Claiming role-based filtering in the public
+        # API description overstates the access control that actually runs.
+        "Results are filtered to the requesting user's workspace; viewers "
+        "receive truncated content."
     ),
 )
 async def search_memories(
