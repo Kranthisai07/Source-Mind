@@ -180,6 +180,12 @@ regressed, and the margin over NaiveRAG went from +2.5 points to exactly zero.
 
 ### THE FINDING: retrieval here is volume-bound, not discrimination-bound
 
+> **Superseded in part by D-005.** This finding was correct about D-001 but
+> too general as a statement about the system. Run 4 showed the binding
+> constraint was that the BM25 arm returned nothing for 294 of 300
+> questions - the system was arm-bound, not volume-bound. Read the section
+> below with that correction in view.
+
 The thin-content fix **did** fix the mechanism it targeted. Embedding separation
 among the attractor commits went 0.0810 → 0.2986 locally and 0.0810 → 0.2747 on
 the deployed worker, taking every pair outside the 0.15 conflict threshold. That
@@ -450,6 +456,162 @@ damaged. On a corpus with both properties, that risk is still open.
 No production deployment and no 300-item evaluation. Three multi-hour runs have
 already been spent; whether a fourth is worth it is a separate decision, taken
 with these numbers in hand.
+
+---
+
+## D-005 — Evaluation run 4: hypothesis CONFIRMED, and D-002 resolved
+
+**Status:** Measured 2026-09-03. Resolves the investigation opened by D-002.
+
+### The prediction, recorded before the run
+
+> Expect Knowledge Retention (like-for-like) to improve substantially over run
+> 3's 0.2769, given the isolated measurement shows recall@5 on the specific
+> attractor commits going from 0.200 to 1.000, and a 95-query sample improving
+> from 0.1895 to 0.6737 with zero regressions. This is the first fix targeting
+> the mechanism D-002 identified as dominant, rather than a fix at the ingestion
+> layer.
+
+### Result: confirmed, by a wide margin
+
+|                          | run 1 | run 2 | run 3 | **run 4** |
+|--------------------------|-------|-------|-------|-----------|
+| ingested / 300           | 244   | 251   | 260   | **251** |
+| failed                   | 56    | 49    | 40    | **49** |
+| memories                 | 1116  | 1158  | 1107  | **1156** |
+| retention raw            | 0.260 | 0.250 | 0.240 | **0.7033** |
+| retention like-for-like  | 0.3197 | 0.2988 | 0.2769 | **0.8406** |
+| naive_rag raw            | 0.3133 | 0.3133 | 0.3133 | 0.3133 |
+| naive_rag like-for-like  | 0.2951 | 0.2869 | 0.2962 | 0.2948 |
+| role scope engineer      | 0.9777 | 0.979 | 0.9793 | 0.9787 |
+| role scope manager       | 0.392 | 0.3587 | 0.3768 | 0.443 |
+| latency p50 / p95 (ms)   | 1063/1082 | 1038/1063 | 1097/1153 | 155.7/174.2 |
+
+NaiveRAG raw retention was **0.3133 (94/300) in all four runs**. The control has
+now held four times, so movement in the SourceMind column is attributable to the
+changes rather than to drift in the dataset or harness.
+
+Like-for-like retention went **0.2769 -> 0.8406**, and SourceMind moved from
+trailing NaiveRAG (0.2769 vs 0.2962 in run 3) to leading it by 54.6 points.
+
+### The clean comparison is run 4 against run 2, not run 3
+
+Run 4 carries two changes relative to run 3 - D-003 reverted the thin-content
+skip and D-004 added identifier-aware fusion - so run 3 is not a single-variable
+baseline. Run 2 is.
+
+Reverting the skip returned ingestion to run-2 behaviour, and the corpora came
+out nearly identical: **251 documents and 1156 memories in run 4 against 251 and
+1158 in run 2**, a difference of two memories. With the ingestion side held
+essentially constant, like-for-like retention went **0.2988 -> 0.8406, +54.2
+percentage points**, and the difference is retrieval-side.
+
+That is corroborated by the controlled experiment run before deployment, where
+only `hybrid.py` changed and the corpus was held fixed (the run-3
+workspace): 0.1895 -> 0.6737 on a 95-query sample, 46 queries gained, zero
+regressed.
+
+### THE RESOLUTION: D-002's finding was right, and its framing was too narrow
+
+D-002 concluded that retrieval here is *volume-bound, not discrimination-bound*,
+after the thin-content fix improved embedding separation without improving
+recall. Run 4 shows that conclusion was correct about D-001 and wrong as a
+general statement about the system.
+
+The binding constraint was neither volume nor embedding separation. It was that
+**the BM25 arm was returning nothing at all** for 294 of 300 questions, so the
+system was effectively running single-arm dense retrieval while reporting itself
+as hybrid. No amount of ingestion-side tuning could reach that, which is why
+three consecutive ingestion-layer runs moved the metric by less than five points
+in either direction.
+
+Restated for the record: *retrieval was arm-bound*. One of the two retrievers
+was silently inert, and neither embedding quality nor corpus size was the limit
+while that was true.
+
+### The caveat that matters most, stated plainly
+
+**This dataset is unusually favourable to this fix, and the +54pp should not be
+extrapolated to conversational queries.**
+
+All 300 questions are generated in the form "What did commit 926fa8554175 change
+in facebook/react?" or "What was the purpose of PR #36554 in X?" - every single
+one carries an exact identifier that also appears verbatim in the stored memory
+text. That is the best possible case for exact-match lexical retrieval, and it
+is the reason the identifier trigger fires on 100% of this benchmark rather than
+on the minority of queries it would fire on in real use.
+
+What run 4 establishes is that the hybrid architecture works when both arms
+function, and that the arm was broken. What it does **not** establish is a
++54-point improvement for a user asking "why did we stop transpiling computed
+property names?" - a query with no identifier in it takes the unchanged code
+path, and its retrieval quality is exactly what it was in run 3. The caution
+test measured this directly: 126 result rows over 15 conceptual queries, zero
+differences.
+
+A benchmark whose queries all contain a primary key rewards exact-match
+retrieval heavily. That is a property of the dataset, not a property of the
+system, and a future dataset should include conversational queries so the
+untriggered path is measured rather than assumed.
+
+### Latency: a large drop, only partly ours
+
+p50 went 1097ms -> 155.7ms and p95 1153ms -> 174.2ms against run 3. NaiveRAG
+also roughly halved over the same interval (p95 560.9 -> 274.7) with no code
+change at all, so **roughly a 2x factor is environmental** - network conditions
+between this machine and Railway - and must not be claimed.
+
+Net of that, SourceMind still improved about 3x more than the environment
+explains. The plausible mechanism is that the old keyword arm ran a multi-term
+AND `tsquery` that matched nothing yet still had to be evaluated, whereas
+the new one is a single indexed lexeme lookup. Offered as the likely explanation,
+not as a measured attribution - isolating it was not attempted.
+
+### Role-scoped retrieval
+
+Engineer scope is unchanged at 0.9787 (0.9777 / 0.979 / 0.9793 across runs 1-3),
+as expected: it was never the constraint. Manager scope improved 0.3768 ->
+0.443, its best figure across four runs, though it remains the weakest metric
+and below NaiveRAG's 0.596.
+
+### Reconciliation
+
+`total=300, ingested=251, recovered_by_retry=3, failed_ingestion=49`.
+
+The 49 failures are almost entirely `no_memories` - extraction returned
+nothing rather than the pipeline erroring - matching run 2's 49 exactly in count
+and class.
+
+**`recovered_by_retry=3` is the first non-zero value this field has ever
+had.** The retry path was silently dead for the whole of run 3 (the
+.env-relative-to-cwd trap meant Celery could never reach the broker), and the
+fix committed with run 3 is confirmed working: three documents that would have
+been counted as failures were recovered.
+
+### Measurement faults in this run, disclosed
+
+- **One search of 300 died with a network `ConnectTimeout`** and was scored
+  as a miss. Maximum impact 0.33pp raw / 0.40pp like-for-like, and the bias is
+  conservative - it can only understate SourceMind. The independent like-for-like
+  re-query returned the same 211 hits, so the reported figure reproduces.
+- **`stuck` peaked at 4 documents** during ingestion, resolved by
+  reconciliation.
+- The hits were spot-checked against real content rather than trusted from the
+  id map: sampled queries return memories that visibly carry the right
+  identifier, with `match_type` of `keyword` or
+  `semantic+keyword` exactly where the fix should fire. The id map is not
+  degenerate (mean 4.61 memories per document, max 22).
+
+### What this closes and what it leaves open
+
+Closed: the D-002 investigation, and the question of whether retrieval could be
+improved without trading away corpus size. It can, and was.
+
+Open: the manager role scope (0.443, still behind NaiveRAG); attribution
+accuracy, still excluded by design pending the wiring gap; conflict detection,
+still lacking labelled negatives; and the untested caution from D-004 - whether
+a BM25 boost hurts where dense retrieval is already strong - which this corpus
+still cannot answer. Cross-encoder reranking remains the sequenced next step.
 
 ---
 

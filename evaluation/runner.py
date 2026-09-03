@@ -162,6 +162,12 @@ class TokenProvider:
             minted = httpx.post(
                 f"https://api.clerk.com/v1/sessions/{self._session_id}/tokens",
                 headers=auth,
+                # json={} rather than no body: Clerk rejects an absent
+                # Content-Type on this endpoint with 415 "Content-Type is
+                # unsupported", even though the request needs no fields. This
+                # is what the docstring above meant by unexercised - the path
+                # had never run against the real API until run 4.
+                json={},
                 timeout=15.0,
             )
             minted.raise_for_status()
