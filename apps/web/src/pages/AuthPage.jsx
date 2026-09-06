@@ -17,6 +17,8 @@ import { Link } from "react-router-dom";
 import { SignIn, SignUp } from "@clerk/clerk-react";
 import { Brain } from "lucide-react";
 
+import { appUrl } from "@/lib/appUrl";
+
 // Clerk's default theme is light; the rest of the app is dark. These map
 // Clerk's slots onto the existing SourceMind palette so the page does not
 // flash white between routes.
@@ -70,15 +72,15 @@ export default function AuthPage({ mode = "sign-in" }) {
                         <SignUp
                             routing="virtual"
                             appearance={clerkAppearance}
-                            signInUrl="/sign-in"
-                            forceRedirectUrl="/dashboard"
+                            signInUrl={appUrl("/sign-in")}
+                            forceRedirectUrl={appUrl("/dashboard")}
                         />
                     ) : (
                         <SignIn
                             routing="virtual"
                             appearance={clerkAppearance}
-                            signUpUrl="/sign-up"
-                            forceRedirectUrl="/dashboard"
+                            signUpUrl={appUrl("/sign-up")}
+                            forceRedirectUrl={appUrl("/dashboard")}
                         />
                     )}
 

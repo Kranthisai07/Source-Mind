@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { ClerkProvider } from "@clerk/clerk-react";
 import "@/index.css";
 import App from "@/App";
+import { appUrl } from "@/lib/appUrl";
 
 // Publishable keys are designed to ship in the browser bundle — they identify
 // the Clerk instance and carry no authority. The secret key stays server-side
@@ -23,7 +24,9 @@ if (!CLERK_PUBLISHABLE_KEY) {
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(
   <React.StrictMode>
-    <ClerkProvider publishableKey={CLERK_PUBLISHABLE_KEY} afterSignOutUrl="/">
+    {/* afterSignOutUrl goes to the browser as an origin-relative path, so it
+        needs the mount point. "/" alone would leave the app entirely. */}
+    <ClerkProvider publishableKey={CLERK_PUBLISHABLE_KEY} afterSignOutUrl={appUrl("/")}>
       <App />
     </ClerkProvider>
   </React.StrictMode>,
