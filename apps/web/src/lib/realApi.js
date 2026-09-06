@@ -143,6 +143,39 @@ async function request(path, { method = "GET", body, params } = {}) {
     return { ...data, __latency_ms: latency };
 }
 
+// ---------- response envelope ----------
+//
+// The API is NOT uniform, and both directions matter: unwrapping a raw
+// response is as wrong as failing to unwrap an enveloped one. Routes declared
+// `response_model=APIResponse[T]` return {data, meta}; everything else returns
+// its payload at the top level. Verified endpoint by endpoint against the
+// running API rather than inferred:
+//
+//   ENVELOPED  /v1/team/me, /v1/workspaces, /v1/workspaces/{ws},
+//              /v1/workspaces/{ws}/members, /v1/memories/{id},
+//              POST /v1/memories, /v1/memories/jobs/{id}
+//   RAW        all four /analytics/*, /conflicts, /connectors, /handoffs,
+//              POST /v1/memories/search
+//
+// Only the ENVELOPED list goes through these helpers.
+
+/** {data: {...}, meta} -> {...} , preserving the measured latency. */
+function unwrapOne(r) {
+    const d = r && r.data;
+    if (d && typeof d === "object" && !Array.isArray(d)) {
+        return { ...d, __latency_ms: r.__latency_ms };
+    }
+    return r;
+}
+
+/** {data: [...], meta} -> the array, preserving the measured latency. */
+function unwrapList(r) {
+    return {
+        items: Array.isArray(r && r.data) ? r.data : [],
+        __latency_ms: r && r.__latency_ms,
+    };
+}
+
 // ---------- adapters ----------
 
 function adaptOverview(r) {
@@ -204,9 +237,9 @@ function adaptContributor(c, i) {
 
 export const realApi = {
     // ----- session -----
-    getCurrentUser: () => request(`/v1/team/me`),
+    getCurrentUser: async () => unwrapOne(await request(`/v1/team/me`)),
     getWorkspace: async (wsId) =>
-        request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}`),
+        unwrapOne(await request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}`)),
 
     // ----- analytics -----
     // These four routes return a RAW dict, not the {data, meta} envelope used
@@ -242,20 +275,29 @@ export const realApi = {
                 workspace_ids: workspace_ids || [await resolveWorkspaceId()],
             },
         }),
-    getMemory: (id) => request(`/v1/memories/${encodeURIComponent(id)}`),
+    getMemory: async (id) =>
+        unwrapOne(await request(`/v1/memories/${encodeURIComponent(id)}`)),
     // workspace_id is set AFTER the spread so a caller cannot silently
     // override it with a placeholder — the previous order let Memories.jsx's
     // hardcoded "ws_acme_platform" win. A caller that genuinely wants another
     // workspace passes a real UUID, which resolveWorkspaceId honours.
     createMemory: async (payload = {}) =>
-        request(`/v1/memories`, {
-            method: "POST",
-            body: {
-                ...payload,
-                workspace_id: await resolveWorkspaceId(payload.workspace_id),
-            },
-        }),
-    getJobStatus: (jobId) => request(`/v1/memories/jobs/${encodeURIComponent(jobId)}`),
+        unwrapOne(
+            await request(`/v1/memories`, {
+                method: "POST",
+                body: {
+                    ...payload,
+                    workspace_id: await resolveWorkspaceId(payload.workspace_id),
+                },
+            })
+        ),
+    getJobStatus: async (jobId) => {
+        const r = unwrapOne(
+            await request(`/v1/memories/jobs/${encodeURIComponent(jobId)}`)
+        );
+        // Normalise the terminal state to the vocabulary the UI polls for.
+        return { ...r, status: r.status === "completed" ? "done" : r.status };
+    },
     // Also available on the backend:
     //   PATCH  /v1/memories/{id}, DELETE /v1/memories/{id},
     //   GET    /v1/memories/{id}/versions, /attribution, /edits
@@ -275,8 +317,12 @@ export const realApi = {
         }),
 
     // ----- connectors -----
-    listConnectors: async (wsId) =>
-        request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/connectors`),
+    listConnectors: async (wsId) => {
+        const r = await request(
+            `/v1/workspaces/${await resolveWorkspaceId(wsId)}/connectors`
+        );
+        return { ...r, connectors: r.items || r.connectors || [] };
+    },
     createConnector: async (wsId, payload) =>
         request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/connectors`, {
             method: "POST",
@@ -333,8 +379,12 @@ export const realApi = {
     },
 
     // ----- team / contributors -----
-    listTeamMembers: async (wsId) =>
-        request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/members`),
+    listTeamMembers: async (wsId) => {
+        const r = unwrapList(
+            await request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/members`)
+        );
+        return { members: r.items, __latency_ms: r.__latency_ms };
+    },
     listContributors: async (wsId) => {
         const ws = await resolveWorkspaceId(wsId);
         const r = await request(`/v1/workspaces/${ws}/analytics/contribution-map`);
