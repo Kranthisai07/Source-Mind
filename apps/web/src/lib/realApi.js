@@ -7,6 +7,7 @@
 // talking to.
 
 import { mockApi } from "./mockApi";
+import { getAuthToken, logTokenFingerprintOnce } from "./authToken";
 
 const BASE = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
 const DEFAULT_WS = process.env.REACT_APP_DEFAULT_WORKSPACE_ID || "ws_acme_platform";
@@ -48,11 +49,26 @@ async function request(path, { method = "GET", body, params } = {}) {
             if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
         }
     }
+    // Every backend route except /health is behind get_current_user, which
+    // verifies a Clerk JWT against the instance JWKS. Without this header the
+    // API answers 401 SM001 ("Authorization header required").
+    //
+    // Fetched per request, not cached: Clerk session tokens expire in about a
+    // minute and getToken() refreshes them transparently.
+    const token = await getAuthToken();
+    if (token) logTokenFingerprintOnce(token);
+
+    const headers = {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+    };
+    if (token) headers.Authorization = `Bearer ${token}`;
+
     const t0 = performance.now();
     const res = await fetch(url.toString(), {
         method,
         credentials: "include",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        headers,
         body: body ? JSON.stringify(body) : undefined,
     });
     const latency = Math.round(performance.now() - t0);

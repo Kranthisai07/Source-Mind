@@ -14,17 +14,20 @@ import ConflictDetail from "@/pages/ConflictDetail";
 import Handoff       from "@/pages/Handoff";
 import Connectors    from "@/pages/Connectors";
 import Settings      from "@/pages/Settings";
+import { ClerkTokenBridge, RequireAuth } from "@/components/auth/ClerkAuthBridge";
 
 export default function App() {
     return (
         <div className="App min-h-screen bg-sm-bg text-sm-text">
             <BrowserRouter basename={process.env.PUBLIC_URL}>
+                {/* Publishes Clerk's getToken() to realApi.js. Renders nothing. */}
+                <ClerkTokenBridge />
                 <Routes>
                     <Route path="/" element={<Landing />} />
                     <Route path="/sign-in" element={<AuthPage mode="sign-in" />} />
                     <Route path="/sign-up" element={<AuthPage mode="sign-up" />} />
 
-                    <Route element={<AppLayout />}>
+                    <Route element={<RequireAuth><AppLayout /></RequireAuth>}>
                         <Route path="/dashboard"          element={<Dashboard />} />
                         <Route path="/memories"           element={<Memories />} />
                         <Route path="/memories/:id"       element={<MemoryDetail />} />

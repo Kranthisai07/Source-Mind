@@ -4,6 +4,7 @@
   "private": true,
   "homepage": "https://Kranthisai07.github.io/Source-Mind",
   "dependencies": {
+    "@clerk/clerk-react": "^5.61.9",
     "@hookform/resolvers": "^5.0.1",
     "@radix-ui/react-accordion": "^1.2.8",
     "@radix-ui/react-alert-dialog": "^1.1.11",
