@@ -24,7 +24,7 @@ export default function Conflicts() {
 
     useEffect(() => {
         setLoading(true);
-        api.listConflicts("ws", { status }).then(r => {
+        api.listConflicts(undefined, { status }).then(r => {
             setConflicts(r.conflicts);
             setLoading(false);
         });

@@ -39,7 +39,7 @@ function ConfidenceBar({ value }) {
     );
 }
 
-export default function WhoWouldKnow({ workspaceId = "ws_acme_platform" }) {
+export default function WhoWouldKnow({ workspaceId }) {
     const [query, setQuery]     = useState("");
     const [results, setResults] = useState(null);
     const [loading, setLoading] = useState(false);

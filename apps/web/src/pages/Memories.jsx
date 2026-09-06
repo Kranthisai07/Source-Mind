@@ -178,7 +178,7 @@ function IngestPanel({ open, onOpenChange }) {
 
     const submit = async () => {
         if (!content.trim()) return;
-        const r = await api.createMemory({ content, tags, category, workspace_id: "ws_acme_platform" });
+        const r = await api.createMemory({ content, tags, category });
         setJobId(r.job_id);
     };
 

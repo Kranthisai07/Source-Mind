@@ -22,7 +22,7 @@ export default function Connectors() {
     const [logsOpen, setLogsOpen] = useState(false);
     const [selectedConn, setSelectedConn] = useState(null);
 
-    const load = () => api.listConnectors("ws").then(r => setList(r.connectors));
+    const load = () => api.listConnectors().then(r => setList(r.connectors));
     useEffect(() => { load(); }, []);
 
     const syncNow = async (id) => {

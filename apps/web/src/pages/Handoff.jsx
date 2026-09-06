@@ -25,7 +25,7 @@ export default function Handoff() {
 
     useEffect(() => {
         api.listContributors().then(r => setMembers(r.contributors));
-        api.listHandoffs("ws").then(r => setHandoffs(r.handoffs || [])).catch(() => setHandoffs([]));
+        api.listHandoffs().then(r => setHandoffs(r.handoffs || [])).catch(() => setHandoffs([]));
     }, []);
 
     // id → contributor lookup for the active-handoff avatars
@@ -53,7 +53,7 @@ export default function Handoff() {
                 description: `${r.tier_1_critical?.length ?? 0} critical · ${r.tier_2_important?.length ?? 0} important · ${r.tier_3_standard_count ?? 0} standard`,
             });
             // Refresh the active list so the new record shows up
-            api.listHandoffs("ws").then(rr => setHandoffs(rr.handoffs || [])).catch(() => {});
+            api.listHandoffs().then(rr => setHandoffs(rr.handoffs || [])).catch(() => {});
         } catch (e) {
             toast.error("Classification failed", { description: e.message || "Try again" });
         } finally {

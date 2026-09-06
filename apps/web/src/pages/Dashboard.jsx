@@ -14,8 +14,8 @@ export default function Dashboard() {
     const [gaps, setGaps] = useState(null);
 
     useEffect(() => {
-        api.getAnalyticsOverview("ws_acme_platform").then(setData);
-        api.getKnowledgeGaps("ws_acme_platform").then(r => setGaps(r.gaps));
+        api.getAnalyticsOverview().then(setData);
+        api.getKnowledgeGaps().then(r => setGaps(r.gaps));
     }, []);
 
     const subtitle = data
@@ -117,7 +117,7 @@ export default function Dashboard() {
                 </div>
 
                 {/* Row 3 — who would know */}
-                <WhoWouldKnow workspaceId="ws_acme_platform" />
+                <WhoWouldKnow />
 
                 {/* Row 4 — top contributors + knowledge gaps */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

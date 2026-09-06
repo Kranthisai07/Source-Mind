@@ -17,8 +17,8 @@ export default function Analytics() {
     const [riskFilter, setRiskFilter] = useState("ALL");
 
     useEffect(() => {
-        api.getAnalyticsOverview("ws").then(setOverview);
-        api.getKnowledgeGaps("ws").then(r => setGaps(r.gaps));
+        api.getAnalyticsOverview().then(setOverview);
+        api.getKnowledgeGaps().then(r => setGaps(r.gaps));
         api.listContributors().then(r => setContribs(r.contributors));
         api.getMemoriesOverTime().then(r => setSeries(r.series));
         api.getSearchActivity().then(r => setSearchSeries(r.series));

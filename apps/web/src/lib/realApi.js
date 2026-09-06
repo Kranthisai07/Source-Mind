@@ -10,8 +10,73 @@ import { mockApi } from "./mockApi";
 import { getAuthToken, logTokenFingerprintOnce } from "./authToken";
 
 const BASE = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
-const DEFAULT_WS = process.env.REACT_APP_DEFAULT_WORKSPACE_ID || "ws_acme_platform";
-const wsPath = (wsId) => encodeURIComponent(wsId || DEFAULT_WS);
+
+// Every workspace-scoped route types its path parameter as `uuid.UUID`, so a
+// non-UUID is rejected by Pydantic before the handler runs:
+//
+//   GET /v1/workspaces/ws_acme_platform/analytics/overview
+//   422 {"field":"path.workspace_id",
+//        "message":"Input should be a valid UUID, invalid character: found `w` at 1",
+//        "type":"uuid_parsing"}
+//
+// The previous default was the literal "ws_acme_platform" — a mock-shaped id
+// that could never satisfy this API, so all ~16 workspace-scoped calls 422'd
+// identically. Resolution order is now: explicit argument, configured env var,
+// then the first workspace the signed-in user can actually see.
+const CONFIGURED_WS = (process.env.REACT_APP_DEFAULT_WORKSPACE_ID || "").trim();
+
+let _wsPromise = null;
+
+/**
+ * The workspace UUID to scope requests to.
+ *
+ * The lookup is memoised as a promise, not a value, so concurrent callers on
+ * first paint share one request instead of each firing their own. A failure
+ * clears the memo so the next attempt retries rather than caching the error.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function resolveWorkspaceId(explicit) {
+    // An explicit id is honoured only if it could actually satisfy the route.
+    // Several pages still pass mock-era placeholders — Dashboard.jsx sent
+    // "ws_acme_platform", Analytics/Conflicts/Connectors/Handoff send "ws" —
+    // which mockApi ignored entirely but which the real API rejects with a 422
+    // before the handler runs. Falling through is strictly better than
+    // forwarding a value that cannot work.
+    if (explicit) {
+        if (UUID_RE.test(explicit)) return explicit;
+        if (process.env.NODE_ENV !== "production") {
+            // eslint-disable-next-line no-console
+            console.warn(
+                `[SourceMind] Ignoring non-UUID workspace id ${JSON.stringify(explicit)} ` +
+                "— falling back to the configured/resolved workspace."
+            );
+        }
+    }
+    if (CONFIGURED_WS) return CONFIGURED_WS;
+
+    if (!_wsPromise) {
+        _wsPromise = request("/v1/workspaces")
+            .then((r) => {
+                // This route IS enveloped: {data: [...], meta: {...}}.
+                const list = Array.isArray(r.data) ? r.data : [];
+                if (!list.length) {
+                    throw new ApiError(
+                        404,
+                        "This account has no workspaces. Create one, or set " +
+                        "REACT_APP_DEFAULT_WORKSPACE_ID in apps/web/.env.",
+                        r
+                    );
+                }
+                return list[0].id;
+            })
+            .catch((err) => {
+                _wsPromise = null;
+                throw err;
+            });
+    }
+    return _wsPromise;
+}
 
 // Deterministic palette — used when the backend doesn't include a color.
 const PALETTE = ["#4F7EFF", "#A78BFA", "#34D399", "#F59E0B", "#EF4444", "#60A5FA", "#F472B6", "#2DD4BF"];
@@ -140,17 +205,23 @@ function adaptContributor(c, i) {
 export const realApi = {
     // ----- session -----
     getCurrentUser: () => request(`/v1/team/me`),
-    getWorkspace: (wsId = DEFAULT_WS) => request(`/v1/workspaces/${wsPath(wsId)}`),
+    getWorkspace: async (wsId) =>
+        request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}`),
 
     // ----- analytics -----
-    getAnalyticsOverview: async (wsId = DEFAULT_WS) => {
-        const r = await request(`/v1/workspaces/${wsPath(wsId)}/analytics/overview`);
+    // These four routes return a RAW dict, not the {data, meta} envelope used
+    // by /v1/team/me and /v1/workspaces, so the adapters read fields straight
+    // off the response. Verified against the deployed API.
+    getAnalyticsOverview: async (wsId) => {
+        const ws = await resolveWorkspaceId(wsId);
+        const r = await request(`/v1/workspaces/${ws}/analytics/overview`);
         return adaptOverview(r);
     },
-    getKnowledgeGaps: (wsId = DEFAULT_WS) =>
-        request(`/v1/workspaces/${wsPath(wsId)}/analytics/knowledge-gaps`),
-    getContributionMap: async (wsId = DEFAULT_WS) => {
-        const r = await request(`/v1/workspaces/${wsPath(wsId)}/analytics/contribution-map`);
+    getKnowledgeGaps: async (wsId) =>
+        request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/analytics/knowledge-gaps`),
+    getContributionMap: async (wsId) => {
+        const ws = await resolveWorkspaceId(wsId);
+        const r = await request(`/v1/workspaces/${ws}/analytics/contribution-map`);
         const contributors = (r.contributors || []).map(adaptContributor);
         return { ...r, contributors };
     },
@@ -161,16 +232,28 @@ export const realApi = {
     getSearchActivity:   (wsId) => mockApi.getSearchActivity(wsId),
 
     // ----- memories -----
-    searchMemories: ({ query = "", mode = "hybrid", limit = 20, workspace_ids } = {}) =>
+    searchMemories: async ({ query = "", mode = "hybrid", limit = 20, workspace_ids } = {}) =>
         request(`/v1/memories/search`, {
             method: "POST",
-            body: { query, mode, limit, workspace_ids: workspace_ids || [DEFAULT_WS] },
+            body: {
+                query,
+                mode,
+                limit,
+                workspace_ids: workspace_ids || [await resolveWorkspaceId()],
+            },
         }),
     getMemory: (id) => request(`/v1/memories/${encodeURIComponent(id)}`),
-    createMemory: (payload) =>
+    // workspace_id is set AFTER the spread so a caller cannot silently
+    // override it with a placeholder — the previous order let Memories.jsx's
+    // hardcoded "ws_acme_platform" win. A caller that genuinely wants another
+    // workspace passes a real UUID, which resolveWorkspaceId honours.
+    createMemory: async (payload = {}) =>
         request(`/v1/memories`, {
             method: "POST",
-            body: { workspace_id: DEFAULT_WS, ...payload },
+            body: {
+                ...payload,
+                workspace_id: await resolveWorkspaceId(payload.workspace_id),
+            },
         }),
     getJobStatus: (jobId) => request(`/v1/memories/jobs/${encodeURIComponent(jobId)}`),
     // Also available on the backend:
@@ -178,8 +261,10 @@ export const realApi = {
     //   GET    /v1/memories/{id}/versions, /attribution, /edits
 
     // ----- conflicts -----
-    listConflicts: (wsId = DEFAULT_WS, { status = "all" } = {}) =>
-        request(`/v1/workspaces/${wsPath(wsId)}/conflicts`, { params: { status } }),
+    listConflicts: async (wsId, { status = "all" } = {}) =>
+        request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/conflicts`, {
+            params: { status },
+        }),
     getConflict: (id) => request(`/v1/conflicts/${encodeURIComponent(id)}`),
     reviewConflict: (id) =>
         request(`/v1/conflicts/${encodeURIComponent(id)}/review`, { method: "POST" }),
@@ -190,10 +275,13 @@ export const realApi = {
         }),
 
     // ----- connectors -----
-    listConnectors: (wsId = DEFAULT_WS) =>
-        request(`/v1/workspaces/${wsPath(wsId)}/connectors`),
-    createConnector: (wsId = DEFAULT_WS, payload) =>
-        request(`/v1/workspaces/${wsPath(wsId)}/connectors`, { method: "POST", body: payload }),
+    listConnectors: async (wsId) =>
+        request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/connectors`),
+    createConnector: async (wsId, payload) =>
+        request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/connectors`, {
+            method: "POST",
+            body: payload,
+        }),
     getConnector: (id) => request(`/v1/connectors/${encodeURIComponent(id)}`),
     updateConnector: (id, payload) =>
         request(`/v1/connectors/${encodeURIComponent(id)}`, { method: "PATCH", body: payload }),
@@ -212,21 +300,28 @@ export const realApi = {
     //                        successor_confidence}],
     //     tier_2_important: [{memory_id, content, importance_score}],
     //     tier_3_standard_count: number }
-    classifyHandoff: ({ departing_id, receiving_id, departure_date, notes, wsId = DEFAULT_WS } = {}) =>
-        request(`/v1/team/workspaces/${wsPath(wsId)}/handoff/initiate`, {
+    classifyHandoff: async ({ departing_id, receiving_id, departure_date, notes, wsId } = {}) =>
+        request(`/v1/team/workspaces/${await resolveWorkspaceId(wsId)}/handoff/initiate`, {
             method: "POST",
             body: { departing_id, receiving_id, departure_date, notes },
         }),
-    assignHandoff: (wsId = DEFAULT_WS, payload) =>
-        request(`/v1/team/workspaces/${wsPath(wsId)}/handoff/assign`, { method: "POST", body: payload }),
-    completeHandoff: (wsId = DEFAULT_WS, payload) =>
-        request(`/v1/team/workspaces/${wsPath(wsId)}/handoff/complete`, { method: "POST", body: payload }),
-    listHandoffs: (wsId = DEFAULT_WS) =>
-        request(`/v1/workspaces/${wsPath(wsId)}/handoffs`),
+    assignHandoff: async (wsId, payload) =>
+        request(`/v1/team/workspaces/${await resolveWorkspaceId(wsId)}/handoff/assign`, {
+            method: "POST",
+            body: payload,
+        }),
+    completeHandoff: async (wsId, payload) =>
+        request(`/v1/team/workspaces/${await resolveWorkspaceId(wsId)}/handoff/complete`, {
+            method: "POST",
+            body: payload,
+        }),
+    listHandoffs: async (wsId) =>
+        request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/handoffs`),
 
     // GET /v1/workspaces/:id/analytics/who-would-know?q=<query>
-    whoWouldKnow: async (wsId = DEFAULT_WS, { q = "", limit = 5 } = {}) => {
-        const r = await request(`/v1/workspaces/${wsPath(wsId)}/analytics/who-would-know`, {
+    whoWouldKnow: async (wsId, { q = "", limit = 5 } = {}) => {
+        const ws = await resolveWorkspaceId(wsId);
+        const r = await request(`/v1/workspaces/${ws}/analytics/who-would-know`, {
             params: { q, limit },
         });
         // Attach colors not returned by the backend
@@ -238,10 +333,11 @@ export const realApi = {
     },
 
     // ----- team / contributors -----
-    listTeamMembers: (wsId = DEFAULT_WS) =>
-        request(`/v1/workspaces/${wsPath(wsId)}/members`),
-    listContributors: async (wsId = DEFAULT_WS) => {
-        const r = await request(`/v1/workspaces/${wsPath(wsId)}/analytics/contribution-map`);
+    listTeamMembers: async (wsId) =>
+        request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/members`),
+    listContributors: async (wsId) => {
+        const ws = await resolveWorkspaceId(wsId);
+        const r = await request(`/v1/workspaces/${ws}/analytics/contribution-map`);
         const contributors = (r.contributors || []).map(adaptContributor);
         return { contributors, __latency_ms: r.__latency_ms };
     },
