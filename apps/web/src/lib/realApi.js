@@ -338,26 +338,45 @@ export const realApi = {
     getSyncLogs: (connId) =>
         request(`/v1/connectors/${encodeURIComponent(connId)}/sync-logs`),
 
-    // ----- handoffs (team namespace) -----
-    // `classifyHandoff` returns the new tier_1/2/3 shape:
-    //   { handoff_record_id, departing_user_id, departing_user_name, total_memories,
-    //     tier_1_critical: [{memory_id, content, importance_score,
-    //                        suggested_successor_id, suggested_successor_name,
-    //                        successor_confidence}],
-    //     tier_2_important: [{memory_id, content, importance_score}],
-    //     tier_3_standard_count: number }
-    classifyHandoff: async ({ departing_id, receiving_id, departure_date, notes, wsId } = {}) =>
-        request(`/v1/team/workspaces/${await resolveWorkspaceId(wsId)}/handoff/initiate`, {
+    // ----- handoffs -----
+    //
+    // NOT a /team route. handoff_router is declared `APIRouter(tags=["handoff"])`
+    // with no prefix and mounted at /v1, so the real paths are
+    // /v1/workspaces/{id}/handoff/{initiate,assign,complete}. The previous
+    // /v1/team/... URLs 404'd. (listHandoffs below was already correct.)
+    //
+    // The field names were wrong too, so fixing only the path would have turned
+    // a 404 into a 422: InitiateHandoffBody accepts exactly
+    // {departing_user_id}, while the page and mockApi both speak
+    // `departing_id`. receiving_id / departure_date / notes are not part of the
+    // initiate contract at all — the backend classifies memories for the
+    // departing user and the receiver is chosen later, per-memory, via assign.
+    // They are dropped here rather than sent and silently ignored.
+    //
+    // Returns: { handoff_record_id, departing_user_id, departing_user_name,
+    //            total_memories,
+    //            tier_1_critical: [{memory_id, content, importance_score,
+    //                               suggested_successor_id,
+    //                               suggested_successor_name,
+    //                               successor_confidence}],
+    //            tier_2_important: [{memory_id, content, importance_score}],
+    //            tier_3_standard_count }
+    classifyHandoff: async ({ departing_id, wsId } = {}) =>
+        request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/handoff/initiate`, {
             method: "POST",
-            body: { departing_id, receiving_id, departure_date, notes },
+            body: { departing_user_id: departing_id },
         }),
+
+    // AssignHandoffBody: {memory_id, new_owner_id, handoff_record_id, note?}
     assignHandoff: async (wsId, payload) =>
-        request(`/v1/team/workspaces/${await resolveWorkspaceId(wsId)}/handoff/assign`, {
+        request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/handoff/assign`, {
             method: "POST",
             body: payload,
         }),
+
+    // CompleteHandoffBody: {departing_user_id, handoff_record_id}
     completeHandoff: async (wsId, payload) =>
-        request(`/v1/team/workspaces/${await resolveWorkspaceId(wsId)}/handoff/complete`, {
+        request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/handoff/complete`, {
             method: "POST",
             body: payload,
         }),

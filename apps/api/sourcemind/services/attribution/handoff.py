@@ -454,7 +454,15 @@ async def create_handoff_record(
             "t1": len(summary.tier_1_critical),
             "t2": len(summary.tier_2_important),
             "t3": summary.tier_3_standard_count,
-            "exp": expires_at.isoformat(),
+            # Bind the datetime itself, not its ISO string. asyncpg does no
+            # implicit str -> timestamptz coercion for bound parameters, so
+            # .isoformat() raised
+            #   DataError: invalid input for query argument $7 ...
+            #   (expected a datetime.date or datetime.datetime instance, got 'str')
+            # and every call to handoff/initiate returned 500. It went unnoticed
+            # because the frontend was calling a mistyped /v1/team/... URL that
+            # 404'd before reaching this code.
+            "exp": expires_at,
         },
     )
     handoff_id_str = result.scalar()
