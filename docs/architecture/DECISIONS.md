@@ -740,6 +740,119 @@ corpus was never written to.
 
 ---
 
+## D-007 — Workspace membership was never enforced on scoped routes
+
+**Status:** Done (2026-09-07). Handled as a security incident, not a bug fix.
+
+### What was actually true
+
+A live audit with two real Clerk users — one a member of the target workspace,
+one with zero memberships anywhere — found **18 of 27 workspace-scoped routes
+served the non-member**, 5 of them mutating.
+
+The non-member could read `analytics/overview` (1167 memories), the workspace's
+full contributor list, its conflicts, and could run `memories/search` against
+it and get real results back. On `DELETE /v1/connectors/{id}` the non-member
+got 204 and the member then got 404: the connector was gone. That one was
+destructive, not merely a read leak.
+
+Membership was enforced in exactly one place: `GET /v1/workspaces`, which
+filters the LIST by the caller's memberships. That is why this looked correct
+from the UI, where every workspace id the frontend holds came from that list.
+Naming a workspace id directly bypassed it entirely.
+
+### Two root causes, not one
+
+1. **`CurrentUser` was mistaken for authorization.** Nearly every scoped route
+   injected `current_user` and then never read it. It established that the
+   caller held a valid JWT and nothing about what that caller could reach, so
+   any authenticated account was authorized for any workspace id it could name.
+
+2. **`AuthenticatedUser.workspace_id` is declared and never assigned.** Both
+   `POST /v1/memories` and `POST /v1/memories/search` compute
+   `current_user.workspace_id or workspace_id`, which therefore *always*
+   resolves to the caller-supplied query parameter. The expression reads as a
+   safe default with a fallback; in practice only the fallback ever runs.
+
+### Non-member gets 404, not 403
+
+`require_workspace_role` raised `WorkspaceAccessDeniedError` (SM005, 403) for
+both a non-member and a member holding the wrong role. The 403 is itself a
+disclosure — it confirms to an unauthorized caller that the id they guessed
+names a real workspace.
+
+The two cases are now deliberately different:
+
+| caller | answer | reasoning |
+|---|---|---|
+| not a member | 404 SM022 | learns nothing about whether the workspace exists |
+| member, insufficient role | 403 SM005 | already knows it exists; 403 leaks nothing further and is the more accurate answer |
+
+`workspaces.py` had already been answering 404 on `GET /workspaces/:id` and
+`/members` via an inline membership JOIN. That was the correct behaviour
+sitting in two handlers; it was extracted into `require_workspace_member`
+rather than a new convention being invented.
+
+### Routes scoped indirectly
+
+Roughly half the scoped surface is not addressed by a workspace id at all —
+`/v1/memories/{id}`, `/v1/conflicts/{id}`, `/v1/connectors/{id}`,
+`/v1/memories/jobs/{id}`. These are scoped just as tightly, only through
+whichever workspace owns the row. `require_{memory,conflict,connector}_access`
+resolve that owner and then apply the membership gate, raising **the
+resource's own 404** in both the missing and the not-a-member case, so the two
+are indistinguishable from outside.
+
+### Two 404s that were not 404s
+
+Found while wiring the gates in:
+
+- A missing conflict raised a bare `SourceMindError(code="SM040")`. SM040 is
+  `INGESTION_FAILED`, and a bare `SourceMindError` carries the base **500**
+  status — so a nonexistent conflict answered 500.
+- The connector routes raised raw `HTTPException(404)`, which
+  `exceptions.py` explicitly forbids ("Never raise HTTPException directly").
+
+Added `SM026 CONFLICT_NOT_FOUND` and `SM027 CONNECTOR_NOT_FOUND`.
+
+### Verification
+
+`ws_isolation_matrix.py` builds a disposable workspace owned by the member,
+containing a memory, conflict, connector, handoff record and ingestion job, and
+probes every scoped route as both users, so mutating cases only ever touch
+scratch data. Final run: **28 routes, 0 served to the non-member, 0
+inconclusive.**
+
+Three harness faults had to be fixed before the results meant anything, each of
+which would have produced a false pass:
+
+- Six routes returned the *same* 4xx to both callers — a missing
+  `Idempotency-Key`, `workspace_id` sent in the body when the route reads it
+  as a query param, and a nonexistent handoff id. None reached its handler.
+  "Same status both ways" is not evidence of isolation, so the report now
+  counts inconclusive rows explicitly.
+- Clerk session tokens expired mid-run, making the last route 401 for both
+  users. Tokens are re-minted on any 401.
+- Teardown ran in `finally` *before* the report, so a cleanup failure threw
+  away a completed run. The report now runs first.
+
+Separately, `real_ws_regression.py` re-checks the workspace the leak was found
+in: the member still gets the identical real data (1167 memories, 2
+contributors, 3 search results) on all 10 read-only routes, and the non-member
+gets 404 on all 10.
+
+Suite: 408 passed, 12 skipped, 0 failed. Two existing tests asserted the old
+403-for-a-non-member and were updated to the new contract, with the
+member-vs-non-member distinction pinned by a test of its own so it cannot
+silently collapse back into one answer.
+
+### Not addressed here
+
+The 1167-vs-1211 memory count noticed during this work is **not** a leak and
+not harness damage: 1211 is the raw row count and 1167 the count of
+`current_version` rows. The 44 non-current rows were all written 2026-09-03
+inside eval run 4's own ingestion window.
+
 ## Deferred — not done, with reasons
 
 ### Option 2 — query-adaptive fusion weighting
