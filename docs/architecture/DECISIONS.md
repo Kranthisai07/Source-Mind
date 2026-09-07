@@ -670,6 +670,76 @@ still cannot answer. Cross-encoder reranking remains the sequenced next step.
 
 ---
 
+## D-006 — Connecting the frontend to the real API
+
+**Status:** Done (2026-09-07). Phases 1 and 2 of the integration work.
+
+### What was actually wrong
+
+The React app had been built against `mockData` and had never run against
+the API. `realApi.js` existed and its endpoint paths were mostly right, so
+the gap looked like configuration. It was not. Nine defects were found, and the
+same root cause produced all of them: **a mock-era shape that the real API
+accepts without complaint.**
+
+They are worth listing by how they failed, because only the first would have
+been caught by checking an HTTP status:
+
+| Failure shape | Example |
+|---------------|---------|
+| Loud | `workspace_id` sent as the literal `ws_acme_platform` — 422 `uuid_parsing` |
+| Silent and empty | `/members` is enveloped, so `r.members` read `undefined` |
+| Silent and populated | search returned 200 with real results **from the wrong workspace** |
+| Silent and cosmetic | `ACTION_COLOR` shared not one key with the action enum |
+| Silent and fatal | `getJobStatus` polled forever for a status the API never returns |
+
+The third is the one to remember. `searchMemories` put
+`workspace_ids` in the request body; the route takes a singular
+`workspace_id` **query parameter** with a default of
+`_DEV_WORKSPACE_ID`. Pydantic dropped the unknown body field, the default
+applied, and the Dev Workspace answered with plausible results. Verified by
+looking the returned memory ids up in the database: 5/5 came from the wrong
+workspace before, 5/5 from the intended one after.
+
+### Three backend bugs the frontend fixes exposed
+
+Each had never run end to end, which is exactly why they survived.
+
+1. **`handoff/initiate` always returned 500.**
+   `create_handoff_record` bound `expires_at.isoformat()` into a raw
+   SQL parameter. asyncpg does no implicit `str -> timestamptz` coercion.
+   The frontend was calling a mistyped `/v1/team/...` URL that 404'd
+   before reaching the code.
+2. **Every `deferred` conflict resolution failed**, same defect in
+   `resolver.py` on `revisit_at`. Proven with a throwaway conflict:
+   pre-fix the status stayed `open` and `revisit_at` stayed
+   `NULL`; post-fix both persisted.
+3. **`include_attribution` was declared and ignored.** The parameter was
+   documented, the response field said "Null unless include_attribution=true",
+   and the route summary read "Retrieve a memory with attribution" — but the
+   value was never read, so attribution was unconditionally `None`. The
+   memory detail page then indexed `mem.attribution[0]` on it and crashed.
+
+### Method, since it is the transferable part
+
+Verifying the **value each page consumes** rather than the HTTP status is what
+found six of the nine. Two cases make the point:
+
+- `Connectors.jsx` reads `r.connectors`; that route is RAW and keys
+  its payload `{items, total}`. An audit that only asked "is this
+  endpoint enveloped?" would have marked it correct and shipped it broken.
+  Field naming is orthogonal to enveloping.
+- A search test that stopped at "200 with results" would have passed the
+  wrong-workspace bug. One that stopped at "0 results = broken" would have
+  chased a non-existent bug — the first query used SourceMind's own vocabulary,
+  absent from a corpus of React commit artifacts.
+
+Both mutating verifications (`handoff/initiate`, conflict deferral) ran
+against throwaway workspaces that were created and dropped, so the evaluation
+corpus was never written to.
+
+---
+
 ## Deferred — not done, with reasons
 
 ### Option 2 — query-adaptive fusion weighting
@@ -745,6 +815,43 @@ correct artifact absent from the top 20 entirely for 108 of 176 misses.
 
 Worth doing, not urgent, and it should follow the fusion work rather than
 precede it.
+
+### `ConflictDetail.jsx` maps mock contributors with no fallback
+
+`const people = c.contributors.map(l => CONTRIBUTORS.find(x => x.login === l))`
+
+`CONTRIBUTORS` is mock data and real logins will not be found, so this
+produces an array of `undefined` and the page will likely throw on the
+first property access. `Conflicts.jsx` has the same lookup but appends
+`.filter(Boolean)`, so it degrades to missing avatars instead of crashing.
+
+**Not fixed, deliberately.** The workspace holds zero conflicts, so neither page
+can be reached with real data and any fix would be unverifiable today. Fixing it
+blind is what the rest of this phase was spent undoing. Reachable once conflict
+detection produces rows — which is itself blocked, see "Conflict detection is
+unreachable through bulk ingestion" above.
+
+### `Settings.jsx` displays a fabricated API key
+
+`const API_KEY = "sm_live_4f7eff_a78bfa_34d399_b22c_k9qe2m3p6n8x1";`
+
+Hardcoded, and not merely present: it is rendered, reveal-toggled, and wired to
+`navigator.clipboard.writeText`. It is obviously synthetic on inspection —
+the project's own palette hex values are embedded in it — but it presents as a
+live credential, and a user can copy it and wonder why it does not authenticate.
+
+**Not fixed, deliberately.** There is no API-key endpoint to fetch a real one
+from, so the honest options are to remove the panel or to build key issuance.
+Both are product decisions rather than defect repairs. Substituting a
+different-looking fake would keep the same problem.
+
+### `mem.versions` is not wired to its endpoint
+
+`MemoryDetail.jsx` renders a Version Timeline from `mem.versions`,
+which the real `GET /v1/memories/{id}` payload does not contain; the data
+lives at `GET /v1/memories/{id}/versions`. The access is now guarded, so
+the timeline renders empty rather than throwing. Wiring the real endpoint is a
+small follow-up, left out of the crash fix to keep that change to one concern.
 
 ### Retirement false positives in `detect()`
 
