@@ -232,8 +232,18 @@ function adaptOverview(r) {
         timestamp:   a.timestamp,
     }));
 
+    // knowledge_health_score is a 0.0-1.0 fraction, like the breakdown values,
+    // but the UI renders it out of 100 in two places: the page subtitle
+    // ("health {score}/100") and HealthGauge, which animates Math.round(score)
+    // straight onto a /100 dial. Converting the breakdown while leaving this
+    // raw is what produced "health 0.25/100" beside a gauge reading 0.
+    // mockApi already returns this on a 0-100 scale, so converting here also
+    // makes the two clients agree.
+    const knowledge_health_score = toPct(r.knowledge_health_score);
+
     return {
         ...r,
+        knowledge_health_score,
         health_breakdown,
         top_contributors,
         recent_activity,
