@@ -1,10 +1,18 @@
 import React, { useEffect, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
-import { useUser } from "@clerk/clerk-react";
+import { useClerk, useUser } from "@clerk/clerk-react";
 import {
     Home, Brain, BarChart3, AlertTriangle, ArrowRightLeft,
-    Plug, Settings as SettingsIcon, ChevronLeft, ChevronRight,
+    Plug, Settings as SettingsIcon, ChevronLeft, ChevronRight, LogOut,
 } from "lucide-react";
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuLabel,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
 import api from "../../lib/api";
 import { initials } from "../../lib/format";
 
@@ -33,6 +41,7 @@ export default function Sidebar({ collapsed, onToggle }) {
     const navigate = useNavigate();
 
     const { isSignedIn, user } = useUser();
+    const { signOut } = useClerk();
     const [fallbackUser, setFallbackUser] = useState(null);
     const [workspace, setWorkspace] = useState(null);
 
@@ -57,6 +66,20 @@ export default function Sidebar({ collapsed, onToggle }) {
     const avatarColor = fallbackUser?.avatarColor || "#4F7EFF";
     const wsName = workspace?.name || "";
     const wsSlug = workspace?.slug || "";
+
+    // No confirmation step: signing out is reversible, unlike the delete flows
+    // the confirm-before-destructive rule is meant for.
+    //
+    // In mock mode there is no Clerk session to end - the demo is browsable
+    // signed-out by design - so this just returns to the landing page. Clerk's
+    // own afterSignOutUrl (set in index.js) already carries the basename.
+    const handleSignOut = async () => {
+        if (isSignedIn) {
+            await signOut();
+            return;
+        }
+        navigate("/");
+    };
     const width = collapsed ? "w-[64px]" : "w-[220px]";
     return (
         <aside
@@ -109,31 +132,66 @@ export default function Sidebar({ collapsed, onToggle }) {
 
             {/* User + collapse */}
             <div className="p-2 border-t border-sm-border space-y-1">
-                <div
-                    data-testid="sidebar-user"
-                    className={`flex items-center gap-2.5 px-2 h-11 rounded-lg ${collapsed ? "justify-center" : ""}`}
-                >
-                    {avatarUrl ? (
-                        <img
-                            src={avatarUrl}
-                            alt=""
-                            className="w-8 h-8 rounded-full shrink-0 object-cover"
-                        />
-                    ) : (
-                        <div
-                            className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold shrink-0 text-white"
-                            style={{ background: avatarColor }}
+                <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                        <button
+                            type="button"
+                            data-testid="sidebar-user"
+                            title={collapsed ? userName : undefined}
+                            aria-label={`Account menu for ${userName}`}
+                            className={`w-full flex items-center gap-2.5 px-2 h-11 rounded-lg text-left
+                                hover:bg-white/[0.03] focus-visible:outline-none
+                                focus-visible:ring-2 focus-visible:ring-sm-blue/50
+                                transition-colors ${collapsed ? "justify-center" : ""}`}
                         >
-                            {initials(userName)}
-                        </div>
-                    )}
-                    {!collapsed && (
-                        <div className="flex-1 overflow-hidden">
-                            <div className="text-[12.5px] font-medium text-sm-text truncate leading-tight">{userName}</div>
-                            <div className="text-[11px] text-sm-text-secondary truncate leading-tight">{userEmail}</div>
-                        </div>
-                    )}
-                </div>
+                            {avatarUrl ? (
+                                <img
+                                    src={avatarUrl}
+                                    alt=""
+                                    className="w-8 h-8 rounded-full shrink-0 object-cover"
+                                />
+                            ) : (
+                                <div
+                                    className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold shrink-0 text-white"
+                                    style={{ background: avatarColor }}
+                                >
+                                    {initials(userName)}
+                                </div>
+                            )}
+                            {!collapsed && (
+                                <div className="flex-1 overflow-hidden">
+                                    <div className="text-[12.5px] font-medium text-sm-text truncate leading-tight">{userName}</div>
+                                    <div className="text-[11px] text-sm-text-secondary truncate leading-tight">{userEmail}</div>
+                                </div>
+                            )}
+                        </button>
+                    </DropdownMenuTrigger>
+
+                    <DropdownMenuContent
+                        side="top"
+                        align="start"
+                        sideOffset={8}
+                        className="w-56 bg-sm-surface border-sm-border text-sm-text"
+                    >
+                        {/* The trigger hides the name when collapsed, so repeat
+                            it here - otherwise the menu is unlabelled. */}
+                        <DropdownMenuLabel className="font-normal">
+                            <div className="text-[12.5px] font-medium truncate">{userName}</div>
+                            {userEmail && (
+                                <div className="text-[11px] text-sm-text-secondary truncate">{userEmail}</div>
+                            )}
+                        </DropdownMenuLabel>
+                        <DropdownMenuSeparator className="bg-sm-border" />
+                        <DropdownMenuItem
+                            data-testid="sidebar-signout"
+                            onSelect={handleSignOut}
+                            className="text-sm-red focus:text-sm-red focus:bg-sm-red/10 cursor-pointer"
+                        >
+                            <LogOut className="w-4 h-4 mr-2" strokeWidth={2} />
+                            Sign out
+                        </DropdownMenuItem>
+                    </DropdownMenuContent>
+                </DropdownMenu>
                 <button
                     data-testid="sidebar-toggle"
                     onClick={onToggle}
