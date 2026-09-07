@@ -189,6 +189,23 @@ async def get_memory(
     )
     relation_count = rel_count_result.scalar() or 0
 
+    # include_attribution was declared, documented ("Null unless
+    # include_attribution=true") and advertised in this route's own summary
+    # ("Retrieve a memory with attribution"), but never read — so `attribution`
+    # was unconditionally None no matter what the caller asked for.
+    #
+    # Reuses hybrid.py's _fetch_attributions rather than reimplementing the
+    # query. It is module-private, but duplicating it would mean duplicating
+    # the DISTINCT ON that keeps an append-only attributions table from
+    # returning one row per recomputation and inflating the percentages past
+    # 100. One implementation of that subtlety is safer than two.
+    attribution = None
+    if include_attribution:
+        from sourcemind.services.search.hybrid import _fetch_attributions
+
+        by_memory = await _fetch_attributions(db, [str(memory_id)])
+        attribution = by_memory.get(str(memory_id)) or []
+
     mem_resp = MemoryResponse(
         id=memory.id,
         workspace_id=memory.workspace_id,
@@ -201,6 +218,7 @@ async def get_memory(
         created_at=memory.created_at,
         updated_at=memory.updated_at,
         relation_count=relation_count,
+        attribution=attribution,
     )
 
     return APIResponse(data=mem_resp, meta=_make_meta(request_id, start))

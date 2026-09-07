@@ -31,7 +31,18 @@ export default function MemoryDetail() {
         );
     }
 
-    const primary = CONTRIBUTORS.find(c => c.login === mem.attribution[0].author);
+    // realApi normalises ContributionBreakdown[] into this shape and returns
+    // [] when the backend reports none; mockApi already produces it. Both can
+    // still be empty, so nothing below may index without checking.
+    const attribution = Array.isArray(mem.attribution) ? mem.attribution : [];
+    const primary =
+        attribution.find(a => a.is_primary) ||
+        attribution[0] ||
+        null;
+    const primaryPct = primary
+        ? Math.round((primary.percentage ?? (primary.score ?? 0) * 100))
+        : null;
+    const versions = Array.isArray(mem.versions) ? mem.versions : [];
 
     return (
         <>
@@ -68,8 +79,12 @@ export default function MemoryDetail() {
                         <div className="flex items-center gap-3">
                             <ContributorAvatar contributor={primary} size={32} />
                             <div>
-                                <div className="text-[13px] font-medium text-sm-text">{primary?.name}</div>
-                                <div className="font-mono text-[11px] text-sm-text-secondary">@{primary?.login} · primary author</div>
+                                <div className="text-[13px] font-medium text-sm-text">
+                                    {primary?.name || primary?.author || "Unattributed"}
+                                </div>
+                                <div className="font-mono text-[11px] text-sm-text-secondary">
+                                    {primary ? "primary author" : "no attribution recorded"}
+                                </div>
                             </div>
                         </div>
                         <div className="text-right">
@@ -86,7 +101,7 @@ export default function MemoryDetail() {
                                 <ResponsiveContainer width="100%" height="100%">
                                     <PieChart>
                                         <Pie
-                                            data={mem.attribution}
+                                            data={attribution}
                                             dataKey="score"
                                             nameKey="author"
                                             innerRadius={50}
@@ -96,14 +111,14 @@ export default function MemoryDetail() {
                                             stroke="#12121A"
                                             strokeWidth={2}
                                         >
-                                            {mem.attribution.map((a, i) => (
+                                            {attribution.map((a, i) => (
                                                 <Cell key={i} fill={a.color} />
                                             ))}
                                         </Pie>
                                     </PieChart>
                                 </ResponsiveContainer>
                                 <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                                    <span className="font-mono text-[22px] font-semibold text-sm-text">{Math.round(mem.attribution[0].score * 100)}%</span>
+                                    <span className="font-mono text-[22px] font-semibold text-sm-text">{primaryPct === null ? "—" : `${primaryPct}%`}</span>
                                     <span className="text-[10.5px] text-sm-text-secondary font-mono uppercase tracking-wider">primary</span>
                                 </div>
                             </div>
@@ -117,17 +132,22 @@ export default function MemoryDetail() {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {mem.attribution.map((a, i) => (
+                                    {attribution.map((a, i) => (
                                         <tr key={i} className="border-t border-sm-border">
                                             <td className="py-2.5">
                                                 <div className="flex items-center gap-2">
                                                     <span className="w-2.5 h-2.5 rounded-full" style={{ background: a.color }} />
-                                                    <span className="font-mono text-sm-text">@{a.author}</span>
+                                                    <span className="font-mono text-sm-text">{a.author}</span>
                                                 </div>
                                             </td>
-                                            <td className="py-2.5 text-right font-mono text-sm-text">{Math.round(a.score * 100)}%</td>
+                                            <td className="py-2.5 text-right font-mono text-sm-text">{Math.round((a.percentage ?? (a.score ?? 0) * 100))}%</td>
                                             <td className="py-2.5 text-right font-mono text-[10.5px] text-sm-text-secondary">
-                                                {Object.values(a.signals).map(v => v.toFixed(2)).join(" · ")}
+                                                {a.signals
+                                                    ? Object.values(a.signals)
+                                                          .filter(v => typeof v === "number")
+                                                          .map(v => v.toFixed(2))
+                                                          .join(" · ")
+                                                    : "—"}
                                             </td>
                                         </tr>
                                     ))}
@@ -141,7 +161,7 @@ export default function MemoryDetail() {
                 <aside className="sm-card p-6">
                     <h3 className="text-[14px] font-semibold text-sm-text mb-5">Version Timeline</h3>
                     <ol className="relative border-l-2 border-sm-border ml-2 space-y-5">
-                        {mem.versions.map((v, i) => {
+                        {versions.map((v, i) => {
                             const editor = CONTRIBUTORS.find(c => c.login === v.editor) || { name: v.editor, login: v.editor, avatarColor: "#4F7EFF" };
                             return (
                                 <li key={i} className="pl-5 relative">

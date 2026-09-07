@@ -240,6 +240,35 @@ function adaptOverview(r) {
     };
 }
 
+/**
+ * ContributionBreakdown[] -> the shape MemoryDetail renders.
+ *
+ * Backend: {user: {id, display_name, avatar_url}, contribution_weight,
+ *           percentage, signals, is_primary}
+ * UI:      {author, name, score, percentage, is_primary, color, signals}
+ *
+ * Two fields have no real equivalent and must not be faked:
+ *   - there is no login handle; UserSummary carries id/display_name/avatar_url
+ *     only, so `author` falls back to the display name.
+ *   - `signals` is null unless the caller is owner/admin, so the per-signal
+ *     column has to tolerate its absence rather than assume five numbers.
+ */
+function adaptAttribution(list) {
+    if (!Array.isArray(list)) return [];
+    return list.map((a, i) => ({
+        author: a.user?.display_name || a.user?.id || "unknown",
+        name: a.user?.display_name || null,
+        avatar_url: a.user?.avatar_url || null,
+        score:
+            a.contribution_weight ??
+            (a.percentage != null ? a.percentage / 100 : 0),
+        percentage: a.percentage ?? null,
+        is_primary: Boolean(a.is_primary),
+        color: colorFor(a.user?.id || a.user?.display_name, i),
+        signals: a.signals || null,
+    }));
+}
+
 function adaptContributor(c, i) {
     // Backend shape:
     //   {user_id, login, name, total_memories_created, total_memories_influenced,
@@ -316,8 +345,16 @@ export const realApi = {
             params: { workspace_id: await resolveWorkspaceId(workspace_id) },
             body: { query, mode, limit },
         }),
-    getMemory: async (id) =>
-        unwrapOne(await request(`/v1/memories/${encodeURIComponent(id)}`)),
+    // include_attribution must be asked for explicitly — it defaults to false,
+    // and MemoryDetail renders the breakdown as a primary element of the page.
+    getMemory: async (id) => {
+        const r = unwrapOne(
+            await request(`/v1/memories/${encodeURIComponent(id)}`, {
+                params: { include_attribution: true },
+            })
+        );
+        return { ...r, attribution: adaptAttribution(r.attribution) };
+    },
     // workspace_id is set AFTER the spread so a caller cannot silently
     // override it with a placeholder — the previous order let Memories.jsx's
     // hardcoded "ws_acme_platform" win. A caller that genuinely wants another
