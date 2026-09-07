@@ -23,7 +23,13 @@ from uuid import UUID
 import structlog
 from fastapi import APIRouter, Query
 
-from sourcemind.core.dependencies import CurrentUser, DBSession, OpenAIClient, RequestID
+from sourcemind.core.dependencies import (
+    CurrentUser,
+    DBSession,
+    OpenAIClient,
+    RequestID,
+    require_workspace_member,
+)
 from sourcemind.schemas.memory import (
     MemoryResponse,
     SearchRequest,
@@ -70,6 +76,12 @@ async def search_memories(
     t0 = time.perf_counter()
 
     effective_ws_id = current_user.workspace_id or workspace_id
+
+    # current_user.workspace_id is never assigned, so effective_ws_id is always
+    # the caller-supplied query param. Without this gate any authenticated user
+    # could search any workspace by naming its id.
+    await require_workspace_member(db, current_user.user_id, effective_ws_id)
+
     user_role = current_user.workspace_role or "member"
 
     search_result = await hybrid_search(

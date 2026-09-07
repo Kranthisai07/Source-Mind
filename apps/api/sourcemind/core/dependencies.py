@@ -21,10 +21,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sourcemind.core.database import get_db_session
 from sourcemind.core.exceptions import (
+    ConflictNotFoundError,
+    ConnectorNotFoundError,
     InternalError,
     InvalidIdempotencyKeyError,
+    MemoryNotFoundError,
     UnauthorizedError,
     WorkspaceAccessDeniedError,
+    WorkspaceNotFoundError,
 )
 from sourcemind.core.redis_client import get_redis_dep
 
@@ -377,23 +381,22 @@ RequestID = Annotated[str, Depends(get_request_id)]
 
 # ─── Workspace role authorization ─────────────────────────────────────────────
 
-async def require_workspace_role(
+async def require_workspace_member(
     session: AsyncSession,
     user_id: UUID,
     workspace_id: UUID,
-    allowed_roles: set[str],
 ) -> str:
-    """Assert the user holds one of `allowed_roles` in the workspace.
+    """Assert the user is a member of the workspace, and return their role.
 
-    Returns the user's role, or raises WorkspaceAccessDeniedError (SM005, 403)
-    if they are not a member or hold an insufficient role.
+    A caller who is not a member gets WorkspaceNotFoundError (SM022, 404), not
+    a 403. A 403 is itself a disclosure: it tells an unauthorized caller that
+    the workspace id they guessed is real. workspaces.py already answered a
+    non-member with 404 on GET /workspaces/:id and /members; this lifts that
+    behaviour out of those two handlers so every scoped route shares it rather
+    than each re-deciding.
 
-    This is the first role gate in the codebase. No prior pattern existed to
-    reuse: workspaces.py queries WorkspaceMember.role to FIND the owner rather
-    than to authorize, and AuthenticatedUser.workspace_role is declared but
-    never assigned, so it is always None. It is defined here, beside the other
-    auth dependencies, so later gates have something to follow rather than
-    each inventing its own.
+    Membership, not role, is the gate here. Role checks belong in
+    require_workspace_role, which layers on top of this one.
     """
     row = (
         await session.execute(
@@ -407,13 +410,105 @@ async def require_workspace_role(
     ).first()
 
     if row is None:
-        raise WorkspaceAccessDeniedError(
-            "You are not a member of this workspace."
-        )
-    role = row.role
+        raise WorkspaceNotFoundError(str(workspace_id))
+    return row.role
+
+
+async def require_workspace_role(
+    session: AsyncSession,
+    user_id: UUID,
+    workspace_id: UUID,
+    allowed_roles: set[str],
+) -> str:
+    """Assert the user holds one of `allowed_roles` in the workspace.
+
+    Returns the user's role. The two failure modes are deliberately different:
+
+    * not a member  -> WorkspaceNotFoundError (SM022, 404), raised by
+      require_workspace_member. The caller learns nothing about whether the
+      workspace exists.
+    * a member, but holding an insufficient role -> WorkspaceAccessDeniedError
+      (SM005, 403). They already know the workspace exists, so 403 leaks
+      nothing further and is the more accurate answer.
+
+    This previously raised 403 for both cases, which confirmed the existence of
+    any workspace id to any authenticated caller.
+    """
+    role = await require_workspace_member(session, user_id, workspace_id)
     if role not in allowed_roles:
         raise WorkspaceAccessDeniedError(
             f"This action requires one of: {', '.join(sorted(allowed_roles))}. "
             f"Your role is '{role}'."
         )
     return role
+
+
+# ─── Resource-scoped authorization ────────────────────────────────────────────
+#
+# Routes addressed by a resource id rather than a workspace id are scoped just
+# as tightly, only indirectly: the workspace is whichever one owns the row. Each
+# helper resolves that owner and then applies the membership gate, raising the
+# RESOURCE's own not-found error in both the missing and the not-a-member case
+# so the two are indistinguishable from outside.
+
+async def _require_resource_access(
+    session: AsyncSession,
+    user_id: UUID,
+    resource_id: UUID,
+    table: str,
+    not_found: type[Exception],
+    label: str,
+) -> UUID:
+    """Resolve the workspace owning `resource_id`, then assert membership.
+
+    `table` is never caller-supplied - every call site passes a literal - so it
+    is safe to interpolate. Nothing else reaches the SQL text.
+    """
+    ws_id = (
+        await session.execute(
+            text(f"SELECT workspace_id FROM {table} WHERE id = CAST(:rid AS uuid)"),  # noqa: S608
+            {"rid": str(resource_id)},
+        )
+    ).scalar()
+
+    if ws_id is None:
+        raise not_found(f"{label} {resource_id} not found.")
+
+    try:
+        await require_workspace_member(session, user_id, ws_id)
+    except WorkspaceNotFoundError:
+        # Deliberately re-raised as the resource's own 404. Letting SM022
+        # through would reveal that the resource exists and belongs to a
+        # workspace the caller cannot see.
+        raise not_found(f"{label} {resource_id} not found.") from None
+
+    return ws_id if isinstance(ws_id, UUID) else UUID(str(ws_id))
+
+
+async def require_memory_access(
+    session: AsyncSession, user_id: UUID, memory_id: UUID
+) -> UUID:
+    """Assert the caller may touch this memory; return its workspace id."""
+    return await _require_resource_access(
+        session, user_id, memory_id, "memories", MemoryNotFoundError, "Memory"
+    )
+
+
+async def require_conflict_access(
+    session: AsyncSession, user_id: UUID, conflict_id: UUID
+) -> UUID:
+    """Assert the caller may touch this conflict; return its workspace id."""
+    return await _require_resource_access(
+        session, user_id, conflict_id, "memory_conflicts",
+        ConflictNotFoundError, "Conflict",
+    )
+
+
+async def require_connector_access(
+    session: AsyncSession, user_id: UUID, connector_id: UUID
+) -> UUID:
+    """Assert the caller may touch this connector; return its workspace id."""
+    return await _require_resource_access(
+        session, user_id, connector_id, "connector_configs",
+        ConnectorNotFoundError, "Connector",
+    )

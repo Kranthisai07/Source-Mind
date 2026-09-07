@@ -49,6 +49,8 @@ class ErrorCode(StrEnum):
     USER_NOT_FOUND = "SM023"
     JOB_NOT_FOUND = "SM024"
     ORGANIZATION_NOT_FOUND = "SM025"
+    CONFLICT_NOT_FOUND = "SM026"
+    CONNECTOR_NOT_FOUND = "SM027"
 
     # Conflict / Duplicate (030–039)
     MEMORY_DUPLICATE = "SM030"
@@ -182,6 +184,22 @@ class WorkspaceNotFoundError(SourceMindError):
 class UserNotFoundError(SourceMindError):
     """User with the given ID or Clerk ID does not exist."""
     code = ErrorCode.USER_NOT_FOUND
+    http_status = HTTPStatus.NOT_FOUND
+
+
+class ConflictNotFoundError(SourceMindError):
+    """Conflict with the given ID does not exist, or is not visible to the caller.
+
+    Also raised when the conflict exists but belongs to a workspace the caller
+    is not a member of - the two cases must be indistinguishable from outside.
+    """
+    code = ErrorCode.CONFLICT_NOT_FOUND
+    http_status = HTTPStatus.NOT_FOUND
+
+
+class ConnectorNotFoundError(SourceMindError):
+    """Connector with the given ID does not exist, or is not visible to the caller."""
+    code = ErrorCode.CONNECTOR_NOT_FOUND
     http_status = HTTPStatus.NOT_FOUND
 
 

@@ -23,7 +23,10 @@ from sourcemind.core.dependencies import (
     DBSession,
     OpenAIClient,
     RequestID,
+    require_conflict_access,
+    require_workspace_member,
 )
+from sourcemind.core.exceptions import ConflictNotFoundError
 from sourcemind.schemas.conflict import (
     ConflictDetail,
     ConflictListResponse,
@@ -50,6 +53,8 @@ async def list_workspace_conflicts(
     """
     List conflicts for a workspace, ordered by similarity_score DESC.
     """
+    await require_workspace_member(db, current_user.user_id, workspace_id)
+
     conditions = ["mc.workspace_id = CAST(:ws_id AS uuid)"]
     params: dict[str, Any] = {"ws_id": str(workspace_id), "limit": limit}
 
@@ -116,12 +121,15 @@ async def get_conflict(
     """Full conflict detail: both memory contents and the neutral
     detection-time summary. No AI recommendation is produced (ADR-010).
     """
+    await require_conflict_access(db, current_user.user_id, conflict_id)
+
     from sourcemind.services.conflict.resolver import get_conflict_detail
 
     detail = await get_conflict_detail(db, conflict_id)
     if not detail:
-        from sourcemind.core.exceptions import SourceMindError
-        raise SourceMindError(f"Conflict {conflict_id} not found.", code="SM040")
+        # Was SourceMindError(code="SM040"), which is INGESTION_FAILED and
+        # carries the base 500 status, so a missing conflict answered 500.
+        raise ConflictNotFoundError(f"Conflict {conflict_id} not found.")
 
     from sourcemind.schemas.conflict import MemoryRef
     return ConflictDetail(
@@ -152,6 +160,8 @@ async def review_conflict(
     request_id: RequestID,
 ) -> ConflictReviewResponse:
     """Transition conflict from open → under_review."""
+    await require_conflict_access(db, current_user.user_id, conflict_id)
+
     from sourcemind.services.conflict.resolver import mark_under_review
 
     ok = await mark_under_review(db, conflict_id, current_user.user_id)
@@ -195,19 +205,12 @@ async def resolve_conflict_endpoint(
     from sourcemind.models.workspace import WorkspaceRole
     from sourcemind.services.conflict.resolver import resolve_conflict
 
-    workspace_id = (
-        await db.execute(
-            text(
-                "SELECT workspace_id FROM memory_conflicts "
-                "WHERE id = CAST(:cid AS uuid)"
-            ),
-            {"cid": str(conflict_id)},
-        )
-    ).scalar()
-    if workspace_id is None:
-        from sourcemind.core.exceptions import SourceMindError
-
-        raise SourceMindError(f"Conflict {conflict_id} not found.", code="SM040")
+    # Membership first, so a non-member gets 404 and never learns the conflict
+    # exists. The role check below then only ever runs for a real member, whose
+    # 403 discloses nothing they did not already know.
+    workspace_id = await require_conflict_access(
+        db, current_user.user_id, conflict_id
+    )
 
     await require_workspace_role(
         db,
@@ -231,8 +234,7 @@ async def resolve_conflict_endpoint(
     )
 
     if not ok:
-        from sourcemind.core.exceptions import SourceMindError
-        raise SourceMindError(f"Conflict {conflict_id} not found.", code="SM040")
+        raise ConflictNotFoundError(f"Conflict {conflict_id} not found.")
 
     await db.commit()
     return ConflictResolveResponse(status="ok", resolution_type=body.resolution_type)

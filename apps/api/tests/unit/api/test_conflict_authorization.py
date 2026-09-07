@@ -19,7 +19,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from sourcemind.core.dependencies import require_workspace_role
-from sourcemind.core.exceptions import WorkspaceAccessDeniedError
+from sourcemind.core.exceptions import (
+    WorkspaceAccessDeniedError,
+    WorkspaceNotFoundError,
+)
 from sourcemind.models.workspace import WorkspaceRole
 
 RESOLVER_ROLES = {WorkspaceRole.OWNER.value, WorkspaceRole.ADMIN.value}
@@ -60,12 +63,17 @@ async def test_resolve_conflict_denied_for_viewer_role():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_resolve_conflict_denied_for_non_member():
-    """Someone with no membership row at all must be refused, not defaulted."""
-    with pytest.raises(WorkspaceAccessDeniedError) as exc:
+    """A non-member gets 404, not 403.
+
+    This asserted WorkspaceAccessDeniedError until a live isolation audit
+    showed the 403 was itself a disclosure: it confirmed to an unauthorized
+    caller that the workspace id they named is real. The two failure modes are
+    now deliberately different - see the pair of tests below.
+    """
+    with pytest.raises(WorkspaceNotFoundError):
         await require_workspace_role(
             _session_with_role(None), uuid.uuid4(), uuid.uuid4(), RESOLVER_ROLES
         )
-    assert "not a member" in str(exc.value).lower()
 
 
 # ─── allowed ─────────────────────────────────────────────────────────────────
@@ -88,15 +96,42 @@ async def test_resolve_conflict_allowed_for_owner_role():
     assert role == "owner"
 
 
-# ─── the error is a 403 with the established SM code ─────────────────────────
+# ─── the two failure modes are distinct, and that distinction is the point ───
 
 @pytest.mark.unit
-def test_denial_maps_to_a_403_with_the_existing_error_code():
-    """Reuses WorkspaceAccessDeniedError rather than inventing a new code."""
+def test_insufficient_role_maps_to_a_403_with_the_existing_error_code():
+    """A MEMBER holding the wrong role gets 403.
+
+    They already know the workspace exists, so 403 discloses nothing further
+    and is the more accurate answer.
+    """
     from http import HTTPStatus
 
     assert WorkspaceAccessDeniedError.http_status == HTTPStatus.FORBIDDEN
     assert WorkspaceAccessDeniedError.code.value == "SM005"
+
+
+@pytest.mark.unit
+def test_non_membership_maps_to_a_404_so_existence_is_not_confirmed():
+    """A NON-member gets 404. A 403 here would leak that the workspace exists."""
+    from http import HTTPStatus
+
+    assert WorkspaceNotFoundError.http_status == HTTPStatus.NOT_FOUND
+    assert WorkspaceNotFoundError.code.value == "SM022"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_wrong_role_member_and_a_non_member_are_told_different_things():
+    """The gate must not collapse these two cases back into one answer."""
+    with pytest.raises(WorkspaceAccessDeniedError):
+        await require_workspace_role(
+            _session_with_role("viewer"), uuid.uuid4(), uuid.uuid4(), RESOLVER_ROLES
+        )
+    with pytest.raises(WorkspaceNotFoundError):
+        await require_workspace_role(
+            _session_with_role(None), uuid.uuid4(), uuid.uuid4(), RESOLVER_ROLES
+        )
 
 
 # ─── scope: only resolve is gated ────────────────────────────────────────────

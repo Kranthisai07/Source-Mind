@@ -17,7 +17,13 @@ import structlog
 from fastapi import APIRouter, status
 from sqlalchemy import select
 
-from sourcemind.core.dependencies import CurrentUser, DBSession, IdempotencyKey, RequestID
+from sourcemind.core.dependencies import (
+    CurrentUser,
+    DBSession,
+    IdempotencyKey,
+    RequestID,
+    require_workspace_member,
+)
 from sourcemind.core.exceptions import WorkspaceNotFoundError
 from sourcemind.models.organization import Organization
 from sourcemind.models.user import User
@@ -173,6 +179,13 @@ async def get_workspace(
     """Retrieve workspace details. User must be a member."""
     start = time.perf_counter()
 
+    # The membership JOIN below already enforced this correctly, but it did so
+    # implicitly - an audit of "which routes check membership" could not see it
+    # without reading the query. Calling the shared gate makes the check
+    # explicit and greppable; the JOIN stays because it also filters
+    # deleted_at, which membership alone does not.
+    await require_workspace_member(db, current_user.user_id, workspace_id)
+
     result = await db.execute(
         select(Workspace)
         .join(WorkspaceMember, WorkspaceMember.workspace_id == Workspace.id)
@@ -206,15 +219,10 @@ async def list_workspace_members(
     """List all members of a workspace with their roles."""
     start = time.perf_counter()
 
-    # Caller must be a member of the workspace
-    access_check = await db.execute(
-        select(WorkspaceMember.id).where(
-            WorkspaceMember.workspace_id == workspace_id,
-            WorkspaceMember.user_id == current_user.user_id,
-        )
-    )
-    if access_check.scalar_one_or_none() is None:
-        raise WorkspaceNotFoundError(str(workspace_id))
+    # Caller must be a member. This handler's own inline check was the pattern
+    # require_workspace_member was extracted from; it now calls the shared one
+    # so there is a single place this behaviour is defined.
+    await require_workspace_member(db, current_user.user_id, workspace_id)
 
     result = await db.execute(
         select(WorkspaceMember, User)

@@ -23,8 +23,14 @@ from sourcemind.core.dependencies import (
     IdempotencyKey,
     OpenAIClient,
     RequestID,
+    require_memory_access,
+    require_workspace_member,
 )
-from sourcemind.core.exceptions import JobNotFoundError, MemoryNotFoundError
+from sourcemind.core.exceptions import (
+    JobNotFoundError,
+    MemoryNotFoundError,
+    WorkspaceNotFoundError,
+)
 from sourcemind.models.document import Document
 from sourcemind.models.memory import Memory
 from sourcemind.schemas.common import APIResponse, ResponseMeta
@@ -78,6 +84,12 @@ async def create_memory(
 
     effective_ws_id = current_user.workspace_id or workspace_id
 
+    # AuthenticatedUser.workspace_id is declared but never assigned, so this
+    # always resolves to the caller-supplied query param - which means any
+    # authenticated user could name any workspace and ingest into it. Gate the
+    # workspace that is actually written to, not the one that was requested.
+    await require_workspace_member(db, current_user.user_id, effective_ws_id)
+
     from sourcemind.services.ingestion.receiver import receive
 
     result = await receive(
@@ -127,6 +139,13 @@ async def get_ingestion_job(
     if not doc:
         raise JobNotFoundError(f"No job found with id: {job_id}")
 
+    # The job is addressed by an opaque id, but it is workspace-scoped through
+    # its document. A non-member gets the same JobNotFoundError as a bad id.
+    try:
+        await require_workspace_member(db, current_user.user_id, doc.workspace_id)
+    except WorkspaceNotFoundError:
+        raise JobNotFoundError(f"No job found with id: {job_id}") from None
+
     mem_result = await db.execute(
         select(Memory.id).where(
             Memory.document_id == doc.id,
@@ -168,6 +187,8 @@ async def get_memory(
 ) -> APIResponse[MemoryResponse]:
     """Retrieve a single memory by ID."""
     start = time.perf_counter()
+
+    await require_memory_access(db, current_user.user_id, memory_id)
 
     result = await db.execute(
         select(Memory).where(
@@ -246,6 +267,8 @@ async def update_memory(
     """Update memory content — creates new version + runs 5-signal attribution recompute."""
     start = time.perf_counter()
 
+    await require_memory_access(db, current_user.user_id, memory_id)
+
     from sourcemind.services.attribution.engine import recompute_attribution
     from sourcemind.services.attribution.versioning import create_new_version
     from sourcemind.services.memory.importance import recompute_importance
@@ -313,6 +336,8 @@ async def delete_memory(
     idempotency_key: IdempotencyKey,
 ) -> None:
     """Soft-delete a memory (sets deleted_at)."""
+    await require_memory_access(db, current_user.user_id, memory_id)
+
     result = await db.execute(
         select(Memory).where(
             Memory.id == memory_id,
@@ -343,6 +368,8 @@ async def get_memory_versions(
     request_id: RequestID,
 ) -> MemoryVersionsResponse:
     """Return the complete version chain via recursive CTE."""
+    await require_memory_access(db, current_user.user_id, memory_id)
+
     from sourcemind.services.attribution.versioning import get_version_chain
 
     chain = await get_version_chain(db, memory_id)

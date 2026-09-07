@@ -191,8 +191,11 @@ async def test_a_user_from_another_workspace_is_denied(db_session, test_workspac
 
     outsider = await _member(db_session, other.id, "admin")
 
-    with pytest.raises(WorkspaceAccessDeniedError) as exc:
+    # 404, not 403: being an admin somewhere else must not even confirm that
+    # this workspace exists.
+    from sourcemind.core.exceptions import WorkspaceNotFoundError
+
+    with pytest.raises(WorkspaceNotFoundError):
         await require_workspace_role(
             db_session, outsider, test_workspace.id, RESOLVER_ROLES
         )
-    assert "not a member" in str(exc.value).lower()

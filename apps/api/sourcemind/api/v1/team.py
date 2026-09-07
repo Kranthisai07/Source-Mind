@@ -19,7 +19,12 @@ from fastapi import APIRouter, status
 from pydantic import BaseModel
 from sqlalchemy import select, text
 
-from sourcemind.core.dependencies import CurrentUser, DBSession, RequestID
+from sourcemind.core.dependencies import (
+    CurrentUser,
+    DBSession,
+    RequestID,
+    require_workspace_member,
+)
 from sourcemind.core.exceptions import UserNotFoundError
 from sourcemind.models.user import User
 from sourcemind.schemas.common import APIResponse, ResponseMeta
@@ -84,6 +89,8 @@ async def list_handoffs(
     request_id: RequestID,
 ) -> dict:
     """Return all handoff records for the workspace, newest first."""
+    await require_workspace_member(db, current_user.user_id, workspace_id)
+
     result = await db.execute(
         text("""
             SELECT
@@ -189,6 +196,8 @@ async def initiate_handoff(
 
     Returns a HandoffSummary with tier breakdown and suggested successors.
     """
+    await require_workspace_member(db, current_user.user_id, workspace_id)
+
     from sourcemind.services.attribution.handoff import (
         classify_memories,
         create_handoff_record,
@@ -251,6 +260,8 @@ async def assign_handoff_memory(
     Transfer 40% of the departing user's attribution share for a memory
     to the new owner. Attribution records are append-only.
     """
+    await require_workspace_member(db, current_user.user_id, workspace_id)
+
     # Resolve departing user from handoff_records
     from sqlalchemy import text
 
@@ -299,6 +310,8 @@ async def complete_handoff_endpoint(
     Mark the departing member's status as 'departed', close the handoff record,
     and report any unassigned Tier 1 memories.
     """
+    await require_workspace_member(db, current_user.user_id, workspace_id)
+
     from sourcemind.services.attribution.handoff import complete_handoff
 
     result = await complete_handoff(

@@ -15,7 +15,12 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, Query
 
-from sourcemind.core.dependencies import CurrentUser, DBSession, RequestID
+from sourcemind.core.dependencies import (
+    CurrentUser,
+    DBSession,
+    RequestID,
+    require_workspace_member,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -34,6 +39,8 @@ async def workspace_overview(
 
     Returns health score, top contributors, recent activity.
     """
+    await require_workspace_member(db, current_user.user_id, workspace_id)
+
     from sourcemind.services.analytics.workspace import get_overview
 
     return await get_overview(db, workspace_id)
@@ -47,6 +54,8 @@ async def contribution_map(
     request_id: RequestID,
 ) -> dict[str, Any]:
     """Per-contributor breakdown of knowledge ownership and collaboration."""
+    await require_workspace_member(db, current_user.user_id, workspace_id)
+
     from sourcemind.services.analytics.workspace import get_contribution_map
 
     return await get_contribution_map(db, workspace_id)
@@ -65,6 +74,8 @@ async def knowledge_gaps(
       - no_recent_update: important memories never refreshed after 90 days
       - high_conflict_area: tag clusters with >20% open conflict rate
     """
+    await require_workspace_member(db, current_user.user_id, workspace_id)
+
     from sourcemind.services.analytics.workspace import get_knowledge_gaps
 
     return await get_knowledge_gaps(db, workspace_id)
@@ -84,6 +95,8 @@ async def who_would_know(
     most likely to have relevant knowledge, ranked by weighted attribution score
     across BM25-matching memories.
     """
+    await require_workspace_member(db, current_user.user_id, workspace_id)
+
     from sourcemind.services.analytics.workspace import who_would_know as _wwk
 
     return await _wwk(db, workspace_id, q, limit)

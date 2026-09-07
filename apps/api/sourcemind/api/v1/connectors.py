@@ -18,7 +18,14 @@ import structlog
 from fastapi import APIRouter, Query, status
 from sqlalchemy import func, select
 
-from sourcemind.core.dependencies import CurrentUser, DBSession, RequestID
+from sourcemind.core.dependencies import (
+    CurrentUser,
+    DBSession,
+    RequestID,
+    require_connector_access,
+    require_workspace_member,
+)
+from sourcemind.core.exceptions import ConnectorNotFoundError
 from sourcemind.models.connector import ConnectorConfig, ConnectorSyncLog
 from sourcemind.schemas.connector import (
     ConnectorCreateRequest,
@@ -52,6 +59,8 @@ async def create_connector(
     request_id: RequestID,
 ) -> ConnectorResponse:
     """Register a new connector configuration for the workspace."""
+    await require_workspace_member(db, current_user.user_id, workspace_id)
+
     connector = ConnectorConfig(
         workspace_id=workspace_id,
         connector_type=body.connector_type,
@@ -89,6 +98,8 @@ async def list_connectors(
     status_filter: str | None = Query(default=None, alias="status"),
 ) -> ConnectorListResponse:
     """List all connectors for the given workspace, with optional filters."""
+    await require_workspace_member(db, current_user.user_id, workspace_id)
+
     query = select(ConnectorConfig).where(
         ConnectorConfig.workspace_id == workspace_id
     )
@@ -119,13 +130,17 @@ async def get_connector(
     current_user: CurrentUser,
 ) -> ConnectorResponse:
     """Retrieve a single connector configuration by ID."""
+    await require_connector_access(db, current_user.user_id, connector_id)
+
     result = await db.execute(
         select(ConnectorConfig).where(ConnectorConfig.id == connector_id)
     )
     connector = result.scalar_one_or_none()
     if connector is None:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="Connector not found")
+        # Unreachable in practice - the gate above 404s first - but kept so the
+        # ORM load has a defined outcome. Raised as a domain error, not a raw
+        # HTTPException, so it carries SM027 like every other 404.
+        raise ConnectorNotFoundError(f"Connector {connector_id} not found.")
     return ConnectorResponse.model_validate(connector)
 
 
@@ -143,13 +158,17 @@ async def update_connector(
     current_user: CurrentUser,
 ) -> ConnectorResponse:
     """Update connector display name, config, or status."""
+    await require_connector_access(db, current_user.user_id, connector_id)
+
     result = await db.execute(
         select(ConnectorConfig).where(ConnectorConfig.id == connector_id)
     )
     connector = result.scalar_one_or_none()
     if connector is None:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="Connector not found")
+        # Unreachable in practice - the gate above 404s first - but kept so the
+        # ORM load has a defined outcome. Raised as a domain error, not a raw
+        # HTTPException, so it carries SM027 like every other 404.
+        raise ConnectorNotFoundError(f"Connector {connector_id} not found.")
 
     if body.display_name is not None:
         connector.display_name = body.display_name
@@ -177,13 +196,17 @@ async def delete_connector(
     current_user: CurrentUser,
 ) -> None:
     """Delete a connector and all its sync logs (cascade)."""
+    await require_connector_access(db, current_user.user_id, connector_id)
+
     result = await db.execute(
         select(ConnectorConfig).where(ConnectorConfig.id == connector_id)
     )
     connector = result.scalar_one_or_none()
     if connector is None:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="Connector not found")
+        # Unreachable in practice - the gate above 404s first - but kept so the
+        # ORM load has a defined outcome. Raised as a domain error, not a raw
+        # HTTPException, so it carries SM027 like every other 404.
+        raise ConnectorNotFoundError(f"Connector {connector_id} not found.")
 
     await db.delete(connector)
     await db.commit()
@@ -206,13 +229,17 @@ async def trigger_sync(
     """Enqueue a background sync task for the given connector."""
     from sourcemind.workers.connector_tasks import sync_github_connector
 
+    await require_connector_access(db, current_user.user_id, connector_id)
+
     result = await db.execute(
         select(ConnectorConfig).where(ConnectorConfig.id == connector_id)
     )
     connector = result.scalar_one_or_none()
     if connector is None:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="Connector not found")
+        # Unreachable in practice - the gate above 404s first - but kept so the
+        # ORM load has a defined outcome. Raised as a domain error, not a raw
+        # HTTPException, so it carries SM027 like every other 404.
+        raise ConnectorNotFoundError(f"Connector {connector_id} not found.")
 
     task = sync_github_connector.apply_async(
         kwargs={
@@ -252,6 +279,8 @@ async def list_sync_logs(
     offset: int = Query(default=0, ge=0),
 ) -> SyncLogsResponse:
     """Return paginated sync history for a connector."""
+    await require_connector_access(db, current_user.user_id, connector_id)
+
     count_result = await db.execute(
         select(func.count()).where(ConnectorSyncLog.connector_id == connector_id)
     )
