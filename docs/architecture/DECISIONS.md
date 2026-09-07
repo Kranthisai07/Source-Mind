@@ -742,9 +742,11 @@ corpus was never written to.
 
 ## D-007 — SECURITY: workspace membership not enforced on nested resource routes
 
-**Status:** Fixed and verified (2026-09-07). Logged as a security finding, not
-a routine bug. Handled with incident priority: confirmed live against real data
-before any code was written, then re-verified route by route after.
+**Status:** Fixed, deployed and verified in production (2026-09-07). Logged
+as a security finding, not a routine bug. Handled with incident priority:
+confirmed live against real data before any code was written, re-verified
+route by route after, and then re-verified again against the deployed
+service rather than assumed from the local result.
 
 ### The gap
 
@@ -808,6 +810,58 @@ caller-supplied query parameter. The expression reads as a safe default with a
 fallback; only the fallback ever runs.
 
 28 routes are now gated and verified.
+
+### Confirmed live in production, then fixed in production
+
+The leak was not merely reproducible locally. Immediately before the deploy,
+the **deployed** Railway API was probed as a real non-member and served
+**4 of 4** routes:
+
+| deployed route | non-member got |
+|---|---|
+| `GET {ws}/analytics/overview` | 200 — `total_memories=1167` |
+| `GET {ws}/analytics/contribution-map` | 200 — `contributors=2` |
+| `GET {ws}/conflicts` | 200 |
+| `POST /v1/memories/search` | 200 — 3 real results |
+
+Deployed 2026-09-07, commits `e97722f`, `9584881`, `5f19691`
+(`8a67bb8..5f19691` on main).
+
+**Deployment freshness** was verified functionally, not by timestamp. The
+worker had to be a *different* container hostname with its task counter at
+**zero** and be the only worker answering; `celery@e7ae3718113a` (executed=22)
+was replaced by `celery@900eb1b06cc2` (executed=0). One poll attempt was
+correctly *refused* while two workers were briefly present and the old
+container was still draining — a hostname-only or timestamp-only check would
+have passed there. The API signal was the gate itself: a real non-member asking
+`analytics/overview` for a workspace they do not belong to, which the old build
+answered 200/1167 and the new build answers 404 SM022.
+
+**The deployed service was then re-tested in full, not assumed.** A local
+process and a deployed container run different builds behind different
+middleware, so "it worked locally against the same database" is not evidence
+about production. The complete matrix was re-run twice against
+`source-mind-production.up.railway.app`, once per non-member profile:
+
+| run | target | outsider profile | result |
+|---|---|---|---|
+| pre-fix | local | zero memberships | 18/27 served, 5 mutating |
+| post-fix | local | zero memberships | 28 routes, 0 served, 0 inconclusive |
+| post-fix | local | admin of a different workspace | 28 routes, 0 served, 0 inconclusive |
+| **post-fix** | **deployed Railway** | **zero memberships** | **28 routes, 0 served, 0 inconclusive** |
+| **post-fix** | **deployed Railway** | **admin of a different workspace** | **28 routes, 0 served, 0 inconclusive** |
+
+56 route-checks against the deployed service, including every mutating route.
+Zero served a non-member and zero mutated on their behalf.
+
+Member-side regression against the deployed API: `kranthisaigadi007@gmail.com`
+still gets identical real data on all 10 read-only routes of the workspace the
+leak was found in — `name=Eval Run 4`, `total_memories=1167`, `contributors=2`,
+`results=3` — while the non-member gets 404 on all 10.
+
+Database state after the deployed runs: outsider back to 0 memberships, 8 live
+workspaces, 0 probe leftovers, Eval Run 4 still at 1167 current memories, 0
+orphan sync logs.
 
 ### 404, not 403
 
@@ -873,14 +927,10 @@ containing a memory, conflict, connector, handoff record and ingestion job, and
 probes every scoped route as both users, so mutating cases only ever touch
 scratch data.
 
-| run | outsider profile | result |
-|---|---|---|
-| pre-fix | zero memberships | 18/27 served, 5 mutating |
-| post-fix | zero memberships | **28 routes, 0 served, 0 inconclusive** |
-| post-fix | admin of a different workspace | **28 routes, 0 served, 0 inconclusive** |
-
-`real_ws_regression.py` re-checks the workspace the leak was found in: the
-member still gets identical real data (1167 memories, 2 contributors, 3 search
+The five runs, local and deployed, are tabulated under "Confirmed live in
+production" above. `real_ws_regression.py` re-checks the workspace the leak
+was found in, against both the local process and the deployed API: the member
+still gets identical real data (1167 memories, 2 contributors, 3 search
 results) on all 10 read-only routes; the non-member gets 404 on all 10.
 
 Suite: 408 passed, 12 skipped, 0 failed. Two existing tests asserted the old
