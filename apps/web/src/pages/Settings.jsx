@@ -9,13 +9,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "../components/ui/dialog";
 import { toast } from "sonner";
 import api from "../lib/api";
-import { WORKSPACE } from "../lib/mockData";
+// WORKSPACE (mockData) was rendered here even in real mode, so the page
+// showed "Acme Platform / acme-platform / Pro" next to a REAL member list -
+// a partial migration, which reads as correct at a glance. The workspace is
+// now fetched; mock mode still works because mockApi.getWorkspace() returns
+// that same constant.
 
 const API_KEY = "sm_live_4f7eff_a78bfa_34d399_b22c_k9qe2m3p6n8x1";
 
 export default function Settings() {
     const [members, setMembers] = useState([]);
-    const [wsName, setWsName] = useState(WORKSPACE.name);
+    const [workspace, setWorkspace] = useState(null);
+    const [wsName, setWsName] = useState("");
     const [reveal, setReveal] = useState(false);
     const [inviteOpen, setInviteOpen] = useState(false);
     const [rotateOpen, setRotateOpen] = useState(false);
@@ -23,10 +28,27 @@ export default function Settings() {
     const [confirmText, setConfirmText] = useState("");
 
     useEffect(() => { api.listTeamMembers().then(r => setMembers(r.members)); }, []);
+    useEffect(() => {
+        api.getWorkspace()
+            .then((w) => { setWorkspace(w); setWsName(w?.name ?? ""); })
+            .catch(() => setWorkspace(null));
+    }, []);
+
+    const wsSlug = workspace?.slug ?? "";
+    // The real WorkspaceResponse carries no `plan` field - only mockApi does.
+    // Rendering a plan in real mode would mean inventing one.
+    const wsPlan = workspace?.plan ?? null;
 
     return (
         <>
-            <TopBar title="Settings" subtitle={`Manage ${WORKSPACE.name} · plan ${WORKSPACE.plan}`} />
+            <TopBar
+                title="Settings"
+                subtitle={
+                    workspace
+                        ? `Manage ${workspace.name}${wsPlan ? ` · plan ${wsPlan}` : ""}`
+                        : "Loading workspace…"
+                }
+            />
             <div className="flex-1 px-8 py-6">
                 <Tabs defaultValue="workspace" className="w-full">
                     <TabsList className="bg-sm-surface border border-sm-border p-1 h-10 mb-6" data-testid="settings-tabs">
@@ -47,13 +69,13 @@ export default function Settings() {
                                 <Field label="Workspace slug" hint="Read-only · used in URLs and API calls">
                                     <div className="flex items-center gap-2 h-10 px-3 rounded-md bg-sm-bg/40 border border-sm-border">
                                         <span className="font-mono text-[12.5px] text-sm-text-secondary">sourcemind.dev/</span>
-                                        <span className="font-mono text-[12.5px] text-sm-text">{WORKSPACE.slug}</span>
+                                        <span className="font-mono text-[12.5px] text-sm-text">{wsSlug}</span>
                                     </div>
                                 </Field>
                                 <Field label="Plan">
                                     <div className="flex items-center gap-2">
                                         <span className="font-mono text-[11px] font-semibold px-2 py-1 rounded-md bg-sm-blue/15 border border-sm-blue/30 text-sm-blue">
-                                            {WORKSPACE.plan.toUpperCase()}
+                                            {wsPlan ? wsPlan.toUpperCase() : "NOT REPORTED BY API"}
                                         </span>
                                         <span className="text-[12.5px] text-sm-text-secondary">1,000 req/min · unlimited workspaces</span>
                                     </div>
@@ -158,7 +180,7 @@ export default function Settings() {
                         <section className="rounded-xl border border-sm-red/40 bg-sm-red/5 p-6 max-w-2xl">
                             <h3 className="text-[15px] font-semibold text-sm-red mb-2">Delete Workspace</h3>
                             <p className="text-[13px] text-sm-text-secondary mb-4">
-                                Permanently delete <span className="font-mono text-sm-text">{WORKSPACE.slug}</span>, all memories, conflicts, and connectors.
+                                Permanently delete <span className="font-mono text-sm-text">{wsSlug}</span>, all memories, conflicts, and connectors.
                                 This action cannot be undone.
                             </p>
                             <Button
@@ -219,7 +241,7 @@ export default function Settings() {
                     <DialogHeader>
                         <DialogTitle className="text-sm-red">Delete workspace?</DialogTitle>
                         <DialogDescription className="text-sm-text-secondary">
-                            Type <span className="font-mono text-sm-text">{WORKSPACE.slug}</span> to confirm.
+                            Type <span className="font-mono text-sm-text">{wsSlug}</span> to confirm.
                         </DialogDescription>
                     </DialogHeader>
                     <Input
@@ -231,7 +253,7 @@ export default function Settings() {
                     <DialogFooter>
                         <Button onClick={() => setDeleteOpen(false)} variant="outline" className="bg-white/[0.03] border-sm-border text-sm-text hover:bg-white/[0.06]">Cancel</Button>
                         <Button
-                            disabled={confirmText !== WORKSPACE.slug}
+                            disabled={confirmText !== wsSlug}
                             onClick={() => { setDeleteOpen(false); toast.error("Workspace deleted (demo)", { description: "In production, this would queue a 30-day soft delete." }); setConfirmText(""); }}
                             className="bg-sm-red hover:bg-sm-red/90 text-white disabled:opacity-40"
                         >
