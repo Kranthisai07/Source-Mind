@@ -88,15 +88,40 @@ const colorFor = (key, i = 0) => {
     return PALETTE[Math.abs(h) % PALETTE.length];
 };
 
-const ACTION_COLOR = {
+// Activity colour coding.
+//
+// This map was written against mockData, not against the API, and none of its
+// original eight keys could ever match. The feed is built by get_overview from
+// a single query over `attribution_edits`, so `action` is always one of the
+// five AttributionActionType members - create, edit, approve, reject, merge -
+// and every real event fell through to the default blue.
+//
+// The removed keys were not merely misspelled. conflict_opened,
+// conflict_detected, conflict_resolved, connector_synced, handoff_started and
+// handoff_initiated describe events this endpoint STRUCTURALLY cannot emit:
+// nothing in the query touches memory_conflicts, connector_sync_logs or
+// handoff_records. They encoded a unified multi-source activity feed that does
+// not exist on the backend. Restoring them means changing get_overview, not
+// this file.
+//
+// The mock vocabulary is kept alongside so the offline demo still renders in
+// colour; mockData emits `type:` while the API emits `action`, and
+// adaptOverview already reads `a.action || a.type`.
+export const ACTION_COLOR = {
+    // Real: AttributionActionType (attribution_edits.action_type)
+    create:            "#4F7EFF",  // sm-blue
+    edit:              "#4F7EFF",  // sm-blue
+    approve:           "#34D399",  // sm-green
+    reject:            "#EF4444",  // sm-red
+    merge:             "#A78BFA",  // sm-purple
+
+    // Mock-only, retained for REACT_APP_USE_MOCKS=true.
     memory_created:    "#4F7EFF",
     memory_edited:     "#4F7EFF",
     conflict_opened:   "#F59E0B",
-    conflict_detected: "#F59E0B",
     conflict_resolved: "#34D399",
     connector_synced:  "#34D399",
     handoff_started:   "#A78BFA",
-    handoff_initiated: "#A78BFA",
 };
 
 class ApiError extends Error {
