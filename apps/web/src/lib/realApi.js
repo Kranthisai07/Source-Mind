@@ -265,15 +265,31 @@ export const realApi = {
     getSearchActivity:   (wsId) => mockApi.getSearchActivity(wsId),
 
     // ----- memories -----
-    searchMemories: async ({ query = "", mode = "hybrid", limit = 20, workspace_ids } = {}) =>
+    // workspace_id is a QUERY parameter, singular, typed UUID:
+    //
+    //   workspace_id: UUID = Query(default=_DEV_WORKSPACE_ID, ...)
+    //   effective_ws_id = current_user.workspace_id or workspace_id
+    //
+    // SearchRequest declares only {query, mode, limit, min_similarity,
+    // include_attribution, filters} — there is no workspace_ids field, so the
+    // array this used to put in the body was dropped by Pydantic and the route
+    // fell through to its default, _DEV_WORKSPACE_ID
+    // (00000000-0000-4000-8000-000000000010). Search returned HTTP 200 with
+    // real-looking results from the Dev Workspace instead of the user's.
+    //
+    // current_user.workspace_id is never assigned in the auth path — it stays
+    // None — so the query parameter is what actually decides, and omitting it
+    // silently searches the wrong workspace rather than erroring.
+    searchMemories: async ({
+        query = "",
+        mode = "hybrid",
+        limit = 20,
+        workspace_id,
+    } = {}) =>
         request(`/v1/memories/search`, {
             method: "POST",
-            body: {
-                query,
-                mode,
-                limit,
-                workspace_ids: workspace_ids || [await resolveWorkspaceId()],
-            },
+            params: { workspace_id: await resolveWorkspaceId(workspace_id) },
+            body: { query, mode, limit },
         }),
     getMemory: async (id) =>
         unwrapOne(await request(`/v1/memories/${encodeURIComponent(id)}`)),
