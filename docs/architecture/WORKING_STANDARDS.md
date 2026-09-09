@@ -128,9 +128,26 @@ function, the same hardcoded weight-swap in a second document.
 same pattern across the rest of the codebase before considering
 the class of bug closed, not just the one instance.
 
+## 9. Tailwind's JIT compiler only sees literal class strings. A
+template-literal or dynamically-constructed class name may compile
+and render with no error while silently emitting no style at all.
+
+A component built `!${t.cls}` expecting a semantic color modifier
+to apply. It rendered with zero errors, zero warnings, the
+component "worked" — the class was simply never generated into
+the build's CSS, discovered only by checking the actual emitted
+stylesheet against what the source code assumed would be there.
+
+**Rule:** any Tailwind class name built dynamically (template
+literals, string concatenation, computed values) must be verified
+against the actual built CSS output, not assumed to work because
+the component renders without error. Prefer inline styles or a
+static lookup map over dynamic class construction when the value
+comes from data, not a fixed enum.
+
 ## How to use this document
 
 Read this before starting any non-trivial task in this codebase.
-When you find a new, generalizable lesson the same way the eight
+When you find a new, generalizable lesson the same way the nine
 above were found, add it here with a real example, don't let it
 live only in a commit message or a chat transcript.
