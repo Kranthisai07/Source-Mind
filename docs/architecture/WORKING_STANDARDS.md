@@ -145,6 +145,40 @@ the component renders without error. Prefer inline styles or a
 static lookup map over dynamic class construction when the value
 comes from data, not a fixed enum.
 
+## 10. A test process must declare its environment and prove its
+database is disposable. Do not inherit ambient configuration.
+
+This security session's first baseline attempt loaded a local
+`.env` value of `DEBUG=release`, so configuration failed before
+the tests reached any behavior. More importantly, several
+integration fixtures accepted the ordinary application database
+URL, which made a test invocation capable of targeting a
+persistent environment by accident. The fixtures now require an
+explicit opt-in and an exact local host, port, role, and database
+name, while the unit process sets its own development, debug, auth,
+database, and Redis values.
+
+**Rule:** tests that can write externally must require an explicit
+disposable-test opt-in and validate the destination, not merely
+check that a URL exists. Unit test entry points must set all
+security-relevant environment values explicitly so a developer's
+`.env` cannot change what the suite means.
+
+## 11. Authorization is checked when work executes, not only when
+it is accepted.
+
+Ingestion and connector sync are queued. Before this session, a
+request authorized at enqueue time could remain in the queue while
+the member was revoked, then execute later with the old authority.
+Both workers now carry the user and workspace identity and repeat
+the active-membership and permission check immediately before
+touching data.
+
+**Rule:** every delayed job that acts on protected data must carry
+the principal and resource scope and re-authorize at execution
+time. Passing authorization before enqueue does not grant a lease
+that survives revocation.
+
 ## How to use this document
 
 Read this before starting any non-trivial task in this codebase.

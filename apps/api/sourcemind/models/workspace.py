@@ -1,9 +1,10 @@
 """Workspace and WorkspaceMember models."""
 
 import uuid
+from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -24,6 +25,14 @@ class WorkspaceRole(StrEnum):
     ADMIN = "admin"
     MEMBER = "member"
     VIEWER = "viewer"
+
+
+class WorkspaceMembershipStatus(StrEnum):
+    """Lifecycle state for a workspace membership."""
+
+    ACTIVE = "active"
+    DEPARTING = "departing"
+    DEPARTED = "departed"
 
 
 class Workspace(Base, TimestampMixin, SoftDeleteMixin):
@@ -111,6 +120,14 @@ class WorkspaceMember(Base, TimestampMixin):
     __tablename__ = "workspace_members"
     __table_args__ = (
         UniqueConstraint("workspace_id", "user_id", name="uq_workspace_members_workspace_user"),
+        CheckConstraint(
+            "role IN ('owner', 'admin', 'member', 'viewer')",
+            name="ck_workspace_members_role",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'departing', 'departed')",
+            name="ck_workspace_members_status",
+        ),
         {"comment": "Workspace membership with role-based access control."},
     )
 
@@ -136,6 +153,16 @@ class WorkspaceMember(Base, TimestampMixin):
         nullable=False,
         server_default="member",
         comment="WorkspaceRole enum value",
+    )
+    status: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        server_default=WorkspaceMembershipStatus.ACTIVE.value,
+        comment="WorkspaceMembershipStatus enum value",
+    )
+    departed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
     invited_by_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),

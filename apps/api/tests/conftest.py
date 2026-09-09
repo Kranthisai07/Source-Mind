@@ -1,30 +1,27 @@
 """
 Shared pytest fixtures and configuration.
 
-Two real-DB strategies are supported:
-
-  1. **Supabase-backed integration tests** (the active path).
-     Fixtures: `supabase_url`, `supabase_engine`, `db_session`,
-     plus convenience factories `test_org`, `test_workspace`, `test_user`.
-     Each `db_session` runs inside an outer transaction with
-     `join_transaction_mode="create_savepoint"`, so any commit inside the
-     code-under-test releases a SAVEPOINT and the outer transaction is
-     rolled back at teardown — no test data leaks into Supabase.
-
-  2. **Local pytest-postgresql** (legacy, kept as a fallback guard).
-     The `pg_available` mark skips tests when `pg_ctl` is missing from PATH.
+Real-DB tests require an explicit disposable local database URL plus an opt-in
+flag. The legacy fixture names remain for compatibility, but no application
+setting or shared database can be selected implicitly.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import uuid
 from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+os.environ["ENVIRONMENT"] = "development"
+os.environ["DEBUG"] = "false"
+os.environ["AUTH_DEV_BYPASS_ENABLED"] = "true"
 
 
 # ─── pg_ctl availability (legacy guard) ──────────────────────────────────────
@@ -47,31 +44,36 @@ def anyio_backend():
     return "asyncio"
 
 
-# ─── Supabase real-DB fixtures ───────────────────────────────────────────────
+# ─── Disposable real-DB fixtures ─────────────────────────────────────────────
 
 @pytest.fixture(scope="session")
 def supabase_url() -> str:
-    """
-    Return the async DATABASE_URL from app settings.
-
-    Skips the entire test if DATABASE_URL is unset or points at localhost
-    (real-DB tests are designed against the cloud Supabase instance, not
-    a local Postgres — local Postgres lacks pgvector here).
-    """
-    from sourcemind.core.config import get_settings
-    settings = get_settings()
-    url = settings.database_url
-    if not url or "localhost" in url or "127.0.0.1" in url:
-        pytest.skip("Supabase DATABASE_URL not configured (got localhost or empty)")
+    """Return an explicitly approved disposable local database URL."""
+    if os.getenv("SECURITY_TEST_ALLOW_DISPOSABLE") != "1":
+        pytest.skip("Set SECURITY_TEST_ALLOW_DISPOSABLE=1 to use the disposable test DB")
+    url = os.getenv("TEST_DATABASE_URL", "")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL is not configured")
     if not url.startswith("postgresql+asyncpg"):
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    parsed = make_url(url)
+    if (
+        parsed.host not in {"127.0.0.1", "localhost"}
+        or parsed.port != 55432
+        or parsed.username != "sourcemind_test"
+        or parsed.database != "sourcemind_security_test"
+    ):
+        raise RuntimeError(
+            "Refusing non-disposable TEST_DATABASE_URL; expected "
+            "sourcemind_test@127.0.0.1:55432/sourcemind_security_test"
+        )
     return url
 
 
 @pytest_asyncio.fixture
 async def supabase_engine(supabase_url):
     """
-    Async SQLAlchemy engine pointing at Supabase.
+    Async SQLAlchemy engine pointing at disposable local Postgres.
 
     Function-scoped so each test gets a fresh asyncpg pool bound to the
     current test's event loop. Avoids "Event loop is closed" errors that

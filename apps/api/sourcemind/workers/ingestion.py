@@ -53,6 +53,15 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
     from sourcemind.core.config import get_settings
+    from sourcemind.core.database import set_rls_user_context
+    from sourcemind.core.dependencies import (
+        WorkspacePermission,
+        require_workspace_permission,
+    )
+    from sourcemind.core.exceptions import (
+        WorkspaceAccessDeniedError,
+        WorkspaceNotFoundError,
+    )
     from sourcemind.core.redis_client import close_redis, init_redis
     from sourcemind.models.document import Document, IngestionStatus
     from sourcemind.services.attribution.engine import create_initial_attribution
@@ -109,7 +118,30 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
 
     try:
         async with factory() as session:
-            result = await session.execute(select(Document).where(Document.id == doc_uuid))
+            await set_rls_user_context(session, user_uuid)
+            try:
+                await require_workspace_permission(
+                    session,
+                    user_uuid,
+                    ws_uuid,
+                    WorkspacePermission.CONTRIBUTE,
+                )
+            except (WorkspaceAccessDeniedError, WorkspaceNotFoundError):
+                log.warning(
+                    "pipeline_membership_revoked",
+                    document_id=document_id,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                )
+                return {"status": "rejected", "error": "Workspace access revoked"}
+
+            result = await session.execute(
+                select(Document).where(
+                    Document.id == doc_uuid,
+                    Document.workspace_id == ws_uuid,
+                    Document.submitter_id == user_uuid,
+                )
+            )
             doc = result.scalar_one_or_none()
             if not doc:
                 log.error("pipeline_doc_not_found", document_id=document_id)
@@ -277,7 +309,9 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
 
             except Exception as exc:
                 log.error(
-                    "pipeline_failed", document_id=document_id, error=str(exc), exc_info=True
+                    "pipeline_failed",
+                    document_id=document_id,
+                    error_type=type(exc).__name__,
                 )
                 try:
                     await session.rollback()
@@ -285,7 +319,7 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                         session,
                         doc_uuid,
                         IngestionStatus.FAILED,
-                        error_message=str(exc)[:500],
+                        error_message=f"Ingestion failed ({type(exc).__name__}).",
                         current_stage="failed",
                     )
                     await session.commit()
@@ -295,12 +329,13 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                     log.error(
                         "ingestion.failure_status_update_failed",
                         document_id=str(doc_uuid),
-                        error=str(cleanup_exc),
+                        error_type=type(cleanup_exc).__name__,
                     )
 
                 raise task.retry(  # type: ignore[union-attr]
-                    exc=exc, countdown=60 * (2 ** task.request.retries)
-                ) from exc
+                    exc=RuntimeError("Ingestion pipeline failed."),
+                    countdown=60 * (2 ** task.request.retries),
+                ) from None
 
     finally:
         await engine.dispose()

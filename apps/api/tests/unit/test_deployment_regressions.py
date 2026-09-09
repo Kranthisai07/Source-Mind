@@ -259,9 +259,11 @@ def test_production_requires_clerk_publishable_key():
     with pytest.raises(ValueError, match="CLERK_PUBLISHABLE_KEY"):
         Settings(
             environment="production",
+            auth_dev_bypass_enabled=False,
             openai_api_key="x",
             anthropic_api_key="x",
             clerk_secret_key="x",
+            clerk_authorized_parties=["https://app.example.com"],
             sentry_dsn="x",
             clerk_publishable_key="",
         )

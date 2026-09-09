@@ -28,8 +28,10 @@ from sourcemind.core.dependencies import (
     DBSession,
     OpenAIClient,
     RequestID,
-    require_workspace_member,
+    WorkspacePermission,
+    require_workspace_permission,
 )
+from sourcemind.core.rate_limit import RateLimitedOperation, enforce_rate_limit
 from sourcemind.schemas.memory import (
     MemoryResponse,
     SearchRequest,
@@ -40,9 +42,6 @@ from sourcemind.schemas.memory import (
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/memories", tags=["search"])
-
-_DEV_WORKSPACE_ID = UUID("00000000-0000-4000-8000-000000000010")
-
 
 @router.post(
     "/search",
@@ -66,8 +65,8 @@ async def search_memories(
     request_id: RequestID,
     openai_client: OpenAIClient,
     workspace_id: UUID = Query(
-        default=_DEV_WORKSPACE_ID,
-        description="Workspace to search. In production, resolved from JWT.",
+        ...,
+        description="Workspace to search.",
     ),
 ) -> SearchResponse:
     """Execute a hybrid search over workspace memories."""
@@ -75,19 +74,20 @@ async def search_memories(
 
     t0 = time.perf_counter()
 
-    effective_ws_id = current_user.workspace_id or workspace_id
-
-    # current_user.workspace_id is never assigned, so effective_ws_id is always
-    # the caller-supplied query param. Without this gate any authenticated user
-    # could search any workspace by naming its id.
-    await require_workspace_member(db, current_user.user_id, effective_ws_id)
-
-    user_role = current_user.workspace_role or "member"
+    user_role = await require_workspace_permission(
+        db,
+        current_user.user_id,
+        workspace_id,
+        WorkspacePermission.READ,
+    )
+    await enforce_rate_limit(
+        RateLimitedOperation.SEARCH, current_user.user_id, workspace_id
+    )
 
     search_result = await hybrid_search(
         session=db,
         query=body.query,
-        workspace_id=effective_ws_id,
+        workspace_id=workspace_id,
         limit=body.limit,
         min_similarity=body.min_similarity,
         mode=body.mode.value,
@@ -100,7 +100,7 @@ async def search_memories(
     for rank, item in enumerate(search_result["results"], start=1):
         mem_resp = MemoryResponse(
             id=UUID(item["id"]),
-            workspace_id=effective_ws_id,
+            workspace_id=workspace_id,
             document_id=None,
             content=item["content"],
             version=1,

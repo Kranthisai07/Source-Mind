@@ -85,21 +85,6 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir hatchling \
     && pip install --no-cache-dir -e "."
 
-# Chromium for URL ingestion (services/ingestion/extractor.py launches
-# Playwright in pipeline Stage 2). --with-deps apt-installs the shared
-# libraries Chromium needs on a slim base.
-#
-# PLAYWRIGHT_BROWSERS_PATH must be set BEFORE the install: browsers default
-# to $HOME/.cache/ms-playwright, and the build runs as root while the
-# container runs as `sourcemind` — root's cache would be unreadable at
-# runtime. A shared world-readable path avoids that.
-#
-# Cost: adds roughly 400–500 MB to the image and several minutes to the build.
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN playwright install --with-deps chromium \
-    && chmod -R a+rX /ms-playwright \
-    && rm -rf /var/lib/apt/lists/*
-
 # Runtime-only files — not part of the wheel, so they can land after install.
 COPY alembic/ ./alembic/
 COPY alembic.ini ./

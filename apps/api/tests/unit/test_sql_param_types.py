@@ -26,6 +26,7 @@ Two layers here:
 from __future__ import annotations
 
 import ast
+import os
 import pathlib
 import re
 import sys
@@ -115,10 +116,11 @@ def test_postfix_casts_on_bind_parameters_are_absent():
 # ─── live layer ──────────────────────────────────────────────────────────────
 
 def _live_db_configured() -> bool:
-    from sourcemind.core.config import get_settings
-
-    url = get_settings().database_url or ""
-    return bool(url) and "localhost" not in url and "127.0.0.1" not in url
+    url = os.getenv("TEST_DATABASE_URL", "")
+    return (
+        os.getenv("SECURITY_TEST_ALLOW_DISPOSABLE") == "1"
+        and "sourcemind_test@127.0.0.1:55432/sourcemind_security_test" in url
+    )
 
 
 @pytest.mark.integration
@@ -135,9 +137,7 @@ async def test_every_statement_prepares_against_real_postgres():
     """
     import asyncpg
 
-    from sourcemind.core.config import get_settings
-
-    url = get_settings().async_database_url.replace(
+    url = os.environ["TEST_DATABASE_URL"].replace(
         "postgresql+asyncpg://", "postgresql://"
     )
 
@@ -152,7 +152,7 @@ async def test_every_statement_prepares_against_real_postgres():
 
         return PARAM.sub(repl, sql)
 
-    conn = await asyncpg.connect(url, ssl="require", timeout=20)
+    conn = await asyncpg.connect(url, ssl=False, timeout=20)
     failures: list[str] = []
     try:
         for name, lineno, sql in _sql_statements():
@@ -163,7 +163,7 @@ async def test_every_statement_prepares_against_real_postgres():
             except Exception:
                 # Connection-level hiccups are not a statement defect;
                 # reconnect and continue.
-                conn = await asyncpg.connect(url, ssl="require", timeout=20)
+                conn = await asyncpg.connect(url, ssl=False, timeout=20)
     finally:
         await conn.close()
 

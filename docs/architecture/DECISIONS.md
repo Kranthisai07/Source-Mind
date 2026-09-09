@@ -1133,6 +1133,190 @@ frontend suite, the build, and the per-page API verification above.
   field is disabled and says so.
 
 
+## D-009 — SECURITY: active revocation, role enforcement, and database isolation
+
+**Status:** Implemented and verified locally on 2026-09-09; not deployed.
+Production rollout is deliberately blocked until the populated disposable
+PostgreSQL/RLS test passes on a machine with Docker or `pg_ctl`, followed by
+the real three-caller production matrix. No live database, Slack workspace,
+customer data, paid API, deployment, or push was used.
+
+### Why D-007 was necessary but not sufficient
+
+D-007 closed the production incident in which nested routes had no workspace
+membership gate. That fix answered whether a user had a membership row for the
+resource at request time. It did not make membership lifecycle, role
+capabilities, delayed work, database access, production token claims, Slack
+identity, or untrusted URL fetching one coherent security boundary.
+
+The follow-up audit found these separate gaps:
+
+- `workspace_members.status` and `departed_at` existed but were not part of
+  the shared gate, so departed users could retain access through valid rows.
+- Most mutations required membership but not the appropriate role.
+- API checks were the only tenant boundary; the committed RLS policies trusted
+  a caller-supplied workspace setting and several newer tables had no RLS.
+- Clerk verification did not pin every required session-token claim and the
+  development fallback could silently create a fake identity.
+- Slack used a hardcoded SourceMind workspace and did not bind Slack team,
+  channel, and user identities to an active SourceMind member.
+- URL ingestion launched a browser against untrusted destinations without an
+  IP policy, redirect revalidation, response bound, or feature gate.
+- Connector responses/logs could serialize provider credential/error details.
+- Expensive search, ingestion, analytics, connector, workspace-create, and
+  Slack operations lacked one consistent atomic limit.
+- Queued workers trusted authorization performed before enqueue, so revocation
+  did not necessarily stop already accepted work.
+- Final privilege review found that an admin could initiate an owner's
+  departure even though only owners could revoke owners. Because entering the
+  departing state removes access, owner departures now require an owner caller.
+
+### Decision
+
+One centralized permission model now defines four capabilities:
+
+| permission | accepted roles |
+|---|---|
+| read | viewer, member, admin, owner |
+| contribute | member, admin, owner |
+| administer | admin, owner |
+| owner | owner |
+
+Every access requires `status='active'`, `departed_at IS NULL`, a known
+role, and a non-deleted workspace. Reads use `read`; memory create/update use
+`contribute`; deletes, conflict review/resolve, connectors, handoffs, and
+member revocation use `administer`; only an owner can revoke another owner.
+Only an owner can initiate another owner's departure, and the final active
+owner cannot be revoked. Outsiders still receive 404 while a known member with
+insufficient privilege receives 403.
+
+Ingestion and connector workers carry user/workspace/resource identity and
+repeat the same authorization immediately before execution. Revocation is
+therefore effective for queued work, not just new HTTP requests.
+
+### Database boundary
+
+Migration `20260908_0006` adds role/status constraints and enables plus
+forces RLS on every workspace-owned table:
+
+`workspaces`, `workspace_members`, `documents`, `memories`,
+`attributions`, `attribution_edits`, `memory_relations`,
+`memory_conflicts`, `connector_configs`, `connector_sync_logs`,
+`artifact_links`, `handoff_records`, and `handoff_assignments`.
+
+Policies require the trusted current user to hold the same active membership;
+indirect tables resolve their workspace through the protected parent. The
+session installs user/workspace values with transaction-local
+`set_config(..., true)` and an SQLAlchemy `after_begin` hook reapplies them
+after every commit begins a new transaction.
+
+The migration must run as a table-owner/migration role. API and worker
+connections must use a different `NOSUPERUSER NOBYPASSRLS` runtime role.
+`FORCE ROW LEVEL SECURITY` prevents accidental owner bypass, but role
+separation remains required so the application cannot alter the policies.
+
+Review found and fixed a rollback bug before release: the first downgrade
+dropped the new policies but left newly protected tables with RLS enabled and
+no policy, which would make the old application fail closed everywhere. The
+downgrade now recreates every exact legacy policy and disables RLS only on
+tables that had none before this migration. Both directions compile offline.
+
+### Authentication and external boundaries
+
+Production boot now requires Clerk secret and publishable keys plus a non-empty
+authorized-party allowlist. The development bypass is explicit, defaults off,
+and is rejected outside development. Session tokens require RS256, `kid`,
+signature, issuer, `sub`, `sid`, `iat`, `nbf`, `exp`, optional
+configured audience, and an allowed `azp` when present; pending sessions and
+failed profile lookups fail closed. An unknown `kid` forces one JWKS refresh
+for legitimate key rotation.
+
+Slack memory commands default off. When enabled, an operator-owned mapping
+must bind exact Slack team, channel, and user IDs to a SourceMind workspace and
+user; active membership is checked again. Bolt's request-verification
+middleware remains the HTTP signature boundary, slash responses are ephemeral,
+and app mentions do not return memory.
+
+URL ingestion also defaults off. When enabled it permits only HTTP/HTTPS on
+default ports without credentials, rejects local/internal names and every
+non-global address, rejects a hostname if any DNS answer is non-public, pins
+the validated DNS answers, revalidates every redirect, ignores proxy
+environment variables, loads no scripts/subresources, and bounds timeout,
+redirects, bytes, status, and content type. Playwright was removed because a
+static bounded main-document fetch has a much smaller attack surface. The
+final cross-repository sweep also caught and removed the stale Chromium
+installation from the API Docker image.
+
+### Secrets, errors, and limits
+
+Connector configuration serialization recursively masks token, secret,
+password, private-key, API-key, credential, and webhook fields. Provider and
+model error details, including raw response previews, are replaced with generic
+failure categories. Public health and disabled Slack responses no longer
+return raw dependency/configuration exceptions.
+
+Redis limits use one atomic Lua INCR/EXPIRE operation scoped by operation,
+workspace where applicable, and user. The security default is fail closed if
+Redis is unavailable. Current defaults are 60 search/minute, 10
+ingestion/minute, 30 analytics/minute, 5 workspace creates/hour, 5 connector
+syncs/hour, and 20 Slack commands/minute.
+
+A local PEM exists at
+`apps/api/sourcemind-kranthi.2026-04-14.private-key.pem`. Only metadata was
+examined: it is ignored, untracked, and absent from Git history. Development
+container mounts were narrowed and Docker ignore rules now exclude common key
+extensions, but the owner must determine whether the key is active, rotate it
+if so, and remove the old local file only after verification.
+
+### Rejected assumptions
+
+- **A valid signature is enough for a session token:** rejected. Wrong issuer
+  and wrong authorized party are validly signed attacker-controlled tokens.
+- **Application checks alone are tenant isolation:** rejected. Direct SQL,
+  worker regressions, or a missed future route require an independent RLS
+  boundary.
+- **Authorization at enqueue grants the job authority:** rejected. Authority
+  can be revoked before execution.
+- **A disabled feature makes its dangerous implementation harmless:** rejected.
+  Both Slack memory access and URL ingestion are disabled by default *and*
+  hardened before they can be enabled.
+- **A health hostname/version proves a fresh deploy:** rejected. `/health`
+  now exposes a per-app-instance UUID and `requests_since_start`, which is
+  initialized to zero and does not count health probes.
+- **An existing lockfile proves dependencies are locked:** rejected.
+  `uv lock --check` found older missing declared packages after Playwright was
+  removed; the full lock was regenerated and now checks cleanly.
+
+### Verification
+
+- Baseline before this implementation: 370 passed, 7 skipped.
+- Final unit suite: **396 passed, 7 skipped**, including real generated RSA
+  Clerk session tokens, active/revoked/other-workspace authorization,
+  permission roles, route-guard sweep, URL private/mixed-DNS cases, recursive
+  connector redaction, Slack identity/signature/forgery/replay, health
+  freshness/redaction, and fail-closed rate limits.
+- Ruff passed for every changed Python file.
+- `uv lock --check` passed.
+- Alembic reports one head. Full upgrade SQL and the
+  `20260908_0006:20250817_0005` downgrade SQL both generated offline.
+- Required mutation proofs were observed: issuer verification was temporarily
+  disabled, and
+  `test_real_session_token_rejects_wrong_issuer` failed with "DID NOT RAISE
+  TokenInvalidError"; the owner-target handoff guard was then bypassed, and
+  `test_admin_cannot_begin_an_owner_departure` failed. Both correct
+  implementations were restored and both tests pass.
+- A real populated RLS integration test creates an authorized owner, a user
+  with zero memberships, a member of a different workspace, and then revokes
+  the owner. It is intentionally guarded to accept only the disposable local
+  runtime role/database tuple.
+
+The last item is written but **not executed here**: Docker is not installed and
+`pg_ctl` is unavailable. Unit mocks and offline SQL are not substitutes for
+running PostgreSQL's real policy engine. Exact test, deployment, freshness,
+three-caller, Slack, URL, secret-rotation, and rollback steps are in
+`docs/architecture/SECURITY_FOUNDATION_ROLLOUT.md`.
+
+
 ## Deferred — not done, with reasons
 
 ### Option 2 — query-adaptive fusion weighting

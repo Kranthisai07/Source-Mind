@@ -9,21 +9,21 @@ Tests cover:
   - _fetch_clerk_user_profile: Clerk API parsing + cache + fallback
   - get_current_user: dev-bypass, missing header, bad token, happy path
 """
+# ruff: noqa: I001
 
-import pytest
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import UUID
+
+import pytest
 
 import sourcemind.core.dependencies as deps
 from sourcemind.core.dependencies import (
     _clerk_jwks_url,
-    _fetch_jwks,
     _fetch_clerk_user_profile,
+    _fetch_jwks,
     _verify_clerk_token,
-    AuthenticatedUser,
 )
-from sourcemind.core.exceptions import InternalError, UnauthorizedError
+from sourcemind.core.exceptions import InternalError, TokenInvalidError, UnauthorizedError
 
 
 # ── _clerk_jwks_url ──────────────────────────────────────────────────────────
@@ -127,34 +127,78 @@ class TestVerifyClerkToken:
     async def test_returns_claims_on_valid_token(self):
         expected_claims = {"sub": "user_abc", "sid": "sess_123"}
 
-        with patch("sourcemind.core.dependencies._fetch_jwks", return_value=[{"kid": "k1"}]), \
-             patch("sourcemind.core.dependencies.jwt.decode", return_value=expected_claims):
-            result = await _verify_clerk_token("fake.token.value", "https://example.com/jwks")
+        with patch(
+            "sourcemind.core.dependencies.jwt.get_unverified_header",
+            return_value={"kid": "k1", "alg": "RS256", "typ": "JWT"},
+        ), patch(
+            "sourcemind.core.dependencies._fetch_jwks",
+            return_value=[{"kid": "k1"}],
+        ), patch(
+            "sourcemind.core.dependencies.jwt.decode", return_value=expected_claims
+        ):
+            result = await _verify_clerk_token(
+                "fake.token.value",
+                "https://example.com/jwks",
+                issuer="https://example.com",
+                authorized_parties=["https://app.example.com"],
+            )
 
         assert result == expected_claims
 
-    async def test_tries_next_key_on_jwterror(self):
-        from jose import JWTError
-        good_claims = {"sub": "user_xyz"}
+    async def test_refreshes_jwks_once_for_an_unknown_kid(self):
+        good_claims = {"sub": "user_xyz", "sid": "sess_xyz"}
 
-        with patch("sourcemind.core.dependencies._fetch_jwks", return_value=[{"kid": "bad"}, {"kid": "good"}]), \
-             patch("sourcemind.core.dependencies.jwt.decode", side_effect=[JWTError("bad key"), good_claims]):
-            result = await _verify_clerk_token("fake.token", "https://example.com/jwks")
+        with patch(
+            "sourcemind.core.dependencies.jwt.get_unverified_header",
+            return_value={"kid": "good", "alg": "RS256", "typ": "JWT"},
+        ), patch(
+            "sourcemind.core.dependencies._fetch_jwks",
+            side_effect=[[{"kid": "old"}], [{"kid": "good"}]],
+        ) as fetch, patch(
+            "sourcemind.core.dependencies.jwt.decode", return_value=good_claims
+        ):
+            result = await _verify_clerk_token(
+                "fake.token",
+                "https://example.com/jwks",
+                issuer="https://example.com",
+                authorized_parties=["https://app.example.com"],
+            )
 
         assert result["sub"] == "user_xyz"
+        assert fetch.await_count == 2
 
     async def test_raises_unauthorized_when_all_keys_fail(self):
         from jose import JWTError
 
-        with patch("sourcemind.core.dependencies._fetch_jwks", return_value=[{"kid": "k1"}, {"kid": "k2"}]), \
-             patch("sourcemind.core.dependencies.jwt.decode", side_effect=JWTError("invalid")):
-            with pytest.raises(UnauthorizedError):
-                await _verify_clerk_token("bad.token", "https://example.com/jwks")
+        with patch(
+            "sourcemind.core.dependencies.jwt.get_unverified_header",
+            return_value={"kid": "k1", "alg": "RS256", "typ": "JWT"},
+        ), patch(
+            "sourcemind.core.dependencies._fetch_jwks",
+            return_value=[{"kid": "k1"}],
+        ), patch(
+            "sourcemind.core.dependencies.jwt.decode", side_effect=JWTError("invalid")
+        ):
+            with pytest.raises(TokenInvalidError):
+                await _verify_clerk_token(
+                    "bad.token",
+                    "https://example.com/jwks",
+                    issuer="https://example.com",
+                    authorized_parties=["https://app.example.com"],
+                )
 
     async def test_raises_unauthorized_on_empty_key_list(self):
-        with patch("sourcemind.core.dependencies._fetch_jwks", return_value=[]):
-            with pytest.raises(UnauthorizedError):
-                await _verify_clerk_token("any.token", "https://example.com/jwks")
+        with patch(
+            "sourcemind.core.dependencies.jwt.get_unverified_header",
+            return_value={"kid": "k1", "alg": "RS256", "typ": "JWT"},
+        ), patch("sourcemind.core.dependencies._fetch_jwks", return_value=[]):
+            with pytest.raises(TokenInvalidError):
+                await _verify_clerk_token(
+                    "any.token",
+                    "https://example.com/jwks",
+                    issuer="https://example.com",
+                    authorized_parties=["https://app.example.com"],
+                )
 
 
 # ── _fetch_clerk_user_profile ─────────────────────────────────────────────────
@@ -197,17 +241,15 @@ class TestFetchClerkUserProfile:
         assert name == "Alice Smith"
         assert deps._user_profile_cache["user_alice"] == ("alice@example.com", "Alice Smith")
 
-    async def test_falls_back_on_api_error(self):
+    async def test_fails_closed_on_api_error(self):
         with patch("sourcemind.core.dependencies.httpx.AsyncClient") as mock_cls:
             mock_client = AsyncMock()
             mock_client.get = AsyncMock(side_effect=Exception("network error"))
             mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            email, name = await _fetch_clerk_user_profile("user_fail", "sk_test_xxx")
-
-        assert email == "user_fail@clerk.local"
-        assert name is None
+            with pytest.raises(UnauthorizedError):
+                await _fetch_clerk_user_profile("user_fail", "sk_test_xxx")
 
     async def test_display_name_none_when_no_name_fields(self):
         clerk_response = {

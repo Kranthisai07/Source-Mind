@@ -34,6 +34,9 @@ def _get_handler() -> AsyncSlackRequestHandler:
     if _handler is None:
         settings = get_settings()
 
+        if not settings.slack_memory_commands_enabled:
+            raise RuntimeError("Slack memory commands are disabled.")
+
         if not settings.slack_bot_token or not settings.slack_signing_secret:
             raise RuntimeError(
                 "SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET must be set "
@@ -46,7 +49,6 @@ def _get_handler() -> AsyncSlackRequestHandler:
         )
         register_handlers(
             _bolt_app,
-            workspace_id=settings.slack_default_workspace_id,
             app_url=settings.sourcemind_app_url,
         )
         _handler = AsyncSlackRequestHandler(_bolt_app)
@@ -63,7 +65,7 @@ async def slack_events(req: Request) -> Response:
     try:
         handler = _get_handler()
     except RuntimeError as exc:
-        log.warning("slack.not_configured", error=str(exc))
-        return Response(content=str(exc), status_code=503)
+        log.warning("slack.not_configured", error_type=type(exc).__name__)
+        return Response(content="Slack integration unavailable.", status_code=503)
 
     return await handler.handle(req)

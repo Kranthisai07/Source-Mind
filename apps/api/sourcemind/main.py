@@ -29,11 +29,13 @@ from sourcemind.core.exceptions import SourceMindError
 from sourcemind.core.logging import configure_logging
 from sourcemind.core.middleware import (
     CorrelationIDMiddleware,
+    ProcessRequestCounterMiddleware,
     RequestLoggingMiddleware,
     SecurityHeadersMiddleware,
     TimingMiddleware,
 )
 from sourcemind.core.redis_client import close_redis, init_redis
+from sourcemind.core.runtime_state import ProcessRuntimeState
 
 logger = structlog.get_logger(__name__)
 
@@ -148,12 +150,14 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         default_response_class=_ORJSONResponse,
     )
+    app.state.runtime_state = ProcessRuntimeState()
 
     # ── Middleware (registered in reverse execution order) ────────
     # Outermost → innermost:
     #   SecurityHeaders → Timing → RequestLogging → CorrelationID → CORS → Route
 
     app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(ProcessRequestCounterMiddleware)
     app.add_middleware(TimingMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(CorrelationIDMiddleware)

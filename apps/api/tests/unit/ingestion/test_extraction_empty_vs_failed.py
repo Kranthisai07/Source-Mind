@@ -25,7 +25,6 @@ import pytest
 from sourcemind.services.ingestion.chunker import ChunkResult
 from sourcemind.services.ingestion.fact_extractor import FactExtractor
 
-
 # Multi-sentence on purpose. These tests are about retry, parse failure and
 # caching; multi-sentence content exercises those paths unambiguously and keeps
 # the fixture honest about what is being verified. (It was originally widened
@@ -172,8 +171,8 @@ async def test_parse_failure_distinguished_from_genuine_empty():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_api_error_still_retried_and_logged_loudly():
-    """An API error is retried, and reported as a failure rather than empty."""
+async def test_api_error_is_retried_without_retaining_provider_message():
+    """An API error is retried and classified without persisting raw details."""
     client = AsyncMock()
     client.messages.create = AsyncMock(side_effect=RuntimeError("API timeout"))
 
@@ -187,7 +186,8 @@ async def test_api_error_still_retried_and_logged_loudly():
     assert result.failed_chunks == 1
     assert result.wholly_failed is True
     assert "api_error" in result.failure_reasons[0]
-    assert "API timeout" in result.failure_reasons[0]
+    assert "RuntimeError" in result.failure_reasons[0]
+    assert "API timeout" not in result.failure_reasons[0]
 
     assert client.messages.create.await_count == 2, "the API error must be retried"
     redis.return_value.setex.assert_not_awaited()

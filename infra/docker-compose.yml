@@ -8,6 +8,8 @@ version: "3.9"
 
 x-common-env: &common-env
   ENVIRONMENT: development
+  AUTH_DEV_BYPASS_ENABLED: "true"
+  DEBUG: "false"
   DATABASE_URL: postgresql+asyncpg://sourcemind:sourcemind@postgres:5432/sourcemind
   REDIS_URL: redis://redis:6379/0
   NEO4J_URI: bolt://neo4j:7687
@@ -141,15 +143,17 @@ services:
       <<: *common-env
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-dev_placeholder}
-      CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:-dev_placeholder}
+      URL_INGESTION_ENABLED: "false"
+      SLACK_MEMORY_COMMANDS_ENABLED: "false"
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       S3_BUCKET_NAME: ${S3_BUCKET_NAME:-sourcemind-dev}
     ports:
       - "8000:8000"
     volumes:
-      - ../apps/api:/app
+      - ../apps/api/sourcemind:/app/sourcemind
+      - ../apps/api/alembic:/app/alembic
+      - ../apps/api/alembic.ini:/app/alembic.ini:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -179,7 +183,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
     volumes:
-      - ../apps/api:/app
+      - ../apps/api/sourcemind:/app/sourcemind
     depends_on:
       postgres:
         condition: service_healthy
