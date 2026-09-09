@@ -1,15 +1,50 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Edit3, Trash2, AlertTriangle, Share2 } from "lucide-react";
-import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
-import TopBar from "../components/layout/TopBar";
-import ContributorAvatar from "../components/widgets/ContributorAvatar";
+import {
+    ArrowLeft, Edit3, Trash2, AlertTriangle, Share2, History, Users,
+} from "lucide-react";
+import PageHeader from "../components/ui-kit/PageHeader";
+import EmptyState from "../components/ui-kit/EmptyState";
+import InlineBar from "../components/ui-kit/InlineBar";
+import { Skeleton } from "../components/ui-kit/Skeleton";
 import Markdown from "../components/widgets/Markdown";
 import { Button } from "../components/ui/button";
 import api from "../lib/api";
-import { relativeTime, formatDate } from "../lib/format";
-import { CONTRIBUTORS } from "../lib/mockData";
+import { relativeTime, formatDate, initials } from "../lib/format";
 
+/**
+ * Page 2 of the Supermemory-console redesign.
+ *
+ * Same single data call, same response shape. What changed:
+ *
+ * - §4.5 replaces the 180px Recharts donut. The brief is explicit that
+ *   attribution percentages get "the number AND a compact horizontal bar in
+ *   the same cell, not a separate large gauge", so the PieChart/Pie/Cell import
+ *   is gone entirely and each contributor row carries its own inline bar.
+ * - §2 removes the per-contributor colour. adaptAttribution assigns each
+ *   contributor one of eight hues from a decorative palette; the reference
+ *   permits one accent and reserves green/red for meaning. Identity is carried
+ *   by the name and initials instead.
+ * - §3 puts the memory content, the id and the contributor handles in the mono
+ *   face ("memory content excerpts, IDs ... a clear 'this is technical /
+ *   copyable' signal"), and table column headers at 11px uppercase.
+ * - §6 skeletons sized to the real layout, replacing the two `shimmer` blocks.
+ * - §5 empty-state template for attribution and for the version timeline.
+ *
+ * Three real bugs the live payload exposed, all pre-dating this redesign:
+ *
+ *   1. `mem.tags.map(...)` was unguarded and `tags` is null on real memories,
+ *      so this page threw "Cannot read properties of null" outright.
+ *   2. The H1 rendered `mem.memory_id`, which does not exist — the field is
+ *      `id`, so the title was blank.
+ *   3. `mem.category` is null on real memories and was rendered twice
+ *      unconditionally, producing an empty badge and a stray "·" in the
+ *      subtitle.
+ *
+ * CONTRIBUTORS from mockData is no longer imported. It was used to look up
+ * version editors, i.e. fabricated people rendered beside real data — the same
+ * mock-era-literal-at-a-call-site class found earlier this session.
+ */
 export default function MemoryDetail() {
     const { id } = useParams();
     const navigate = useNavigate();
@@ -22,10 +57,33 @@ export default function MemoryDetail() {
     if (!mem) {
         return (
             <>
-                <TopBar title="Memory" subtitle="loading…" />
-                <div className="flex-1 px-8 py-6 grid grid-cols-3 gap-4">
-                    <div className="sm-card col-span-2 h-[500px] shimmer" />
-                    <div className="sm-card h-[500px] shimmer" />
+                <PageHeader title="Memory" subtitle="Loading…" />
+                <div
+                    className="grid grid-cols-1 lg:grid-cols-3 gap-4"
+                    role="status"
+                    aria-busy="true"
+                    aria-label="Loading memory"
+                >
+                    <div className="sm-card p-8 lg:col-span-2 space-y-4">
+                        <div className="flex gap-1.5">
+                            <Skeleton className="h-5 w-16 rounded-md" />
+                            <Skeleton className="h-5 w-20 rounded-md" />
+                        </div>
+                        <Skeleton className="h-[1em] w-full" />
+                        <Skeleton className="h-[1em] w-full" />
+                        <Skeleton className="h-[1em] w-3/5" />
+                        <div className="pt-8 space-y-3">
+                            <Skeleton className="h-4 w-40" />
+                            <Skeleton className="h-tablerow w-full rounded-md" />
+                            <Skeleton className="h-tablerow w-full rounded-md" />
+                        </div>
+                    </div>
+                    <div className="sm-card p-6 space-y-4">
+                        <Skeleton className="h-4 w-32" />
+                        <Skeleton className="h-16 w-full rounded-md" />
+                        <Skeleton className="h-16 w-full rounded-md" />
+                    </div>
+                    <span className="sr-only">Loading memory…</span>
                 </div>
             </>
         );
@@ -35,113 +93,183 @@ export default function MemoryDetail() {
     // [] when the backend reports none; mockApi already produces it. Both can
     // still be empty, so nothing below may index without checking.
     const attribution = Array.isArray(mem.attribution) ? mem.attribution : [];
-    const primary =
-        attribution.find(a => a.is_primary) ||
-        attribution[0] ||
-        null;
+    const primary = attribution.find(a => a.is_primary) || attribution[0] || null;
     const primaryPct = primary
-        ? Math.round((primary.percentage ?? (primary.score ?? 0) * 100))
+        ? Math.round(primary.percentage ?? (primary.score ?? 0) * 100)
         : null;
+
+    // `versions` is not a field on GET /v1/memories/{id}; the version chain
+    // lives at /v1/memories/{id}/versions, which realApi does not call. It is
+    // therefore always empty against the real API and only ever populated by
+    // mockData. Rendered as a proper empty state rather than an empty <ol>.
     const versions = Array.isArray(mem.versions) ? mem.versions : [];
+
+    const tags = Array.isArray(mem.tags) ? mem.tags : [];
+    const memoryId = mem.id || mem.memory_id || id;
+
+    const subtitleParts = [
+        mem.category,
+        mem.version != null ? `v${mem.version}` : null,
+        mem.created_at ? `created ${relativeTime(mem.created_at)}` : null,
+    ].filter(Boolean);
 
     return (
         <>
-            <TopBar
-                title={<span className="font-mono text-[14px] text-sm-text-secondary">{mem.memory_id}</span>}
-                subtitle={`${mem.category} · v${mem.version} · created ${relativeTime(mem.created_at)}`}
-                actions={
+            <PageHeader
+                title="Memory"
+                subtitle={subtitleParts.join(" · ") || "No metadata recorded"}
+                action={
                     <>
-                        <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="text-sm-text-secondary" data-testid="mem-back">
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => navigate(-1)}
+                            className="text-content-secondary"
+                            data-testid="mem-back"
+                        >
                             <ArrowLeft className="w-4 h-4" /> Back
                         </Button>
-                        <Button variant="outline" size="sm" className="bg-white/[0.04] border-sm-border text-sm-text"><Edit3 className="w-3.5 h-3.5" /> Edit</Button>
-                        <Button variant="outline" size="sm" className="bg-white/[0.04] border-sm-border text-sm-text"><Share2 className="w-3.5 h-3.5" /> Share</Button>
-                        <Button variant="outline" size="sm" className="bg-white/[0.04] border-sm-border text-sm-red hover:text-sm-red"><Trash2 className="w-3.5 h-3.5" /> Delete</Button>
+                        <Button variant="outline" size="sm" className="bg-white/[0.04] border-hairline text-content">
+                            <Edit3 className="w-3.5 h-3.5" /> Edit
+                        </Button>
+                        <Button variant="outline" size="sm" className="bg-white/[0.04] border-hairline text-content">
+                            <Share2 className="w-3.5 h-3.5" /> Share
+                        </Button>
+                        {/* §2: red is reserved for destructive. */}
+                        <Button variant="outline" size="sm" className="bg-white/[0.04] border-hairline text-danger hover:text-danger">
+                            <Trash2 className="w-3.5 h-3.5" /> Delete
+                        </Button>
                     </>
                 }
             />
-            <div className="flex-1 px-8 py-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
-                {/* Main content */}
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                 <section className="sm-card p-8 lg:col-span-2">
-                    <div className="flex items-center gap-1.5 flex-wrap mb-5">
-                        {mem.tags.map(t => (
-                            <span key={t} className="font-mono text-[10.5px] px-2 py-0.5 rounded-md border border-sm-border text-sm-text-secondary">{t}</span>
-                        ))}
-                        <span className="font-mono text-[10.5px] px-2 py-0.5 rounded-md border border-sm-blue/30 bg-sm-blue/10 text-sm-blue ml-auto">
-                            {mem.category}
-                        </span>
+                    {/* §3: the id is technical and copyable → mono. */}
+                    <div className="flex items-center gap-2 flex-wrap mb-5">
+                        <span className="sm-micro-label">ID</span>
+                        <code className="font-mono text-[11px] text-content-secondary select-all">
+                            {memoryId}
+                        </code>
+                        {mem.category && (
+                            <span className="font-mono text-[10.5px] px-2 py-0.5 rounded-md border border-brand/30 bg-brand/10 text-brand ml-auto">
+                                {mem.category}
+                            </span>
+                        )}
                     </div>
-                    <article className="prose prose-invert max-w-none">
+
+                    {tags.length > 0 && (
+                        <div className="flex items-center gap-1.5 flex-wrap mb-5">
+                            {tags.map(t => (
+                                <span
+                                    key={t}
+                                    className="font-mono text-[10.5px] px-2 py-0.5 rounded-md border border-hairline text-content-secondary"
+                                >
+                                    {t}
+                                </span>
+                            ))}
+                        </div>
+                    )}
+
+                    {/* §3: "Monospace specifically for: memory content excerpts
+                        ... a clear 'this is technical/copyable' signal distinct
+                        from the sans-serif UI text." */}
+                    <article className="prose prose-invert max-w-none font-mono text-[13px] leading-relaxed">
                         <Markdown>{mem.content}</Markdown>
                     </article>
 
-                    <div className="mt-8 pt-6 border-t border-sm-border flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                            <ContributorAvatar contributor={primary} size={32} />
-                            <div>
-                                <div className="text-[13px] font-medium text-sm-text">
+                    <div className="mt-8 pt-6 border-t border-hairline flex items-center justify-between gap-4">
+                        <div className="flex items-center gap-3 min-w-0">
+                            {/* §2: neutral initials, not a per-person hue. */}
+                            <div className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center
+                                            bg-surface-hover border border-hairline
+                                            text-[11px] font-semibold text-content-secondary">
+                                {primary ? initials(primary.name || primary.author) : "—"}
+                            </div>
+                            <div className="min-w-0">
+                                <div className="text-body font-medium text-content truncate">
                                     {primary?.name || primary?.author || "Unattributed"}
                                 </div>
-                                <div className="font-mono text-[11px] text-sm-text-secondary">
-                                    {primary ? "primary author" : "no attribution recorded"}
+                                <div className="sm-micro-label">
+                                    {primary ? "Primary author" : "No attribution recorded"}
                                 </div>
                             </div>
                         </div>
-                        <div className="text-right">
-                            <div className="font-mono text-[11px] text-sm-text-secondary">created</div>
-                            <div className="font-mono text-[12px] text-sm-text">{formatDate(mem.created_at)}</div>
+                        <div className="text-right shrink-0">
+                            <div className="sm-micro-label">Created</div>
+                            <div className="font-mono text-body text-content mt-0.5">
+                                {mem.created_at ? formatDate(mem.created_at) : "—"}
+                            </div>
                         </div>
                     </div>
 
-                    {/* Attribution details */}
                     <div className="mt-8">
-                        <h3 className="text-[14px] font-semibold text-sm-text mb-4">Attribution Breakdown</h3>
-                        <div className="grid grid-cols-1 md:grid-cols-[180px_1fr] gap-6 items-center">
-                            <div className="w-[180px] h-[180px] relative">
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <PieChart>
-                                        <Pie
-                                            data={attribution}
-                                            dataKey="score"
-                                            nameKey="author"
-                                            innerRadius={50}
-                                            outerRadius={80}
-                                            startAngle={90}
-                                            endAngle={-270}
-                                            stroke="#12121A"
-                                            strokeWidth={2}
-                                        >
-                                            {attribution.map((a, i) => (
-                                                <Cell key={i} fill={a.color} />
-                                            ))}
-                                        </Pie>
-                                    </PieChart>
-                                </ResponsiveContainer>
-                                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                                    <span className="font-mono text-[22px] font-semibold text-sm-text">{primaryPct === null ? "—" : `${primaryPct}%`}</span>
-                                    <span className="text-[10.5px] text-sm-text-secondary font-mono uppercase tracking-wider">primary</span>
+                        <div className="flex items-baseline justify-between gap-4 mb-4">
+                            <h2 className="text-title text-content">Attribution</h2>
+                            {/* §3 hero metric: the primary contributor's share
+                                is the number this section exists to convey. */}
+                            {primaryPct !== null && (
+                                <div className="flex items-baseline gap-1.5">
+                                    <span
+                                        data-testid="primary-pct"
+                                        className="font-mono text-hero tabular-nums text-content"
+                                    >
+                                        {primaryPct}
+                                    </span>
+                                    <span className="text-body text-content-secondary">% primary</span>
                                 </div>
-                            </div>
+                            )}
+                        </div>
 
-                            <table className="w-full text-[12.5px]">
+                        {attribution.length === 0 ? (
+                            <EmptyState
+                                testId="attribution-empty"
+                                icon={Users}
+                                noun="attribution"
+                                description="Once the five-signal engine scores this memory, each contributor's share appears here."
+                            />
+                        ) : (
+                            <table className="w-full">
                                 <thead>
-                                    <tr className="text-sm-text-secondary text-left">
-                                        <th className="font-medium py-2">Contributor</th>
-                                        <th className="font-medium py-2 text-right">Score</th>
-                                        <th className="font-medium py-2 font-mono text-[10.5px] text-right">S1 · S2 · S3 · S4 · S5</th>
+                                    {/* §3: "micro-labels (~11px, uppercase,
+                                        letter-spaced — used for table column
+                                        headers)". */}
+                                    <tr className="text-left border-b border-hairline">
+                                        <th className="sm-micro-label font-semibold pb-2">Contributor</th>
+                                        <th className="sm-micro-label font-semibold pb-2 w-[180px]">Share</th>
+                                        <th className="sm-micro-label font-semibold pb-2 text-right">Signals</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {attribution.map((a, i) => (
-                                        <tr key={i} className="border-t border-sm-border">
-                                            <td className="py-2.5">
-                                                <div className="flex items-center gap-2">
-                                                    <span className="w-2.5 h-2.5 rounded-full" style={{ background: a.color }} />
-                                                    <span className="font-mono text-sm-text">{a.author}</span>
+                                        <tr
+                                            key={i}
+                                            data-testid={`attribution-row-${i}`}
+                                            className="border-b border-hairline last:border-0"
+                                        >
+                                            <td className="py-3">
+                                                <div className="flex items-center gap-2.5 min-w-0">
+                                                    <div className="w-6 h-6 rounded-full shrink-0 flex items-center justify-center
+                                                                    bg-surface-hover border border-hairline
+                                                                    text-[9px] font-semibold text-content-secondary">
+                                                        {initials(a.name || a.author)}
+                                                    </div>
+                                                    <span className="font-mono text-body text-content truncate">
+                                                        {a.author}
+                                                    </span>
+                                                    {a.is_primary && (
+                                                        <span className="sm-micro-label shrink-0">Primary</span>
+                                                    )}
                                                 </div>
                                             </td>
-                                            <td className="py-2.5 text-right font-mono text-sm-text">{Math.round((a.percentage ?? (a.score ?? 0) * 100))}%</td>
-                                            <td className="py-2.5 text-right font-mono text-[10.5px] text-sm-text-secondary">
+                                            {/* §4.5 — number and bar, one cell. */}
+                                            <td className="py-3">
+                                                <InlineBar
+                                                    value={Math.round(a.percentage ?? (a.score ?? 0) * 100)}
+                                                    width="96px"
+                                                />
+                                            </td>
+                                            <td className="py-3 text-right font-mono text-[10.5px] text-content-secondary">
                                                 {a.signals
                                                     ? Object.values(a.signals)
                                                           .filter(v => typeof v === "number")
@@ -153,32 +281,49 @@ export default function MemoryDetail() {
                                     ))}
                                 </tbody>
                             </table>
-                        </div>
+                        )}
                     </div>
                 </section>
 
-                {/* Version timeline */}
-                <aside className="sm-card p-6">
-                    <h3 className="text-[14px] font-semibold text-sm-text mb-5">Version Timeline</h3>
-                    <ol className="relative border-l-2 border-sm-border ml-2 space-y-5">
-                        {versions.map((v, i) => {
-                            const editor = CONTRIBUTORS.find(c => c.login === v.editor) || { name: v.editor, login: v.editor, avatarColor: "#4F7EFF" };
-                            return (
-                                <li key={i} className="pl-5 relative">
-                                    <span className="absolute -left-[9px] top-1 w-4 h-4 rounded-full border-2 border-sm-bg" style={{ background: editor.avatarColor }} />
-                                    <div className="flex items-center gap-2 mb-1">
-                                        <span className="font-mono text-[11px] text-sm-blue">v{v.v}</span>
-                                        <span className="font-mono text-[10.5px] text-sm-text-secondary">{relativeTime(v.at)}</span>
-                                    </div>
-                                    <div className="text-[12.5px] text-sm-text">@{editor.login}</div>
-                                    <div className="font-mono text-[11px] text-sm-text-secondary mt-0.5">{v.summary}</div>
-                                </li>
-                            );
-                        })}
-                    </ol>
+                <aside className="sm-card p-6 flex flex-col">
+                    <h2 className="text-title text-content mb-5">Version history</h2>
 
-                    <Button variant="outline" size="sm" className="w-full mt-6 bg-white/[0.03] border-sm-border text-sm-amber hover:bg-sm-amber/10" onClick={() => navigate("/conflicts")}>
-                        <AlertTriangle className="w-3.5 h-3.5" /> View Conflicts
+                    {versions.length === 0 ? (
+                        <EmptyState
+                            testId="versions-empty"
+                            icon={History}
+                            noun="earlier versions"
+                            description="Editing this memory creates a new version; the chain of edits and who made them will appear here."
+                        />
+                    ) : (
+                        <ol className="relative border-l border-hairline ml-2 space-y-5">
+                            {versions.map((v, i) => (
+                                <li key={i} className="pl-5 relative">
+                                    <span className="absolute -left-[4.5px] top-1.5 w-2 h-2 rounded-full bg-content-muted" />
+                                    <div className="flex items-center gap-2 mb-1">
+                                        <span className="font-mono text-[11px] text-brand">v{v.v ?? v.version}</span>
+                                        <span className="font-mono text-[10.5px] text-content-secondary">
+                                            {relativeTime(v.at ?? v.created_at)}
+                                        </span>
+                                    </div>
+                                    {v.editor && (
+                                        <div className="font-mono text-body text-content">@{v.editor}</div>
+                                    )}
+                                    {v.summary && (
+                                        <div className="text-body text-content-secondary mt-0.5">{v.summary}</div>
+                                    )}
+                                </li>
+                            ))}
+                        </ol>
+                    )}
+
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full mt-6 bg-white/[0.03] border-hairline text-content-secondary hover:text-content"
+                        onClick={() => navigate("/conflicts")}
+                    >
+                        <AlertTriangle className="w-3.5 h-3.5" /> View conflicts
                     </Button>
                 </aside>
             </div>

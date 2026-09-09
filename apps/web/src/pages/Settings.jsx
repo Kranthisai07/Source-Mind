@@ -1,277 +1,312 @@
 import React, { useEffect, useState } from "react";
-import { Copy, Eye, EyeOff, RotateCw, Trash2, UserPlus, Check } from "lucide-react";
-import TopBar from "../components/layout/TopBar";
-import ContributorAvatar from "../components/widgets/ContributorAvatar";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
+import { KeyRound, Trash2, UserPlus } from "lucide-react";
+import PageHeader from "../components/ui-kit/PageHeader";
+import EmptyState from "../components/ui-kit/EmptyState";
+import { Skeleton } from "../components/ui-kit/Skeleton";
 import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "../components/ui/dialog";
-import { toast } from "sonner";
 import api from "../lib/api";
-// WORKSPACE (mockData) was rendered here even in real mode, so the page
-// showed "Acme Platform / acme-platform / Pro" next to a REAL member list -
-// a partial migration, which reads as correct at a glance. The workspace is
-// now fetched; mock mode still works because mockApi.getWorkspace() returns
-// that same constant.
+import { formatDate } from "../lib/format";
 
-const API_KEY = "sm_live_4f7eff_a78bfa_34d399_b22c_k9qe2m3p6n8x1";
+/**
+ * Page 7, the final page of the Supermemory-console redesign.
+ *
+ * §4.13 is "stacked full-width cards, each a distinct concern ... Danger zone
+ * visually distinguished with a red section title and a red-outlined button".
+ * The tab strip is therefore gone: the reference's settings screen has no
+ * tabs, and four concerns split across four tabs hid the danger zone behind a
+ * click.
+ *
+ * §4.16 is the member table: MEMBER (avatar-less, name stacked over its
+ * secondary line) / ROLE / ACCESS / JOINED, with the count in a footer line
+ * and a primary Invite button in the page's top-right, outside the card.
+ *
+ * Verified against the real GET /v1/workspaces/{ws}/members. Every field the
+ * old page read was wrong, because the response nests the user:
+ *
+ *   [{ user: { id, display_name, avatar_url }, role, joined_at }]
+ *
+ *   m.id / m.name / m.login   -> undefined (they live under m.user)
+ *   m.email                   -> does not exist ANYWHERE; UserSummary carries
+ *                                only id, display_name, avatar_url
+ *   m.role                    -> 'admin', lowercase. The page compared against
+ *                                "Owner" and "Admin", so both branches were
+ *                                dead and every member got the fallback pill
+ *   m.role !== "Owner"        -> always true, so the DELETE button rendered on
+ *                                owners as well
+ *   key={m.id}                -> undefined for every row (duplicate React keys)
+ *
+ * `joined_at` was available and unused; §4.16 wants it, so it is now a column.
+ *
+ * Role is rendered as plain text, per §4.16 ("ROLE ('Owner')"), not as a
+ * coloured pill. That also removes the last sm-purple usage in the redesign
+ * scope and sidesteps WORKING_STANDARDS rule 9 entirely — there is no
+ * dynamically-constructed class left to mis-compile.
+ */
+
+// The four roles WorkspaceRole defines, and what each can do. Access is
+// derived from the role's documented semantics in models/workspace.py; the
+// API does not send an access field.
+const ACCESS_BY_ROLE = {
+    owner:  "Full",
+    admin:  "Manage",
+    member: "Edit",
+    viewer: "Read-only",
+};
 
 export default function Settings() {
-    const [members, setMembers] = useState([]);
+    const [members, setMembers] = useState(null);
     const [workspace, setWorkspace] = useState(null);
     const [wsName, setWsName] = useState("");
-    const [reveal, setReveal] = useState(false);
-    const [inviteOpen, setInviteOpen] = useState(false);
-    const [rotateOpen, setRotateOpen] = useState(false);
-    const [deleteOpen, setDeleteOpen] = useState(false);
-    const [confirmText, setConfirmText] = useState("");
 
-    useEffect(() => { api.listTeamMembers().then(r => setMembers(r.members)); }, []);
     useEffect(() => {
+        api.listTeamMembers()
+            .then(r => setMembers(Array.isArray(r?.members) ? r.members : []))
+            .catch(() => setMembers([]));
         api.getWorkspace()
             .then((w) => { setWorkspace(w); setWsName(w?.name ?? ""); })
             .catch(() => setWorkspace(null));
     }, []);
 
     const wsSlug = workspace?.slug ?? "";
-    // The real WorkspaceResponse carries no `plan` field - only mockApi does.
-    // Rendering a plan in real mode would mean inventing one.
-    const wsPlan = workspace?.plan ?? null;
+    const rows = members ?? [];
 
     return (
         <>
-            <TopBar
+            <PageHeader
                 title="Settings"
                 subtitle={
                     workspace
-                        ? `Manage ${workspace.name}${wsPlan ? ` · plan ${wsPlan}` : ""}`
-                        : "Loading workspace…"
+                        ? `Workspace, members and access for ${workspace.name}.`
+                        : "Workspace, members and access."
                 }
             />
-            <div className="flex-1 px-8 py-6">
-                <Tabs defaultValue="workspace" className="w-full">
-                    <TabsList className="bg-sm-surface border border-sm-border p-1 h-10 mb-6" data-testid="settings-tabs">
-                        <TabsTrigger value="workspace" data-testid="tab-workspace" className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">Workspace</TabsTrigger>
-                        <TabsTrigger value="team"      data-testid="tab-team"      className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">Team</TabsTrigger>
-                        <TabsTrigger value="api"       data-testid="tab-api"       className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">API Keys</TabsTrigger>
-                        <TabsTrigger value="danger"    data-testid="tab-danger"    className="data-[state=active]:bg-sm-red/15 data-[state=active]:text-sm-red text-sm-text-secondary">Danger Zone</TabsTrigger>
-                    </TabsList>
 
-                    {/* WORKSPACE */}
-                    <TabsContent value="workspace" className="mt-0">
-                        <section className="sm-card p-6 max-w-2xl">
-                            <h3 className="text-[15px] font-semibold text-sm-text mb-4">Workspace</h3>
-                            <div className="space-y-4">
-                                <Field label="Workspace name">
-                                    <Input data-testid="ws-name" value={wsName} onChange={(e) => setWsName(e.target.value)} className="bg-sm-bg/60 border-sm-border text-sm-text h-10" />
-                                </Field>
-                                <Field label="Workspace slug" hint="Read-only · used in URLs and API calls">
-                                    <div className="flex items-center gap-2 h-10 px-3 rounded-md bg-sm-bg/40 border border-sm-border">
-                                        <span className="font-mono text-[12.5px] text-sm-text-secondary">sourcemind.dev/</span>
-                                        <span className="font-mono text-[12.5px] text-sm-text">{wsSlug}</span>
-                                    </div>
-                                </Field>
-                                <Field label="Plan">
-                                    <div className="flex items-center gap-2">
-                                        <span className="font-mono text-[11px] font-semibold px-2 py-1 rounded-md bg-sm-blue/15 border border-sm-blue/30 text-sm-blue">
-                                            {wsPlan ? wsPlan.toUpperCase() : "NOT REPORTED BY API"}
-                                        </span>
-                                        <span className="text-[12.5px] text-sm-text-secondary">1,000 req/min · unlimited workspaces</span>
-                                    </div>
-                                </Field>
-                            </div>
-                            <div className="mt-6 pt-5 border-t border-sm-border">
-                                <Button data-testid="save-workspace" onClick={() => toast.success("Workspace saved")} className="bg-sm-blue hover:bg-sm-blue/90 text-white">Save changes</Button>
-                            </div>
-                        </section>
-                    </TabsContent>
+            {/* §4.13 — one card per concern, stacked full width. */}
+            <div className="space-y-4 max-w-3xl">
 
-                    {/* TEAM */}
-                    <TabsContent value="team" className="mt-0">
-                        <section className="sm-card p-6">
-                            <div className="flex items-center justify-between mb-5">
-                                <div>
-                                    <h3 className="text-[15px] font-semibold text-sm-text">Team Members</h3>
-                                    <p className="text-[12.5px] text-sm-text-secondary mt-0.5">{members.length} members in this workspace</p>
-                                </div>
-                                <Button data-testid="invite-btn" onClick={() => setInviteOpen(true)} className="bg-sm-blue hover:bg-sm-blue/90 text-white h-9">
-                                    <UserPlus className="w-4 h-4" /> Invite Member
-                                </Button>
-                            </div>
-                            <div className="space-y-2">
-                                {members.map((m) => (
-                                    <div key={m.id} data-testid={`member-${m.login}`} className="flex items-center gap-3 p-3 rounded-lg border border-sm-border bg-sm-bg/40">
-                                        <ContributorAvatar contributor={m} size={36} />
-                                        <div className="flex-1 min-w-0">
-                                            <div className="text-[13px] text-sm-text font-medium truncate">{m.name}</div>
-                                            <div className="font-mono text-[11px] text-sm-text-secondary truncate">{m.email}</div>
-                                        </div>
-                                        <span
-                                            className={`font-mono text-[10.5px] font-semibold px-2 py-0.5 rounded-md tracking-wider border ${
-                                                m.role === "Owner"  ? "bg-sm-purple/15 text-sm-purple border-sm-purple/30" :
-                                                m.role === "Admin"  ? "bg-sm-blue/15 text-sm-blue border-sm-blue/30" :
-                                                                      "bg-white/[0.04] text-sm-text-secondary border-sm-border"
-                                            }`}
-                                        >
-                                            {m.role.toUpperCase()}
-                                        </span>
-                                        {m.role !== "Owner" && (
-                                            <button className="w-8 h-8 rounded-md text-sm-text-muted hover:text-sm-red hover:bg-sm-red/10 flex items-center justify-center">
-                                                <Trash2 className="w-3.5 h-3.5" />
-                                            </button>
-                                        )}
-                                    </div>
-                                ))}
-                            </div>
-                        </section>
-                    </TabsContent>
+                {/* ── Workspace ─────────────────────────────────────────── */}
+                <section className="sm-card p-6">
+                    <h2 className="text-title text-content mb-1">Workspace</h2>
+                    <p className="text-body text-content-secondary mb-5">
+                        Identity of this workspace across the product and the API.
+                    </p>
 
-                    {/* API */}
-                    <TabsContent value="api" className="mt-0">
-                        <section className="sm-card p-6 max-w-2xl">
-                            <h3 className="text-[15px] font-semibold text-sm-text mb-4">API Keys</h3>
-                            <Field label="Your API Key" hint="Use for server-to-server integrations. Rotate if compromised.">
-                                <div className="flex items-center gap-2">
-                                    <div className="flex-1 h-10 px-3 rounded-md bg-sm-bg/40 border border-sm-border flex items-center font-mono text-[12px] text-sm-text">
-                                        {reveal ? API_KEY : API_KEY.replace(/./g, "•").slice(0, API_KEY.length)}
-                                    </div>
-                                    <button
-                                        data-testid="reveal-key"
-                                        onClick={() => setReveal(v => !v)}
-                                        className="h-10 w-10 rounded-md border border-sm-border bg-sm-bg/40 text-sm-text-secondary hover:text-sm-text flex items-center justify-center"
-                                        title={reveal ? "Hide" : "Reveal"}
-                                    >
-                                        {reveal ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                                    </button>
-                                    <button
-                                        data-testid="copy-key"
-                                        onClick={async () => {
-                                            try {
-                                                await navigator.clipboard.writeText(API_KEY);
-                                                toast.success("Copied to clipboard");
-                                            } catch {
-                                                toast.error("Clipboard not available", { description: "Select and copy the key manually." });
-                                            }
-                                        }}
-                                        className="h-10 w-10 rounded-md border border-sm-border bg-sm-bg/40 text-sm-text-secondary hover:text-sm-text flex items-center justify-center"
-                                    >
-                                        <Copy className="w-4 h-4" />
-                                    </button>
-                                </div>
-                            </Field>
-                            <div className="mt-6 pt-5 border-t border-sm-border">
-                                <Button
-                                    data-testid="rotate-key"
-                                    onClick={() => setRotateOpen(true)}
-                                    className="bg-sm-amber/15 hover:bg-sm-amber/25 text-sm-amber border border-sm-amber/30"
-                                >
-                                    <RotateCw className="w-4 h-4" /> Rotate key
-                                </Button>
-                                <p className="text-[11.5px] text-sm-text-secondary mt-2">
-                                    Rotating will invalidate the current key immediately. Update any active integrations.
-                                </p>
+                    <div className="space-y-4">
+                        <div>
+                            <label htmlFor="ws-name" className="sm-micro-label block mb-2">Name</label>
+                            <Input
+                                id="ws-name"
+                                data-testid="ws-name"
+                                value={wsName}
+                                onChange={(e) => setWsName(e.target.value)}
+                                disabled
+                                className="bg-surface-page border-hairline text-content h-10 disabled:opacity-70"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="sm-micro-label block mb-2">Slug</label>
+                            {/* §3: a slug is a technical identifier → mono. The
+                                old field prefixed a hardcoded "sourcemind.dev/"
+                                that is not this deployment's domain. */}
+                            <div className="flex items-center h-10 px-3 rounded-md bg-surface-page border border-hairline">
+                                {workspace === null ? (
+                                    <Skeleton className="h-[1em] w-40" />
+                                ) : (
+                                    <span className="font-mono text-body text-content select-all">
+                                        {wsSlug || "—"}
+                                    </span>
+                                )}
                             </div>
-                        </section>
-                    </TabsContent>
-
-                    {/* DANGER */}
-                    <TabsContent value="danger" className="mt-0">
-                        <section className="rounded-xl border border-sm-red/40 bg-sm-red/5 p-6 max-w-2xl">
-                            <h3 className="text-[15px] font-semibold text-sm-red mb-2">Delete Workspace</h3>
-                            <p className="text-[13px] text-sm-text-secondary mb-4">
-                                Permanently delete <span className="font-mono text-sm-text">{wsSlug}</span>, all memories, conflicts, and connectors.
-                                This action cannot be undone.
-                            </p>
-                            <Button
-                                data-testid="delete-workspace-btn"
-                                onClick={() => setDeleteOpen(true)}
-                                className="bg-sm-red hover:bg-sm-red/90 text-white"
-                            >
-                                <Trash2 className="w-4 h-4" /> Delete Workspace
-                            </Button>
-                        </section>
-                    </TabsContent>
-                </Tabs>
-            </div>
-
-            {/* Invite modal */}
-            <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
-                <DialogContent className="bg-sm-surface border border-sm-border text-sm-text" data-testid="invite-modal">
-                    <DialogHeader>
-                        <DialogTitle className="text-sm-text">Invite a team member</DialogTitle>
-                        <DialogDescription className="text-sm-text-secondary">They'll get an email invite with a link to join this workspace.</DialogDescription>
-                    </DialogHeader>
-                    <div className="space-y-3 mt-2">
-                        <Input placeholder="teammate@company.dev" className="bg-sm-bg/60 border-sm-border text-sm-text h-10" />
-                        <Select defaultValue="Member">
-                            <SelectTrigger className="bg-sm-bg/60 border-sm-border text-sm-text"><SelectValue /></SelectTrigger>
-                            <SelectContent className="bg-sm-surface border-sm-border">
-                                <SelectItem value="Admin"  className="focus:bg-white/5 focus:text-sm-text">Admin</SelectItem>
-                                <SelectItem value="Member" className="focus:bg-white/5 focus:text-sm-text">Member</SelectItem>
-                            </SelectContent>
-                        </Select>
+                        </div>
                     </div>
-                    <DialogFooter>
-                        <Button onClick={() => setInviteOpen(false)} variant="outline" className="bg-white/[0.03] border-sm-border text-sm-text hover:bg-white/[0.06]">Cancel</Button>
-                        <Button onClick={() => { setInviteOpen(false); toast.success("Invite sent"); }} className="bg-sm-blue hover:bg-sm-blue/90 text-white">
-                            <Check className="w-4 h-4" /> Send invite
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
 
-            {/* Rotate modal */}
-            <Dialog open={rotateOpen} onOpenChange={setRotateOpen}>
-                <DialogContent className="bg-sm-surface border border-sm-border text-sm-text">
-                    <DialogHeader>
-                        <DialogTitle className="text-sm-amber">Rotate API key?</DialogTitle>
-                        <DialogDescription className="text-sm-text-secondary">The current key will be invalidated immediately.</DialogDescription>
-                    </DialogHeader>
-                    <DialogFooter>
-                        <Button onClick={() => setRotateOpen(false)} variant="outline" className="bg-white/[0.03] border-sm-border text-sm-text hover:bg-white/[0.06]">Cancel</Button>
-                        <Button onClick={() => { setRotateOpen(false); toast.success("Key rotated"); }} className="bg-sm-amber hover:bg-sm-amber/90 text-white">Rotate now</Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
-
-            {/* Delete modal */}
-            <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-                <DialogContent className="bg-sm-surface border border-sm-red/40 text-sm-text">
-                    <DialogHeader>
-                        <DialogTitle className="text-sm-red">Delete workspace?</DialogTitle>
-                        <DialogDescription className="text-sm-text-secondary">
-                            Type <span className="font-mono text-sm-text">{wsSlug}</span> to confirm.
-                        </DialogDescription>
-                    </DialogHeader>
-                    <Input
-                        data-testid="delete-confirm"
-                        value={confirmText}
-                        onChange={(e) => setConfirmText(e.target.value)}
-                        className="bg-sm-bg/60 border-sm-border text-sm-text font-mono h-10"
-                    />
-                    <DialogFooter>
-                        <Button onClick={() => setDeleteOpen(false)} variant="outline" className="bg-white/[0.03] border-sm-border text-sm-text hover:bg-white/[0.06]">Cancel</Button>
+                    {/* No PATCH /v1/workspaces/{id} route exists, so "Save
+                        changes" could only ever fire a success toast over a
+                        request that was never made. Disabled rather than
+                        left as a convincing no-op. */}
+                    <div className="mt-6 pt-5 border-t border-hairline flex items-center gap-3">
                         <Button
-                            disabled={confirmText !== wsSlug}
-                            onClick={() => { setDeleteOpen(false); toast.error("Workspace deleted (demo)", { description: "In production, this would queue a 30-day soft delete." }); setConfirmText(""); }}
-                            className="bg-sm-red hover:bg-sm-red/90 text-white disabled:opacity-40"
+                            data-testid="save-workspace"
+                            disabled
+                            className="bg-brand-fill text-white disabled:opacity-40"
                         >
-                            Delete permanently
+                            Save changes
                         </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
-        </>
-    );
-}
+                        <p className="text-[11px] text-content-muted">
+                            Editing a workspace isn't exposed by the API yet.
+                        </p>
+                    </div>
+                </section>
 
-function Field({ label, hint, children }) {
-    return (
-        <div>
-            <label className="block text-[12px] text-sm-text-secondary mb-2 font-medium">{label}</label>
-            {children}
-            {hint && <p className="text-[11.5px] text-sm-text-muted mt-1.5">{hint}</p>}
-        </div>
+                {/* ── Members — §4.16 ───────────────────────────────────── */}
+                <section>
+                    <div className="flex items-center justify-between gap-4 mb-3">
+                        <h2 className="text-title text-content">Members</h2>
+                        {/* §4.16: primary button top-right, OUTSIDE the card. */}
+                        <Button
+                            data-testid="invite-btn"
+                            disabled
+                            title="No invite endpoint exists yet"
+                            className="h-9 bg-brand-fill text-white disabled:opacity-40"
+                        >
+                            <UserPlus className="w-4 h-4" /> Invite member
+                        </Button>
+                    </div>
+
+                    <div className="sm-card p-6">
+                        {members === null ? (
+                            <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading members">
+                                {Array.from({ length: 2 }).map((_, i) => (
+                                    <Skeleton key={i} className="h-tablerow w-full" />
+                                ))}
+                                <span className="sr-only">Loading members…</span>
+                            </div>
+                        ) : rows.length === 0 ? (
+                            <EmptyState
+                                testId="members-empty"
+                                icon={UserPlus}
+                                noun="members"
+                                description="Everyone with access to this workspace will be listed here."
+                            />
+                        ) : (
+                            <>
+                                <table className="w-full">
+                                    <thead>
+                                        <tr className="text-left border-b border-hairline">
+                                            <th className="sm-micro-label font-semibold pb-2">Member</th>
+                                            <th className="sm-micro-label font-semibold pb-2">Role</th>
+                                            <th className="sm-micro-label font-semibold pb-2">Access</th>
+                                            <th className="sm-micro-label font-semibold pb-2 text-right">Joined</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {rows.map((m, i) => {
+                                            // The user is NESTED. Reading m.name
+                                            // or m.email off the row gives
+                                            // undefined — m.email does not exist
+                                            // at any level.
+                                            const u = m?.user ?? {};
+                                            const role = (m?.role || "").toLowerCase();
+                                            return (
+                                                <tr
+                                                    key={u.id || i}
+                                                    data-testid={`member-${u.id || i}`}
+                                                    className="border-b border-hairline last:border-0"
+                                                >
+                                                    {/* §4.16: avatar-less, name
+                                                        stacked over its
+                                                        secondary line. The
+                                                        reference stacks an
+                                                        email; this API carries
+                                                        none, so the user id —
+                                                        the only other identifier
+                                                        it returns — takes that
+                                                        line, in mono per §3. */}
+                                                    <td className="py-3.5 pr-4">
+                                                        <div className="text-body text-content truncate">
+                                                            {u.display_name || "Unnamed user"}
+                                                        </div>
+                                                        <div className="font-mono text-[10.5px] text-content-secondary truncate">
+                                                            {u.id || "—"}
+                                                        </div>
+                                                    </td>
+                                                    <td className="py-3.5 pr-4 text-body text-content capitalize">
+                                                        {role || "—"}
+                                                    </td>
+                                                    <td className="py-3.5 pr-4 text-body text-content-secondary">
+                                                        {ACCESS_BY_ROLE[role] || "—"}
+                                                    </td>
+                                                    <td className="py-3.5 text-right font-mono text-[11px] text-content-secondary">
+                                                        {m?.joined_at ? formatDate(m.joined_at) : "—"}
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+
+                                {/* §4.16 footer line. The reference's right-hand
+                                    "1/1 seats used" is seat/plan messaging,
+                                    excluded from scope. */}
+                                <div className="flex items-center justify-between mt-4 pt-3 border-t border-hairline">
+                                    <span className="font-mono text-[11px] text-content-secondary">
+                                        {rows.length} member{rows.length === 1 ? "" : "s"}
+                                    </span>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </section>
+
+                {/* ── API keys ──────────────────────────────────────────── */}
+                <section className="sm-card p-6">
+                    <h2 className="text-title text-content mb-1">API keys</h2>
+                    <p className="text-body text-content-secondary mb-5">
+                        Keys for server-to-server access to this workspace.
+                    </p>
+
+                    {/*
+                      REMOVED: a hardcoded constant
+                      "sm_live_4f7eff_a78bfa_34d399_b22c_k9qe2m3p6n8x1", rendered
+                      in a credential field with a reveal toggle and a
+                      copy-to-clipboard button, plus a "Rotate key" flow that
+                      only fired a success toast.
+
+                      It was not a real key and could never become one — there
+                      is no API-key route anywhere in the backend. A fake
+                      credential that presents as live is worse than an absent
+                      one: it invites someone to copy it into an integration, or
+                      to treat a leaked-looking `sm_live_` string as a real
+                      secret. Replaced with the §5 template stating the truth.
+                    */}
+                    <EmptyState
+                        testId="api-keys-empty"
+                        icon={KeyRound}
+                        noun="API keys"
+                        description="Key issuance isn't available yet — the backend exposes no API-key endpoints. Requests are authenticated with a Clerk session token."
+                    />
+                </section>
+
+                {/* ── Danger zone — §4.13 ───────────────────────────────── */}
+                <section
+                    data-testid="danger-zone"
+                    className="rounded-card border p-6"
+                    style={{
+                        borderColor: "var(--c-status-danger-border)",
+                        background: "var(--c-status-danger-subtle)",
+                    }}
+                >
+                    {/* §4.13: "visually distinguished with a red section title
+                        and a red-outlined button". */}
+                    <h2 className="text-title text-danger mb-1">Danger zone</h2>
+                    <p className="text-body text-content-secondary mb-5">
+                        Permanently delete{" "}
+                        <span className="font-mono text-content">{wsSlug || "this workspace"}</span>
+                        {" "}and every memory, conflict and connector in it. This cannot be undone.
+                    </p>
+
+                    {/* The delete flow previously ended in
+                        toast.error("Workspace deleted (demo)") — a confirmation
+                        that nothing had happened, behind a type-the-slug
+                        confirmation that made it look real. There is no
+                        DELETE /v1/workspaces/{id} route, so the control is
+                        disabled and says so. */}
+                    <Button
+                        data-testid="delete-workspace-btn"
+                        disabled
+                        title="No workspace-deletion endpoint exists yet"
+                        className="bg-transparent border text-danger disabled:opacity-50"
+                        style={{ borderColor: "var(--c-status-danger-border)" }}
+                    >
+                        <Trash2 className="w-4 h-4" /> Delete workspace
+                    </Button>
+                    <p className="text-[11px] text-content-muted mt-2">
+                        Workspace deletion isn't exposed by the API yet.
+                    </p>
+                </section>
+            </div>
+        </>
     );
 }
