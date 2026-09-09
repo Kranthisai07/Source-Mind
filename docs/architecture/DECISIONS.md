@@ -960,6 +960,179 @@ rows. The 44 non-current rows were all written 2026-09-03, inside eval run 4's
 own ingestion window.
 
 
+## D-008 — Frontend redesign to the Supermemory console reference, and the seven bugs it exposed
+
+**Status:** Done (2026-09-08). All seven in-scope pages migrated and verified
+against the real API. Frontend suite and production build clean; see "Final
+state" for why the backend figure from that session is not a clean signal for
+this work.
+
+### What this was, and what it turned out to be
+
+The brief was a pure visual/UX redesign: match a verified UI/UX audit of
+Supermemory's console, change no API call, no routing, no Clerk integration.
+Seven pages — Dashboard, MemoryDetail, Memories, Analytics, Conflicts, Handoff,
+Settings — each with a checkpoint.
+
+It did not stay a visual exercise. **Every single one of the seven pages was
+reading at least one field the API does not return.** Not one of those bugs was
+found by reading code; each came from checking a live response before writing
+the replacement. That pattern is now WORKING_STANDARDS rule 7, and this entry
+is the evidence behind it.
+
+| page | what it read | what the API returns | effect |
+|---|---|---|---|
+| MemoryDetail | `mem.tags.map()` | `tags` is null | **crashed on 6 of 6 real memories** |
+| MemoryDetail | `mem.memory_id` | `id` | blank H1 |
+| Memories | result item as the memory | `{memory, score, rank, match_type}` wrapper | **a successful search crashed the page**; an empty one rendered fine |
+| Memories | `r.__latency_ms` | `latency_ms` | rendered `undefinedms` |
+| Memories | `m.memory_id` for links | `id` | every result linked to `/memories/undefined` |
+| Analytics | `g.affected_count` | `affected_memories` | blank number |
+| Analytics | `g.recommended_action` | `recommendation` | whole recommendation line empty |
+| Analytics | `risk_level === "HIGH"` | `"high"` | **every risk filter returned zero** |
+| Conflicts | `status=all` query param | `if conflict_status:` matches literal `'all'` | **list returned zero unconditionally** |
+| Conflicts | `c.contributors.map()` | field does not exist | crashes on the first conflict |
+| Conflicts | `accept_a`/`merge`/`defer`… | `kept_a`/`kept_b`/`merged`/`split`/`deferred` | **all five resolve buttons 500'd** |
+| Handoff | `handoff.tier`, `total_memories` | `tier_1/2/3_count` | empty badge, blank stat |
+| Handoff | `STATUS_ORDER` of initiated/assigned/complete | `in_progress`/`completed` | **progress bar stuck at 0/3 forever** |
+| Settings | `m.name`, `m.email`, `m.role === "Owner"` | nested `m.user`, no email at all, lowercase role | no names, dead branches, **delete button on owners** |
+
+Two of these are worth singling out because they are the same shape as the
+D-007 isolation bug — a screen that looks correct precisely because it is
+broken:
+
+- **Conflicts returned zero unconditionally.** `"all"` is a UI-only sentinel;
+  the route treats any truthy status as a literal filter. The page rendered a
+  perfectly good empty state, forever, whatever the data said. Building a new
+  §5 empty state on top of that would have made it more convincing, not more
+  correct.
+- **Memories crashed only on success.** An empty result set rendered fine,
+  which is exactly what every prior round of testing had exercised.
+
+### The design system
+
+Three layers, in `apps/web/src/styles/tokens.css` and `tailwind.config.js`:
+primitive (raw values, single source in a JS object) → semantic (roles) →
+component (the reference's literal measurements). Every token is tagged
+`[SPEC]` or `[DERIVED]`, because the audit gives exact dimensions but only
+qualitative colour language — "roughly a very dark charcoal", "a single
+saturated blue". Recording which numbers came from the document and which were
+derived stops a later reader treating an inference as a citation.
+
+The committed palette was kept as the primitive layer rather than regenerated.
+It already satisfied §2's description, and the vendored ui-ux-pro-max skill
+explicitly says not to overwrite it.
+
+**Two accessibility failures, found by measuring rather than eyeballing:**
+
+| | before | after |
+|---|---|---|
+| white on the primary button | 3.65:1, fails AA | **4.63:1** via a deeper blue for solid fills only |
+| micro-labels and table headers | 2.20:1, fails even the 3.0 non-text floor | **5.44:1** |
+
+The accent stays `#4F7EFF` for links, active nav and bars (5.42:1); only the
+fill step changed, so §2's single accent is intact.
+
+**A collision caught before it shipped:** the semantic accent was initially
+named `accent`, which is the key shadcn's 46 vendored components use for
+neutral hover and focus surfaces. Every dropdown item would have turned blue.
+Renamed to `brand`, and `.bg-accent` verified to still resolve to
+`hsl(var(--accent))` in the built CSS.
+
+### Colour discipline (§2)
+
+The reference permits exactly one accent hue, with green and red reserved for
+meaning. The old UI had a decorative 8-hue contributor palette, a 5-hue tag
+hash, a blue→purple logo gradient, four differently-coloured health bars, four
+differently-coloured stat cards, and a Treemap filled per contributor. All
+removed: quantitative series now step one hue by opacity through
+`--c-data-1..4`, and colour appears only where it carries meaning.
+
+One deliberate deviation: **amber survives as a single `warning` token**. The
+reference names only green and red, but conflict severity is
+`low | medium | critical`, and collapsing medium into grey or red destroys a
+distinction the data actually carries. It is used nowhere decoratively.
+
+`severityColor()` was itself wrong: it mapped `high → red`, but the DB
+constrains severity to `low|medium|critical`, so that branch was dead code and
+`critical` — the most severe tier — fell through to the neutral grey default.
+
+### Fabricated data removed
+
+Three things presented invented content as fact:
+
+- **Analytics** rendered two time-series charts from `mockApi` while in real
+  mode, beside 1167 real memories. The page now asks the exported `useMocks`
+  flag and shows the §5 template naming the missing endpoint.
+- **Settings** shipped `sm_live_4f7eff_…` in a credential field with a reveal
+  toggle and a copy button, plus a "Rotate key" flow that only fired a toast.
+  There are no API-key routes anywhere in the backend. Removed rather than
+  labelled: a `sm_live_`-shaped string with a copy button invites someone to
+  paste it into an integration, or to treat its leak as a real incident.
+- Hardcoded `"↑ 6 pts vs last month"`, `"last edited 2d ago"`, and
+  `"1,000 req/min"` — all deleted.
+
+Controls that could not work are now disabled with the reason visible rather
+than left as convincing no-ops: Save workspace, Invite member, Delete workspace
+(previously behind a type-the-slug confirmation ending in
+`toast.error("Workspace deleted (demo)")`), Assign/Complete on handoffs, and
+the three conflict resolutions needing payload fields the client never sends.
+
+### Verification, and one thing that could not be verified
+
+Every page was checked against a live response, and where the corpus was empty
+the populated path was created rather than skipped: a real conflict and a real
+handoff record were each inserted into a disposable workspace, read back
+through the API, and torn down. That is what caught the Conflicts and Handoff
+field mismatches, neither of which is reachable from an empty list.
+
+Mid-way through, **the machine's clock drifted 26 minutes behind**, which makes
+every Clerk token fail `nbf` validation — its 60-second validity window sits
+entirely in the local clock's future, so no retry can ever succeed. The
+remaining verification ran against a second API instance started with
+`CLERK_SECRET_KEY=''` to reach the development auth bypass. Worth recording as
+a diagnosis: a sudden wall of `SM001 / token is not yet valid` against a local
+API is a clock problem, not an auth problem. `w32time` was stopped and could
+not be restarted without elevation.
+
+**Not verified: the visual result.** There is no browser automation in this
+environment, and the clock skew blocks a manual browser session against the
+local API. Everything in this entry was confirmed through the API, the built
+CSS bundle, the test suites and the build — the rendering itself has not been
+seen.
+
+### Final state
+
+Frontend 5/5 passing. Production build clean, and about 11 kB smaller, almost
+entirely Recharts' `PieChart` and `Treemap` no longer being imported after
+§4.5 replaced both gauges with inline number-plus-bar cells. Those two are
+clean measurements of this work: nothing outside `apps/web/` was touched.
+
+The backend suite was also run and reported 408 passed / 12 skipped / 0
+failed, but that figure is **not** a clean signal for this entry and should
+not be read as one. A second agent was working in the same tree on
+security-foundation changes at the time, and `core/config.py`,
+`core/dependencies.py` and `core/rate_limit.py` were already modified when
+that run started; `tests/conftest.py` changed again afterwards. The run
+therefore measured a mixture, and no longer describes the tree as it stands.
+The redesign touches no backend file, so the relevant evidence here is the
+frontend suite, the build, and the per-page API verification above.
+
+### Still open
+
+- `Connectors.jsx` was not in the seven-page scope and still imports the
+  `TopBar` shim, which is why that shim survives.
+- `AuthPage.jsx` and `Landing.jsx` are out of scope and still carry the
+  blue→purple gradient, which is why the deprecated `sm-purple` token cannot
+  be deleted yet.
+- Version history on MemoryDetail is permanently empty: the chain lives at
+  `/v1/memories/{id}/versions`, which `realApi` does not call. Rendered as a
+  §5 empty state rather than wired, since that is a data-layer change.
+- Resolution notes on ConflictDetail are not persisted — the client sends
+  `note` where the API expects `resolution_note`, so Pydantic drops it. The
+  field is disabled and says so.
+
+
 ## Deferred — not done, with reasons
 
 ### Option 2 — query-adaptive fusion weighting
