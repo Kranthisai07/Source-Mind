@@ -42,9 +42,9 @@ WORKSPACE_SLUG = "production"
 
 def connect():
     settings = get_settings()
-    url = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
+    url = settings.sync_database_url.replace("postgresql+psycopg2://", "postgresql://")
     host = url.split("@")[1] if "@" in url else url
-    needs_ssl = "ssl=require" in url or ".railway.internal" not in url
+    needs_ssl = settings.requires_ssl
     print(f"target: {host}  (sslmode={'require' if needs_ssl else 'disabled'})")
     kwargs = {"connect_timeout": 10}
     if needs_ssl:

@@ -159,6 +159,7 @@ async def create_workspace(
     workspace = Workspace(
         id=workspace_id,
         organization_id=org.id,
+        created_by_user_id=current_user.user_id,
         name=body.name,
         slug=body.slug,
         description=body.description,

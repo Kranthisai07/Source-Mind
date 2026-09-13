@@ -7,7 +7,9 @@ All secrets come from environment — never hardcoded.
 
 from enum import StrEnum
 from functools import lru_cache
+from ipaddress import ip_address
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -130,10 +132,18 @@ class Settings(BaseSettings):
         against a *.railway.internal host fails with "server does not support
         SSL". Everything else — public proxies, Supabase — does require it.
         """
-        return (
-            "ssl=require" in self.database_url
-            or ".railway.internal" not in self.database_url
-        )
+        if "ssl=require" in self.database_url or "sslmode=require" in self.database_url:
+            return True
+
+        hostname = urlsplit(self.database_url).hostname
+        if hostname is None or hostname.endswith(".railway.internal"):
+            return False
+        if hostname == "localhost":
+            return False
+        try:
+            return not ip_address(hostname).is_loopback
+        except ValueError:
+            return True
     database_pool_size: int = 20
     database_max_overflow: int = 10
     database_pool_timeout: int = 30

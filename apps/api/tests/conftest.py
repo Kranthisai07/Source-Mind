@@ -31,9 +31,24 @@ def _pg_ctl_available() -> bool:
     return shutil.which("pg_ctl") is not None
 
 
+def _disposable_database_configured() -> bool:
+    if os.getenv("SECURITY_TEST_ALLOW_DISPOSABLE") != "1":
+        return False
+    url = os.getenv("TEST_DATABASE_URL", "")
+    if not url:
+        return False
+    parsed = make_url(url)
+    return (
+        parsed.host in {"127.0.0.1", "localhost"}
+        and parsed.port == 55432
+        and parsed.username == "sourcemind_test"
+        and parsed.database == "sourcemind_security_test"
+    )
+
+
 pg_available = pytest.mark.skipif(
-    not _pg_ctl_available(),
-    reason="pg_ctl not found on PATH. Install PostgreSQL or add it to PATH to run real-DB tests.",
+    not (_pg_ctl_available() or _disposable_database_configured()),
+    reason="requires pg_ctl or the explicitly opted-in disposable PostgreSQL",
 )
 
 
@@ -141,15 +156,33 @@ async def test_org(db_session: AsyncSession):
 
 
 @pytest_asyncio.fixture
-async def test_workspace(db_session: AsyncSession, test_org):
+async def test_workspace(db_session: AsyncSession, test_org, test_user):
     """Insert and return a real Workspace row attached to test_org."""
-    from sourcemind.models.workspace import Workspace
+    from sourcemind.core.database import (
+        set_rls_user_context,
+        set_rls_workspace_context,
+    )
+    from sourcemind.models.workspace import Workspace, WorkspaceMember
+
+    workspace_id = uuid.uuid4()
+    await set_rls_user_context(db_session, test_user.id)
+    await set_rls_workspace_context(db_session, workspace_id)
     ws = Workspace(
+        id=workspace_id,
         organization_id=test_org.id,
+        created_by_user_id=test_user.id,
         name="Test Workspace",
         slug=_slug("test-ws"),
     )
     db_session.add(ws)
+    await db_session.flush()
+    db_session.add(
+        WorkspaceMember(
+            workspace_id=ws.id,
+            user_id=test_user.id,
+            role="owner",
+        )
+    )
     await db_session.flush()
     return ws
 
@@ -167,7 +200,7 @@ async def test_user(db_session: AsyncSession):
     suffix = uuid.uuid4().hex[:12]
     user = User(
         clerk_id=f"clerk-test-{suffix}",
-        email=f"test-{suffix}@test.local",
+        email=f"test-{suffix}@example.com",
         display_name="Test User",
     )
     db_session.add(user)

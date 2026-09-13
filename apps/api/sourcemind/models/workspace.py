@@ -62,6 +62,13 @@ class Workspace(Base, TimestampMixin, SoftDeleteMixin):
         index=True,
         comment="Parent organization",
     )
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="Principal that created the workspace for secure owner bootstrap",
+    )
     name: Mapped[str] = mapped_column(
         String(255),
         nullable=False,

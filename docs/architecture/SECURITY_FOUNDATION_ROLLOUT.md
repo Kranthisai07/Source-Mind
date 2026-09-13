@@ -1,9 +1,10 @@
 # Security Foundation Rollout
 
-**Status:** implemented locally on 2026-09-09. Do not call this production
-verified until the disposable PostgreSQL test and the production caller matrix
-below both pass. No live database, Slack workspace, customer data, or paid API
-was used while implementing this change.
+**Status:** local verification expanded on 2026-09-13. The 0007 migration,
+disposable PostgreSQL RLS coverage, signed authorization/revocation acceptance,
+Redis acceptance, and unit suite have passed locally. This is not production
+verification: no production database, Railway service, Slack workspace, customer
+data, paid API, deployment, or push was used.
 
 ## Implementation map
 
@@ -14,7 +15,7 @@ was used while implementing this change.
 | Membership revocation | `apps/api/sourcemind/api/v1/workspaces.py::revoke_workspace_member` |
 | Route enforcement | `apps/api/sourcemind/api/v1/{analytics,conflicts,connectors,memories,search,team,workspaces}.py` |
 | Transaction RLS context | `apps/api/sourcemind/core/database.py::set_rls_user_context`, `set_rls_workspace_context` |
-| RLS policy migration | `apps/api/alembic/versions/20260908_0006_security_foundation.py` |
+| RLS policy migrations | `apps/api/alembic/versions/20260908_0006_security_foundation.py`, `apps/api/alembic/versions/20260909_0007_rls_context_hardening.py` |
 | Queued reauthorization | `apps/api/sourcemind/workers/ingestion.py`, `connector_tasks.py` |
 | Slack identity and transport | `apps/api/sourcemind/services/slack/bot.py`, `apps/api/sourcemind/api/v1/slack.py` |
 | URL SSRF boundary | `apps/api/sourcemind/core/url_security.py`, `apps/api/sourcemind/services/ingestion/{receiver,extractor}.py` |
@@ -124,9 +125,13 @@ The default posture is fail closed when Redis is unavailable:
 
 ## Disposable verification
 
-This procedure accepts only the exact local runtime target
-`sourcemind_test@127.0.0.1:55432/sourcemind_security_test`. The database and
-Redis data directories are tmpfs. Never substitute a live URL.
+Only use a disposable, locally verified runtime target. Never substitute a live
+URL, a Railway URL, or an ordinary development service.
+
+`infra/docker-compose.security-test.yml` is the CI topology: PostgreSQL is
+published only at `127.0.0.1:55432`, Redis only at `127.0.0.1:56379`, and both
+are ephemeral. CI must inject the database credentials instead of copying
+credentials from a workstation.
 
 ```powershell
 docker compose -f infra/docker-compose.security-test.yml up -d --wait
@@ -135,17 +140,60 @@ Push-Location apps/api
 $env:ENVIRONMENT = 'development'
 $env:DEBUG = 'false'
 $env:AUTH_DEV_BYPASS_ENABLED = 'true'
-$env:DATABASE_URL = 'postgresql+asyncpg://sourcemind_owner:sourcemind_owner@127.0.0.1:55432/sourcemind_security_test'
-& .\.venv\Scripts\alembic.exe upgrade head
-
 $env:SECURITY_TEST_ALLOW_DISPOSABLE = '1'
-$env:TEST_DATABASE_URL = 'postgresql+asyncpg://sourcemind_test:sourcemind_test@127.0.0.1:55432/sourcemind_security_test'
+$env:TEST_DATABASE_URL = $env:SECURITY_TEST_DATABASE_URL
+$env:DATABASE_URL = $env:TEST_DATABASE_URL
 $env:REDIS_URL = 'redis://127.0.0.1:56379/15'
-& .\.venv\Scripts\python.exe -m pytest tests/integration/test_security_foundation_real_db.py -o addopts='' -q
+
+& .\.venv\Scripts\python.exe -u -m pytest tests/integration/test_security_foundation_real_db.py -o addopts='' -q
+& .\.venv\Scripts\python.exe -u -m pytest tests/integration/test_security_acceptance_real_services.py::test_real_redis_counters_scopes_expiry_sharing_and_fail_closed -o addopts='' -q
+& .\.venv\Scripts\python.exe -u -m pytest tests/integration/test_security_acceptance_real_services.py::test_signed_api_role_matrix_revocation_and_worker_reauthorization -o addopts='' -q
 Pop-Location
 
 docker compose -f infra/docker-compose.security-test.yml down -v
 ```
+
+Before any test, verify that the PostgreSQL runtime role is
+`NOSUPERUSER NOBYPASSRLS`, does not own protected tables, and points to the
+expected disposable database. Verify Redis is the intended local database
+number. Port numbers alone are not identity proof.
+
+### Recorded WSL verification environment
+
+The successful 2026-09-13 run used a native-Windows Python client with the
+services already running in Ubuntu WSL. PostgreSQL listened on
+`127.0.0.1:55432`, with its ephemeral data directory at
+`/tmp/sourcemind-security-acceptance-e8af933/pgdata` and local admin socket at
+`/tmp/sourcemind-security-acceptance-e8af933/socket`. Redis listened on
+`127.0.0.1:56379`, database `15`. This is recorded runtime evidence, not a
+portable path requirement; revalidate the target and role identity for every
+run.
+
+The current WSL cluster did not accept the static owner/bootstrap passwords in
+the compose fixture. That was a local configuration mismatch, not a platform
+restriction. Credentials are intentionally not recorded here. Fresh and
+populated migration verification therefore used the existing WSL PostgreSQL
+admin socket, created only named throwaway databases, installed the required
+extensions there, rendered Alembic SQL offline with `PYTHONUTF8=1` and
+`PYTHONIOENCODING=utf-8`, and applied it after `SET ROLE sourcemind_owner`.
+Do not treat that local admin path as an API/worker runtime configuration.
+
+### Migration acceptance contract
+
+Run these checks only on newly created disposable databases:
+
+1. **Fresh:** create the required PostgreSQL extensions, apply head, and assert
+   Alembic revision `20260909_0007`, the creator column, the bootstrap/access
+   grant tables, and forced RLS ownership.
+2. **Populated:** apply through `20260908_0006`, create one active owner,
+   organization, and workspace, then apply `0007`. Assert the creator is
+   backfilled, one active bootstrap/access grant has the owner role, RLS is
+   forced, and the runtime role has no direct select privilege on the internal
+   access-grant table.
+
+`0007` makes membership/access grants, rather than a caller-supplied workspace
+context alone, the authority for workspace and member visibility. The
+transaction-local context remains a scope constraint and is not authority.
 
 The populated test creates:
 
@@ -155,9 +203,7 @@ The populated test creates:
 4. A revocation of caller A after the authorized read.
 
 Required result: A sees the populated memory before revocation; B and C see no
-row and receive the resource 404; A sees no row after revocation. The runtime
-role must be `NOSUPERUSER NOBYPASSRLS`, and the migration/table owner must be
-a different role.
+row and receive the resource 404; A sees no row after revocation.
 
 ## Production rollout
 
@@ -216,12 +262,13 @@ ORDER BY c.relname;
 - First disable `SLACK_MEMORY_COMMANDS_ENABLED` and
   `URL_INGESTION_ENABLED`, stop new ingestion/sync work, and drain workers.
 - Prefer an application rollback that remains compatible with migration
-  `20260908_0006`; the stronger RLS policy can safely remain during diagnosis.
-- If a database downgrade is required, run
-  `alembic downgrade 20250817_0005` as the migration owner before starting the
-  old application. The downgrade restores the exact legacy policies on tables
-  that previously had RLS and disables RLS only on tables newly protected by
-  this migration.
+  `20260909_0007`; the stronger policy can safely remain during diagnosis.
+- If the application requires the pre-0007 schema, first run
+  `alembic downgrade 20260908_0006` as the migration owner. Only if reverting
+  the D-009 policy foundation as well, follow with
+  `alembic downgrade 20250817_0005`. The 0006 downgrade restores the exact
+  legacy policies on tables that previously had RLS and disables RLS only on
+  tables newly protected by that migration.
 - Re-run the role/ownership query after either direction. Never leave the
   migration-owner credential in API or worker configuration.
 
@@ -234,17 +281,20 @@ code cannot prove whether the key is active. The owner must identify its
 provider, rotate/revoke it if active, verify the replacement, and only then
 remove the local file.
 
-## Local evidence and remaining blocker
+## Local evidence and remaining gaps
 
-- Full unit suite: 396 passed, 7 skipped.
-- Changed-file Ruff check: passed.
-- `uv lock --check`: passed after removing Playwright and repairing prior
-  lock drift.
-- Alembic: one head; upgrade and downgrade SQL both compile offline.
-- Mutation proof: disabling issuer verification made
-  `test_real_session_token_rejects_wrong_issuer` fail; bypassing the
-  owner-target check made `test_admin_cannot_begin_an_owner_departure` fail.
-  Both fixes were restored.
-- Real populated PostgreSQL/RLS test: written but not run here because neither
-  Docker nor `pg_ctl` is installed. Production deployment is blocked until
-  the disposable procedure above passes.
+- Fresh and populated disposable migration checks passed: both reached
+  `20260909_0007`; the populated 0006-to-0007 check verified creator backfill,
+  active owner bootstrap/access grants, forced RLS, separated table ownership,
+  and no runtime-role select privilege on internal grants.
+- Broader real PostgreSQL RLS coverage passed: 6 tests in 4.16 seconds.
+- Redis acceptance passed: 1 test in 3.23 seconds. Signed
+  authorization/revocation acceptance passed: 1 test in 22.68 seconds.
+- The isolated unit suite passed: 398 passed, 1 skipped in 47.96 seconds.
+- Repository-wide Ruff is not clean: 50 findings in pre-existing unrelated
+  tests. The explicit backend paths also have three findings: one import-order
+  issue in 0007 and two S608 findings in migration/seed SQL construction. No
+  source changes were made during this verification pass.
+- No production caller matrix, deployment freshness check, Slack/URL enabled
+  flow, owner secret rotation, production migration, rollback execution, push,
+  or deployment was performed. Those remain owner-controlled acceptance gaps.

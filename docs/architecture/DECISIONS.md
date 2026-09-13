@@ -1135,11 +1135,13 @@ frontend suite, the build, and the per-page API verification above.
 
 ## D-009 — SECURITY: active revocation, role enforcement, and database isolation
 
-**Status:** Implemented and verified locally on 2026-09-09; not deployed.
-Production rollout is deliberately blocked until the populated disposable
-PostgreSQL/RLS test passes on a machine with Docker or `pg_ctl`, followed by
-the real three-caller production matrix. No live database, Slack workspace,
-customer data, paid API, deployment, or push was used.
+**Status:** Implemented and locally verified through 0007 on 2026-09-13; not
+deployed. Fresh and populated disposable migration checks, broader PostgreSQL
+RLS coverage, Redis acceptance, signed authorization/revocation acceptance,
+and the isolated unit suite passed. Production remains deliberately unverified
+until the real three-caller production matrix and owner-controlled rollout
+steps run. No live database, Railway service, Slack workspace, customer data,
+paid API, deployment, or push was used.
 
 ### Why D-007 was necessary but not sufficient
 
@@ -1215,6 +1217,14 @@ connections must use a different `NOSUPERUSER NOBYPASSRLS` runtime role.
 `FORCE ROW LEVEL SECURITY` prevents accidental owner bypass, but role
 separation remains required so the application cannot alter the policies.
 
+Migration `20260909_0007` hardens the two most sensitive policy roots:
+`workspaces` and `workspace_members`. It records the creating user, creates
+internal bootstrap and access-grant state, synchronizes that state with
+membership changes, prevents removal of the final active owner, and makes
+workspace/member policies require active access rather than trusting a
+caller-supplied workspace context alone. The transaction-local context still
+limits query scope; it is not authorization.
+
 Review found and fixed a rollback bug before release: the first downgrade
 dropped the new policies but left newly protected tables with RLS enabled and
 no policy, which would make the old application fail closed everywhere. The
@@ -1289,31 +1299,27 @@ if so, and remove the old local file only after verification.
 
 ### Verification
 
-- Baseline before this implementation: 370 passed, 7 skipped.
-- Final unit suite: **396 passed, 7 skipped**, including real generated RSA
-  Clerk session tokens, active/revoked/other-workspace authorization,
-  permission roles, route-guard sweep, URL private/mixed-DNS cases, recursive
-  connector redaction, Slack identity/signature/forgery/replay, health
-  freshness/redaction, and fail-closed rate limits.
-- Ruff passed for every changed Python file.
-- `uv lock --check` passed.
-- Alembic reports one head. Full upgrade SQL and the
-  `20260908_0006:20250817_0005` downgrade SQL both generated offline.
-- Required mutation proofs were observed: issuer verification was temporarily
-  disabled, and
-  `test_real_session_token_rejects_wrong_issuer` failed with "DID NOT RAISE
-  TokenInvalidError"; the owner-target handoff guard was then bypassed, and
-  `test_admin_cannot_begin_an_owner_departure` failed. Both correct
-  implementations were restored and both tests pass.
-- A real populated RLS integration test creates an authorized owner, a user
-  with zero memberships, a member of a different workspace, and then revokes
-  the owner. It is intentionally guarded to accept only the disposable local
-  runtime role/database tuple.
+- Isolated unit suite: **398 passed, 1 skipped** in 47.96 seconds.
+- Real PostgreSQL RLS suite: **6 passed** in 4.16 seconds. Redis acceptance:
+  **1 passed** in 3.23 seconds. Signed authorization/revocation acceptance:
+  **1 passed** in 22.68 seconds.
+- Fresh and populated disposable databases reached `20260909_0007`. The
+  populated 0006-to-0007 check confirmed creator backfill, owner grants,
+  forced RLS, separated ownership, and no direct runtime-role select on
+  internal access grants.
+- Alembic reports one head. The current WSL runtime required offline SQL
+  rendering through its existing local PostgreSQL admin socket because its
+  fixture owner/bootstrap passwords did not match the running cluster. That is
+  a local configuration mismatch, not a platform restriction.
+- Ruff remains a quality gap: repository-wide lint reports 50 existing
+  unrelated test findings; the explicit backend paths report three findings
+  (0007 import order and two S608 SQL-construction warnings). No source was
+  edited to mask or fix them during verification.
 
-The last item is written but **not executed here**: Docker is not installed and
-`pg_ctl` is unavailable. Unit mocks and offline SQL are not substitutes for
-running PostgreSQL's real policy engine. Exact test, deployment, freshness,
-three-caller, Slack, URL, secret-rotation, and rollback steps are in
+Unit mocks and offline SQL are not substitutes for the production caller
+matrix. Production deployment, freshness, three-caller, enabled Slack/URL,
+secret-rotation, and rollback verification remain owner-controlled. The exact
+disposable and WSL setup is in
 `docs/architecture/SECURITY_FOUNDATION_ROLLOUT.md`.
 
 

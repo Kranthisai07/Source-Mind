@@ -274,29 +274,3 @@ class TestFetchClerkUserProfile:
         assert name is None
 
 
-# ── get_current_user ──────────────────────────────────────────────────────────
-
-# Requires a real DB for the user lookup — skip without local PostgreSQL.
-pytest.importorskip(
-    "psycopg2",
-    reason="psycopg2 present but local PostgreSQL not available",
-)
-_pg_available = pytest.mark.skipif(
-    True,  # Always skip — no local pg_ctl
-    reason="Requires local PostgreSQL (pg_ctl not found). Run when storage permits.",
-)
-
-
-@_pg_available
-@pytest.mark.asyncio
-class TestGetCurrentUserIntegration:
-    """Integration-level tests for get_current_user. Skipped without local DB."""
-
-    async def test_dev_bypass_returns_mock_user(self):
-        pass  # placeholder — real test runs with DB
-
-    async def test_missing_auth_header_raises_unauthorized(self):
-        pass
-
-    async def test_valid_token_provisions_new_user(self):
-        pass

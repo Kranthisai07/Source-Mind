@@ -1,10 +1,10 @@
 services:
   postgres-security-test:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.1-pg16
     environment:
-      POSTGRES_USER: sourcemind_owner
-      POSTGRES_PASSWORD: sourcemind_owner
-      POSTGRES_DB: sourcemind_security_test
+      POSTGRES_USER: sourcemind_bootstrap
+      POSTGRES_PASSWORD: sourcemind_bootstrap
+      POSTGRES_DB: postgres
     ports:
       - "127.0.0.1:55432:5432"
     tmpfs:
@@ -12,13 +12,13 @@ services:
     volumes:
       - ./postgres/security-test-init.sql:/docker-entrypoint-initdb.d/01-security-test.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sourcemind_owner -d sourcemind_security_test"]
+      test: ["CMD-SHELL", "pg_isready -U sourcemind_bootstrap -d sourcemind_security_test"]
       interval: 2s
       timeout: 3s
       retries: 20
 
   redis-security-test:
-    image: redis:7-alpine
+    image: redis:7.0.15-alpine
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
       - "127.0.0.1:56379:6379"

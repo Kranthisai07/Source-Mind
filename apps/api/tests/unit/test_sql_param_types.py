@@ -32,6 +32,7 @@ import re
 import sys
 
 import pytest
+from sqlalchemy.engine import make_url
 
 API_ROOT = pathlib.Path(__file__).resolve().parents[2]
 PACKAGE = API_ROOT / "sourcemind"
@@ -117,9 +118,14 @@ def test_postfix_casts_on_bind_parameters_are_absent():
 
 def _live_db_configured() -> bool:
     url = os.getenv("TEST_DATABASE_URL", "")
+    if os.getenv("SECURITY_TEST_ALLOW_DISPOSABLE") != "1" or not url:
+        return False
+    parsed = make_url(url)
     return (
-        os.getenv("SECURITY_TEST_ALLOW_DISPOSABLE") == "1"
-        and "sourcemind_test@127.0.0.1:55432/sourcemind_security_test" in url
+        parsed.host in {"127.0.0.1", "localhost"}
+        and parsed.port == 55432
+        and parsed.username == "sourcemind_test"
+        and parsed.database == "sourcemind_security_test"
     )
 
 

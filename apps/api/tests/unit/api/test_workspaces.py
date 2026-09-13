@@ -287,23 +287,3 @@ class TestCreateWorkspace:
                 headers={"Idempotency-Key": _IDEM_KEY},
             )
         assert resp.status_code == 422
-
-
-# ── DB integration tests (skipped without local PostgreSQL) ───────────────────
-
-_pg_available = pytest.mark.skipif(
-    True,
-    reason="Requires local PostgreSQL (pg_ctl not found). Run when storage permits.",
-)
-
-
-@_pg_available
-class TestWorkspaceDbIntegration:
-    def test_create_and_list_workspace(self):
-        pass
-
-    def test_second_workspace_reuses_existing_org(self):
-        pass
-
-    def test_list_only_returns_members_workspaces(self):
-        pass
