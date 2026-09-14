@@ -180,6 +180,12 @@ jobs:
       E2E_PG_PORT: "5432"
       E2E_PG_USER: sourcemind_bootstrap
       E2E_PG_DATABASE: sourcemind_e2e
+      # The suite reads rows back through psqlClient.js, which takes its
+      # password from HERE, not from the PGPASSWORD set on the provisioning
+      # steps. Without it every sql() call hit a scram-authenticated server
+      # with no password and the assertions failed. psqlClient puts this in
+      # the child's environment, never in argv.
+      E2E_PG_PASSWORD: ${{ secrets.E2E_DB_BOOTSTRAP_PASSWORD }}
 
       E2E_API_URL: http://127.0.0.1:8010
       REACT_APP_USE_MOCKS: "false"
