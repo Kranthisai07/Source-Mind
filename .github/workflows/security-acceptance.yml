@@ -1,0 +1,255 @@
+# Security acceptance: restricted-role RLS + real Redis.
+#
+# Closes the one gap the security work cannot close locally: the populated
+# PostgreSQL/RLS verification needs a real policy engine, and the owner's C:
+# drive has no room for Docker. Actions runners ship Docker, so Compose runs
+# there even though it cannot run on the development machine. Local Docker
+# absence is a machine limitation, not evidence about CI.
+#
+# Written against backend commit 90eb134 (parents f589079, e8af933) and the
+# contract those commits define:
+#
+#   infra/docker-compose.security-test.yml   images, ports, three injected secrets
+#   infra/postgres/security-test-init.sh     provisioning wrapper (psql :vars)
+#   apps/api/tests/conftest.py               supabase_url / security_test_redis_url
+#
+# Credentials are never written to the repository. Compose reads three secrets
+# from the environment and its `${VAR:?}` guards refuse to start without them.
+#
+# A green run here is acceptance of the DATABASE isolation layer only.
+# Deployment acceptance — the three-caller matrix, revocation against a
+# deployed revision, and /health freshness — is a separate gate that this job
+# does not and cannot cover.
+
+name: Security Acceptance (PostgreSQL + Redis)
+
+on:
+  # Primary trigger. This provisions real services and is an acceptance gate,
+  # not a per-commit check.
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apps/api/**"
+      - "infra/**"
+      - ".github/workflows/security-acceptance.yml"
+      - ".github/scripts/check_security_test_contract.py"
+  push:
+    branches:
+      - security-foundation-codex
+      - frontend-ci-claude
+
+permissions:
+  contents: read
+
+concurrency:
+  # Disposable services bind fixed ports (55432/56379). Two concurrent runs on
+  # the same ref would contend for them.
+  group: security-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  security-acceptance:
+    runs-on: ubuntu-latest
+
+    env:
+      # Injected, never committed. Compose refuses to start if any is unset;
+      # the preflight additionally refuses if any is set-but-empty, which
+      # compose's `:?` guard does not catch.
+      SECURITY_TEST_BOOTSTRAP_PASSWORD: ${{ secrets.SECURITY_TEST_BOOTSTRAP_PASSWORD }}
+      SECURITY_TEST_OWNER_PASSWORD: ${{ secrets.SECURITY_TEST_OWNER_PASSWORD }}
+      SECURITY_TEST_RUNTIME_PASSWORD: ${{ secrets.SECURITY_TEST_RUNTIME_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.12 matches the production image and pyproject's requires-python.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Build the two URLs from the injected secrets. Written to GITHUB_ENV via
+      # a heredoc rather than an inline string so a password containing shell
+      # metacharacters cannot be re-interpreted, and masked so it cannot reach
+      # the log even on failure.
+      - name: Compose disposable service URLs
+        run: |
+          {
+            printf '::add-mask::%s\n' "$SECURITY_TEST_OWNER_PASSWORD"
+            printf '::add-mask::%s\n' "$SECURITY_TEST_RUNTIME_PASSWORD"
+            printf '::add-mask::%s\n' "$SECURITY_TEST_BOOTSTRAP_PASSWORD"
+          } || true
+          {
+            printf 'MIGRATION_DATABASE_URL=postgresql+asyncpg://sourcemind_owner:%s@127.0.0.1:55432/sourcemind_security_test\n' "$SECURITY_TEST_OWNER_PASSWORD"
+            printf 'TEST_DATABASE_URL=postgresql+asyncpg://sourcemind_test:%s@127.0.0.1:55432/sourcemind_security_test\n' "$SECURITY_TEST_RUNTIME_PASSWORD"
+            printf 'TEST_REDIS_URL=redis://127.0.0.1:56379/15\n'
+            printf 'SECURITY_TEST_ALLOW_DISPOSABLE=1\n'
+          } >> "$GITHUB_ENV"
+
+      # Fail before provisioning if anything is missing, empty, or points
+      # somewhere other than the disposable tuple. Prints names and lengths
+      # only — never a value.
+      - name: Preflight — validate configuration
+        run: python .github/scripts/check_security_test_contract.py
+
+      # ── Provision ─────────────────────────────────────────────────────────
+      # `--wait` blocks on the healthchecks the compose file declares, so no
+      # hand-rolled readiness polling is needed. The init wrapper runs inside
+      # the container via docker-entrypoint-initdb.d and receives the owner and
+      # runtime passwords as psql variables.
+      - name: Start disposable PostgreSQL and Redis
+        run: docker compose -f infra/docker-compose.security-test.yml up -d --wait
+
+      # The RLS suite is only meaningful if the runtime role genuinely cannot
+      # bypass policies. A superuser or BYPASSRLS role would make every
+      # isolation assertion vacuously true, so prove it rather than assume it.
+      - name: Assert runtime and owner roles cannot bypass RLS
+        run: |
+          docker compose -f infra/docker-compose.security-test.yml \
+            exec -T postgres-security-test \
+            psql -v ON_ERROR_STOP=1 -U sourcemind_bootstrap -d postgres -At -c "
+              SELECT CASE
+                WHEN count(*) = 2 AND bool_and(NOT rolsuper AND NOT rolbypassrls)
+                  THEN 'ok'
+                ELSE 'FAIL: expected two non-superuser, non-BYPASSRLS roles'
+              END
+              FROM pg_roles
+              WHERE rolname IN ('sourcemind_owner','sourcemind_test');
+            " | grep -qx ok
+
+      - name: Install dependencies
+        working-directory: apps/api
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # ── Migrate ───────────────────────────────────────────────────────────
+      # As the OWNER role. sourcemind_test holds only SELECT/INSERT/UPDATE/
+      # DELETE via ALTER DEFAULT PRIVILEGES and has no DDL rights, matching the
+      # production role separation the rollout document requires.
+      - name: Apply migrations as the migration-owner role
+        working-directory: apps/api
+        env:
+          DATABASE_URL: ${{ env.MIGRATION_DATABASE_URL }}
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "false"
+        run: alembic upgrade head
+
+      - name: Record applied revision
+        run: |
+          docker compose -f infra/docker-compose.security-test.yml \
+            exec -T postgres-security-test \
+            psql -U sourcemind_bootstrap -d sourcemind_security_test -At \
+            -c "SELECT 'alembic_version=' || version_num FROM alembic_version"
+
+      # ── Exact selection ───────────────────────────────────────────────────
+      # `-o addopts=''` drops the coverage/strictness defaults from
+      # pyproject so the collected count is the raw test count. Asserting the
+      # exact node IDs means a rename cannot silently shrink the gate, which a
+      # bare count would not catch.
+      - name: Verify exact test selection (8 nodes)
+        working-directory: apps/api
+        env:
+          SECURITY_TEST_ALLOW_DISPOSABLE: "1"
+          TEST_DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+          TEST_REDIS_URL: ${{ env.TEST_REDIS_URL }}
+        run: |
+          set -euo pipefail
+          expected=$(mktemp); actual=$(mktemp)
+          cat > "$expected" <<'NODES'
+          tests/integration/test_security_acceptance_real_services.py::test_real_redis_counters_scopes_expiry_sharing_and_fail_closed
+          tests/integration/test_security_acceptance_real_services.py::test_signed_api_role_matrix_revocation_and_worker_reauthorization
+          tests/integration/test_security_foundation_real_db.py::test_all_workspace_policies_require_active_user_access
+          tests/integration/test_security_foundation_real_db.py::test_cross_workspace_insert_update_and_delete_are_blocked
+          tests/integration/test_security_foundation_real_db.py::test_database_rejects_removing_the_last_active_owner
+          tests/integration/test_security_foundation_real_db.py::test_populated_memory_is_hidden_from_both_unauthorized_caller_types
+          tests/integration/test_security_foundation_real_db.py::test_rls_context_is_transaction_local_on_reused_connection
+          tests/integration/test_security_foundation_real_db.py::test_workspace_context_cannot_substitute_for_membership
+          NODES
+          python -m pytest -o addopts='' -q --collect-only \
+            tests/integration/test_security_foundation_real_db.py \
+            tests/integration/test_security_acceptance_real_services.py \
+            | grep '::' | sort > "$actual"
+          echo "collected $(wc -l < "$actual") node(s)"
+          diff -u "$expected" "$actual" || {
+            echo "::error::collected node IDs differ from the expected eight"
+            exit 1
+          }
+
+      # ── Acceptance ────────────────────────────────────────────────────────
+      # 180 seconds, on execution only. Provisioning, pip install and migration
+      # sit deliberately outside the budget so a slow dependency resolve is
+      # never reported as an acceptance timeout.
+      #
+      # A JUnit report is emitted so the next step can prove the tests RAN.
+      # `pytest` exits 0 on "8 skipped", and every one of these is guarded by
+      # the disposable-DB check — so a silent skip is the realistic failure and
+      # exit status alone cannot detect it.
+      - name: Security acceptance tests
+        id: acceptance
+        timeout-minutes: 3
+        working-directory: apps/api
+        env:
+          SECURITY_TEST_ALLOW_DISPOSABLE: "1"
+          TEST_DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+          TEST_REDIS_URL: ${{ env.TEST_REDIS_URL }}
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "false"
+        run: |
+          python -m pytest -o addopts='' -q -p no:cacheprovider \
+            --junitxml=acceptance-results.xml \
+            tests/integration/test_security_foundation_real_db.py \
+            tests/integration/test_security_acceptance_real_services.py
+
+      - name: Assert all eight tests executed and passed
+        if: always() && steps.acceptance.outcome != 'skipped'
+        working-directory: apps/api
+        run: |
+          python - <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          from pathlib import Path
+          report = Path("acceptance-results.xml")
+          if not report.exists():
+              print("::error::no JUnit report — the acceptance step did not run")
+              sys.exit(1)
+          suite = ET.parse(report).getroot()
+          cases = suite.iter("testcase")
+          total = passed = 0
+          bad = []
+          for c in cases:
+              total += 1
+              node = f"{c.get('classname')}::{c.get('name')}"
+              state = next(
+                  (k.tag for k in c
+                   if k.tag in {"skipped", "failure", "error"}),
+                  "passed",
+              )
+              if state == "passed":
+                  passed += 1
+              else:
+                  bad.append(f"{node} -> {state}")
+          print(f"executed {total}, passed {passed}")
+          if total != 8:
+              print(f"::error::expected 8 test cases, report contains {total}")
+          for b in bad:
+              print(f"::error::{b}")
+          sys.exit(0 if (total == 8 and passed == 8) else 1)
+          PY
+
+      - name: Upload acceptance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-acceptance-results
+          path: apps/api/acceptance-results.xml
+          if-no-files-found: ignore
+
+      # ── Cleanup ───────────────────────────────────────────────────────────
+      # `always()` so a failed or timed-out acceptance step still tears down.
+      # Scoped to this compose project only — it names the project file, so it
+      # cannot touch the developer's WSL services or anything else on the host.
+      - name: Tear down disposable services
+        if: always()
+        run: docker compose -f infra/docker-compose.security-test.yml down -v --remove-orphans
