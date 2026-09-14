@@ -1480,3 +1480,23 @@ investigated.
 Python invoked from the repository root does not load `apps/api/.env`, so
 `DATABASE_URL` falls back and name resolution fails. This cost time three times
 in one session.
+
+## D-010 — Deferred conflict decisions retain author and rationale
+
+**Status:** Fixed and locally verified on 2026-09-14; not deployed.
+
+The deferred branch in `resolve_conflict` returned after storing only the
+status and revisit time. The API had already accepted a resolution note and
+authenticated resolver identity, but both values were discarded while the
+request still returned success.
+
+A deferral now writes `resolution_note` and `resolver_id` in the same update as
+`status='deferred'` and `revisit_at`. It deliberately does not set
+`resolved_at`, clear `blocks_derivation`, retire either memory, or run the
+shared resolved-conflict recomputation path. Authorization and transaction
+ownership remain at the existing API layer.
+
+The new regression failed against the old query because `resolver_id` was
+absent, then passed after the update. The complete conflict-resolver unit file
+and conflict-authorization unit file each passed with 9 tests. No database,
+Redis, Railway, deployment, or shared disposable resource was used.
