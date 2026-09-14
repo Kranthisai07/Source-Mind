@@ -17,9 +17,10 @@ None.
 
 ## Released
 
-| Ports         | Holder | Purpose                                 | Claimed    | Released   |
-|---------------|--------|-----------------------------------------|------------|------------|
-| 55433 / 56380 | Claude | Conflict-resolution end-to-end exercise | 2026-09-14 | 2026-09-14 |
+| Ports         | Holder | Purpose                                      | Claimed    | Released   |
+|---------------|--------|----------------------------------------------|------------|------------|
+| 55433 / 56380 | Claude | Conflict-resolution end-to-end exercise       | 2026-09-14 | 2026-09-14 |
+| 55433 / 56380 | Claude | Re-run to verify the deferred fix (`04babab`) | 2026-09-14 | 2026-09-14 |
 
 Cluster stopped, redis shut down, and `/tmp/sm-claude-e2e` removed. Both ports
 verified free. Nothing from that run outlived it; to reproduce, rebuild from
