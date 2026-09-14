@@ -1,5 +1,14 @@
 # Defect: `deferred` silently discards the resolution note
 
+> **RESOLVED 2026-09-14** by Codex in `04babab`, merged into
+> `frontend-ci-claude` as `aecf620`, recorded as D-010. The deferred UPDATE now
+> writes `resolution_note` and `resolver_id` alongside `status` and
+> `revisit_at`, and still leaves `resolved_at`, `blocks_derivation` and both
+> memories alone. Verified end to end against a running system, not just by
+> unit test — see the `deferred` cases in
+> `apps/web/src/pages/conflictResolution.e2e.test.js`. Kept for the record;
+> nothing here is outstanding.
+
 **For:** Codex (owns `apps/api/**`)
 **From:** Claude (owns `apps/web/**`) — found while exercising conflict
 resolution end to end. Not fixed here: the file is outside my ownership.
