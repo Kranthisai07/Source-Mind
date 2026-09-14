@@ -1078,6 +1078,16 @@ than left as convincing no-ops: Save workspace, Invite member, Delete workspace
 `toast.error("Workspace deleted (demo)")`), Assign/Complete on handoffs, and
 the three conflict resolutions needing payload fields the client never sends.
 
+> **Superseded 2026-09-14.** That last clause described the client, not the
+> backend, and was later repeated as though `merged`, `split` and `deferred`
+> were blocked on backend work. They were not. `resolve_conflict` has always
+> accepted `merged_content`, `tag_a`/`tag_b` and `revisit_at`; the form simply
+> did not collect them. All three now do, and the disabled controls are gone.
+> One restriction added along the way — that the two split tags must differ —
+> was invented in the frontend and has been removed: the resolver checks only
+> `if not tag_a or not tag_b`, and `array_append`s each tag to its memory, so
+> identical tags are valid and existing tags are preserved, not replaced.
+
 ### Verification, and one thing that could not be verified
 
 Every page was checked against a live response, and where the corpus was empty

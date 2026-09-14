@@ -27,6 +27,36 @@ const CONFIGURED_WS = (process.env.REACT_APP_DEFAULT_WORKSPACE_ID || "").trim();
 
 let _wsPromise = null;
 
+// Bumped on every identity change. Two jobs:
+//
+//   1. A lookup abandoned by an identity change must not write back into the
+//      module after the fact. Its `.catch` would otherwise null out the NEW
+//      user's in-flight memo (see resolveWorkspaceId), so the generation is
+//      captured when the memo is created and re-checked before clearing it.
+//   2. It gives the React layer something to subscribe to, so mounted screens
+//      can drop the previous identity's rendered rows and invalidate requests
+//      already on the wire. Clearing `_wsPromise` alone does neither: it only
+//      affects lookups that have not started yet.
+let _identityGeneration = 0;
+const _identityListeners = new Set();
+
+/** Current identity generation. Changes iff the signed-in user changed. */
+export function identityGeneration() {
+    return _identityGeneration;
+}
+
+/**
+ * Subscribe to identity changes. Returns an unsubscribe function.
+ *
+ * Listeners are called synchronously from resetIdentityScopedCaches, so a
+ * subscriber can invalidate in-flight work before any newly issued request
+ * has a chance to resolve.
+ */
+export function onIdentityReset(listener) {
+    _identityListeners.add(listener);
+    return () => _identityListeners.delete(listener);
+}
+
 /**
  * Drop every cached, identity-scoped value.
  *
@@ -44,7 +74,17 @@ let _wsPromise = null;
  * (the ordinary Clerk + React Router integration) would silently remove it.
  */
 export function resetIdentityScopedCaches() {
+    _identityGeneration += 1;
     _wsPromise = null;
+    // Copy first: a listener may unsubscribe itself while being notified.
+    for (const listener of Array.from(_identityListeners)) {
+        try {
+            listener(_identityGeneration);
+        } catch {
+            // A broken subscriber must not stop the others from being told the
+            // identity changed — that is the failure mode this exists to stop.
+        }
+    }
 }
 
 /**
@@ -76,6 +116,8 @@ async function resolveWorkspaceId(explicit) {
     if (CONFIGURED_WS) return CONFIGURED_WS;
 
     if (!_wsPromise) {
+        // Captured with the memo, checked before the memo is cleared below.
+        const generation = _identityGeneration;
         _wsPromise = request("/v1/workspaces")
             .then((r) => {
                 // This route IS enveloped: {data: [...], meta: {...}}.
@@ -91,7 +133,13 @@ async function resolveWorkspaceId(explicit) {
                 return list[0].id;
             })
             .catch((err) => {
-                _wsPromise = null;
+                // Only clear the memo if it is still the one this lookup
+                // created. If the user changed while this was in flight, the
+                // memo now belongs to the NEW user's lookup, and nulling it
+                // here would discard a live request and force a duplicate.
+                // A failure is the likely case, not a rare one: the previous
+                // user's token is gone, so this call typically ends in 401.
+                if (generation === _identityGeneration) _wsPromise = null;
                 throw err;
             });
     }

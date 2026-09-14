@@ -19,14 +19,16 @@ export function validateResolution(action, fields) {
         errors.mergedContent = "Merged content is required.";
     }
     if (action === "split") {
+        // Both required — the resolver raises ValueError without either.
+        //
+        // Deliberately NOT requiring them to differ. That rule was invented
+        // here, not read from the backend: resolve_conflict checks only
+        // `if not tag_a or not tag_b`, and appends each tag to its memory
+        // independently, so identical tags are accepted and simply tag both
+        // sides the same way. Whether that should be allowed is a product
+        // question, not something this form may decide unilaterally.
         if (!String(fields.tagA ?? "").trim()) errors.tagA = "Tag A is required.";
         if (!String(fields.tagB ?? "").trim()) errors.tagB = "Tag B is required.";
-        if (
-            String(fields.tagA ?? "").trim() &&
-            String(fields.tagA ?? "").trim() === String(fields.tagB ?? "").trim()
-        ) {
-            errors.tagB = "The two tags must differ.";
-        }
     }
     if (action === "deferred") {
         const raw = String(fields.revisitAt ?? "").trim();

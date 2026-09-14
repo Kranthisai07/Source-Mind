@@ -69,7 +69,7 @@ const OPTIONS = [
     { key: "kept_a", label: "Accept A", hint: "Keeps memory A; retires memory B." },
     { key: "kept_b", label: "Accept B", hint: "Keeps memory B; retires memory A." },
     { key: "merged", label: "Merge both", hint: "Replaces both with one combined memory." },
-    { key: "split",  label: "Split by tag", hint: "Keeps both, scoped to different tags." },
+    { key: "split",  label: "Split by tag", hint: "Keeps both; adds a tag to each. Existing tags are preserved." },
     { key: "deferred", label: "Defer", hint: "Revisit later; the conflict stays open." },
 ];
 
@@ -326,7 +326,7 @@ export default function ConflictDetail() {
                                         data-testid="tag-a"
                                         value={tagA}
                                         onChange={(e) => setTagA(e.target.value)}
-                                        placeholder="e.g. postgres-16"
+                                        placeholder="tag to add to A"
                                         className="bg-surface-page border-hairline text-content font-mono text-[12.5px] h-9"
                                     />
                                     <FieldError message={fieldErrors.tagA} />
@@ -338,7 +338,7 @@ export default function ConflictDetail() {
                                         data-testid="tag-b"
                                         value={tagB}
                                         onChange={(e) => setTagB(e.target.value)}
-                                        placeholder="e.g. postgres-18"
+                                        placeholder="tag to add to B"
                                         className="bg-surface-page border-hairline text-content font-mono text-[12.5px] h-9"
                                     />
                                     <FieldError message={fieldErrors.tagB} />

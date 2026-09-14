@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { classifyApiError, retryDelayMs, shouldClearData } from "@/lib/apiError";
 import { createRequestGate } from "@/lib/requestGate";
+import { onIdentityReset } from "@/lib/realApi";
 
 /**
  * One loading/error/data lifecycle for every page.
@@ -16,14 +17,23 @@ import { createRequestGate } from "@/lib/requestGate";
  * @param {() => Promise<any>} fetcher
  * @param {object}   [options]
  * @param {any[]}    [options.deps]      re-fetch when these change
- * @param {string}   [options.resetKey]  identity of the scope (e.g. workspace id).
- *                                       A change clears data before re-fetching,
- *                                       so the previous scope's rows never show
- *                                       under the new one.
+ * @param {string}   [options.resetKey]  identity of the scope (e.g. a route
+ *                                       parameter). A change clears data before
+ *                                       re-fetching, so the previous scope's
+ *                                       rows never show under the new one.
+ *                                       A change of signed-in USER is handled
+ *                                       automatically and needs no resetKey.
  * @param {number}   [options.maxAutoRetries]
  */
 export function useApiResource(fetcher, options = {}) {
     const { deps = [], resetKey = null, maxAutoRetries = 2 } = options;
+
+    // An identity change is a scope change that no route parameter reflects,
+    // so it cannot be expressed through `resetKey` by the caller — the page
+    // does not know the workspace id, and the URL does not change when the
+    // signed-in user does. Bumping this from the subscription below re-enters
+    // the main effect, which is where data is cleared and the fetch reissued.
+    const [identityEpoch, setIdentityEpoch] = useState(0);
 
     const [data, setData] = useState(null);
     const [error, setError] = useState(null);
@@ -89,6 +99,28 @@ export function useApiResource(fetcher, options = {}) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [maxAutoRetries]);
 
+    // The user changed. Clearing `_wsPromise` in the API module is necessary
+    // but not sufficient: it only affects lookups that have not started yet.
+    // Everything already on screen still belongs to the previous user, and
+    // every request already on the wire was issued under their token and
+    // scoped to their workspace. Both are dropped here.
+    useEffect(() => {
+        return onIdentityReset(() => {
+            // Responses already in flight can no longer reach state. Without
+            // this, a read issued for A that resolves after B signs in is
+            // accepted by the gate and renders A's rows on B's screen.
+            gate.current.invalidate();
+            setData(null);
+            setError(null);
+            setRetryAt(null);
+            setLoading(true);
+            attempts.current = 0;
+            if (timer.current) clearTimeout(timer.current);
+            // Re-fetch under the new identity.
+            setIdentityEpoch((n) => n + 1);
+        });
+    }, []);
+
     useEffect(() => {
         // Scope changed: drop the old scope's data before anything new lands,
         // and invalidate whatever is already in flight for the old scope.
@@ -105,7 +137,7 @@ export function useApiResource(fetcher, options = {}) {
             if (timer.current) clearTimeout(timer.current);
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [run, resetKey, ...deps]);
+    }, [run, resetKey, identityEpoch, ...deps]);
 
     useEffect(() => {
         const g = gate.current;

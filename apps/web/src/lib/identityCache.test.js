@@ -18,7 +18,7 @@
  * survive.
  */
 
-import { realApi, resetIdentityScopedCaches } from "./realApi";
+import { realApi, resetIdentityScopedCaches, identityGeneration } from "./realApi";
 import { setTokenGetter } from "./authToken";
 
 /**
@@ -117,5 +117,91 @@ describe("resetIdentityScopedCaches", () => {
         expect(scoped).toContain("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
         // B's workspace was never even looked up.
         expect(calls.filter((u) => /\/v1\/workspaces$/.test(u.split("?")[0]))).toHaveLength(0);
+    });
+});
+
+/** A fetch Response shaped like the one the adapter expects. */
+function ok(body) {
+    return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: () => null },
+        text: async () => JSON.stringify(body),
+    };
+}
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+describe("a workspace lookup abandoned by an identity change", () => {
+    test("its failure does not clear the NEXT user's in-flight memo", async () => {
+        // The write-back is the point. `_wsPromise = null` in the catch runs
+        // whenever the lookup fails — and after an identity change, failing is
+        // the expected outcome, because the token that authorized it is gone.
+        // By then the memo belongs to the new user's lookup, and nulling it
+        // discards a live request.
+        const wsCalls = [];
+        global.fetch = jest.fn(async (url) => {
+            const u = String(url);
+            if (/\/v1\/workspaces$/.test(u.split("?")[0])) {
+                return new Promise((resolve, reject) => wsCalls.push({ resolve, reject }));
+            }
+            return ok({ conflicts: [], total: 0 });
+        });
+
+        // A's read begins. Its workspace lookup is on the wire.
+        const aRead = realApi.listConflicts(undefined, { status: null }).catch(() => "A-failed");
+        await tick();
+        expect(wsCalls).toHaveLength(1);
+
+        // B signs in.
+        resetIdentityScopedCaches();
+
+        // B's read begins and starts its own lookup.
+        const bRead = realApi.listConflicts(undefined, { status: null });
+        await tick();
+        expect(wsCalls).toHaveLength(2);
+
+        // A's lookup finally fails.
+        wsCalls[0].reject(new TypeError("Failed to fetch"));
+        expect(await aRead).toBe("A-failed");
+
+        // B's lookup succeeds.
+        wsCalls[1].resolve(ok(WS_B));
+        await bRead;
+
+        // The decisive assertion: B's memo survived A's failure, so a further
+        // read reuses it. Without the generation guard this is lookup #3.
+        await realApi.listConflicts(undefined, { status: null });
+        expect(wsCalls).toHaveLength(2);
+    });
+
+    test("a failure under the CURRENT identity still clears the memo, so it retries", async () => {
+        // The guard must not disable the original behaviour it is narrowing.
+        const wsCalls = [];
+        global.fetch = jest.fn(async (url) => {
+            const u = String(url);
+            if (/\/v1\/workspaces$/.test(u.split("?")[0])) {
+                return new Promise((resolve, reject) => wsCalls.push({ resolve, reject }));
+            }
+            return ok({ conflicts: [], total: 0 });
+        });
+
+        const generation = identityGeneration();
+
+        const first = realApi.listConflicts(undefined, { status: null }).catch(() => "failed");
+        await tick();
+        wsCalls[0].reject(new TypeError("Failed to fetch"));
+        expect(await first).toBe("failed");
+
+        // No identity change happened, so the cached rejection must not be
+        // reused — the next attempt looks the workspace up again.
+        const second = realApi.listConflicts(undefined, { status: null });
+        await tick();
+        expect(identityGeneration()).toBe(generation);
+        expect(wsCalls).toHaveLength(2);
+
+        wsCalls[1].resolve(ok(WS_A));
+        await second;
     });
 });

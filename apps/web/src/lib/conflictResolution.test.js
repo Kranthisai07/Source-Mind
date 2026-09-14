@@ -68,10 +68,14 @@ describe("split requires two distinct tags", () => {
         expect(errors.tagB).toBeTruthy();
     });
 
-    test("identical tags are rejected — splitting into one bucket is not a split", () => {
+    test("identical tags are ACCEPTED — the backend imposes no distinctness rule", () => {
+        // resolve_conflict checks only `if not tag_a or not tag_b` and appends
+        // each tag independently. An earlier version of this form rejected
+        // identical tags; that rule was invented in the frontend and is gone.
+        // Whether it *should* be a rule is a product decision.
         const { ok, errors } = validateResolution("split", { ...base, tagA: "pg16", tagB: "pg16" });
-        expect(ok).toBe(false);
-        expect(errors.tagB).toMatch(/differ/i);
+        expect(ok).toBe(true);
+        expect(errors).toEqual({});
     });
 
     test("valid tags are trimmed and sent", () => {

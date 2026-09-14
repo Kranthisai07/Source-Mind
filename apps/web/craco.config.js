@@ -32,6 +32,17 @@ let webpackConfig = {
       },
     },
   },
+  // The '@' alias was configured for webpack only, so Jest could not resolve
+  // it. That silently limited what was testable: any module importing '@/...'
+  // failed to load under Jest, which is why every existing suite uses relative
+  // paths. Mapping it here keeps the two resolvers in agreement.
+  jest: {
+    configure: {
+      moduleNameMapper: {
+        '^@/(.*)$': '<rootDir>/src/$1',
+      },
+    },
+  },
   webpack: {
     alias: {
       '@': path.resolve(__dirname, 'src'),
