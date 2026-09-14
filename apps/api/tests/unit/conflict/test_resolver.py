@@ -155,6 +155,61 @@ async def test_deferred_sets_revisit_date():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_deferred_persists_note_and_resolver_without_resolving():
+    """Deferring records the decision without settling the conflict or memories."""
+    from sourcemind.services.conflict.resolver import resolve_conflict
+
+    mem_a_id = str(uuid.uuid4())
+    mem_b_id = str(uuid.uuid4())
+    workspace_id = str(uuid.uuid4())
+    conflict_id = uuid.uuid4()
+    resolver_id = uuid.uuid4()
+    revisit_date = datetime.fromisoformat("2026-12-24T15:30:00+00:00")
+    resolution_note = "Waiting on the platform team."
+    calls = []
+
+    async def execute_side_effect(stmt, params=None, **kwargs):
+        stmt_str = str(stmt)
+        calls.append((stmt_str, dict(params or {})))
+        result = MagicMock()
+        if "SELECT memory_a_id" in stmt_str:
+            result.fetchone = MagicMock(return_value=(mem_a_id, mem_b_id, workspace_id))
+        else:
+            result.fetchone = MagicMock(return_value=(str(conflict_id),))
+        return result
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(side_effect=execute_side_effect)
+
+    result = await resolve_conflict(
+        session=mock_session,
+        conflict_id=conflict_id,
+        resolver_id=resolver_id,
+        resolution_type="deferred",
+        resolution_note=resolution_note,
+        revisit_at=revisit_date,
+    )
+
+    assert result is True
+    assert len(calls) == 2
+    deferred_sql, deferred_params = calls[1]
+    assert "status = 'deferred'" in deferred_sql
+    assert "revisit_at = :rat" in deferred_sql
+    assert "resolver_id = CAST(:rid AS uuid)" in deferred_sql
+    assert "resolution_note = :note" in deferred_sql
+    assert "resolved_at" not in deferred_sql
+    assert "blocks_derivation" not in deferred_sql
+    assert "UPDATE memories" not in deferred_sql
+    assert deferred_params == {
+        "rat": revisit_date,
+        "cid": str(conflict_id),
+        "rid": str(resolver_id),
+        "note": resolution_note,
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_split_adds_tags_to_both_memories():
     """Split resolution should add tag_a to memory_a and tag_b to memory_b."""
     from sourcemind.services.conflict.resolver import resolve_conflict
