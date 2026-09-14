@@ -32,7 +32,7 @@
 
 import React from "react";
 import http from "http";
-import { execFileSync } from "child_process";
+const { createPsql } = require("../../e2e/psqlClient");
 import { render, screen, act, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
@@ -94,17 +94,18 @@ function nodeFetch(url, init = {}) {
     });
 }
 
-/** Read committed rows straight out of the disposable cluster. */
+/**
+ * Read committed rows out of the disposable cluster.
+ *
+ * Built lazily rather than at module scope: createPsql throws when the
+ * disposable guard is not satisfied, and that must surface as a failing test
+ * with a readable message, not as a module-load crash that would also take
+ * out the skip path on a machine with no stack running.
+ */
+let _sql = null;
 function sql(query) {
-    const out = execFileSync(
-        "wsl.exe",
-        ["-e", "bash", "-lc",
-         `export PGPASSWORD=$(sudo cat /tmp/sm-claude-e2e/pw); ` +
-         `/usr/lib/postgresql/16/bin/psql -p 55433 -h 127.0.0.1 -U smtest ` +
-         `-d sourcemind_e2e -Atc ${JSON.stringify(query)}`],
-        { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
-    );
-    return out.replace(/\r/g, "").trim();
+    if (_sql === null) _sql = createPsql();
+    return _sql(query);
 }
 
 const row = (q) => sql(q).split("|");
