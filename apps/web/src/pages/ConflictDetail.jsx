@@ -274,25 +274,20 @@ export default function ConflictDetail() {
                         <label htmlFor="resolve-note" className="sm-micro-label block mb-2">
                             Resolution note
                         </label>
+                        {/* Re-enabled. This was disabled because the client
+                            sent `note`, a key ResolveBody does not declare, so
+                            Pydantic dropped every note silently. The adapter
+                            now sends `resolution_note`, which reaches
+                            `resolution_note = :note` in resolver.py. */}
                         <Textarea
                             id="resolve-note"
                             data-testid="resolve-note"
                             value={note}
                             onChange={(e) => setNote(e.target.value)}
-                            placeholder="Not saved yet — see note below"
+                            placeholder="Why this resolution? (optional)"
                             rows={3}
-                            disabled
-                            className="bg-surface-page border-hairline text-content placeholder:text-content-muted text-body resize-none mb-2 disabled:opacity-60"
+                            className="bg-surface-page border-hairline text-content placeholder:text-content-muted text-body resize-none mb-4"
                         />
-                        {/* Disabled rather than silently discarding input: the
-                            API field is `resolution_note` and the client sends
-                            `note`, which Pydantic drops. A box that accepts
-                            text and throws it away is worse than one that says
-                            so. */}
-                        <p className="text-[11px] text-content-muted mb-4 leading-snug">
-                            Notes aren't persisted yet — the client sends <code className="font-mono">note</code> where
-                            the API expects <code className="font-mono">resolution_note</code>.
-                        </p>
 
                         <Button
                             data-testid="confirm-resolution"

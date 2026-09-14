@@ -58,6 +58,15 @@ export default function MemoryDetail() {
         { resetKey: id }
     );
 
+    // Version history is a separate endpoint, so it gets its own lifecycle: a
+    // failure here must not blank the memory itself, and an empty chain must
+    // not look like a failed one. resetKey = id so switching memories clears
+    // the previous chain before the new request lands.
+    const versionsRes = useApiResource(
+        () => api.getMemoryVersions(id),
+        { resetKey: id }
+    );
+
     if (error) {
         return (
             <>
@@ -113,11 +122,12 @@ export default function MemoryDetail() {
         ? Math.round(primary.percentage ?? (primary.score ?? 0) * 100)
         : null;
 
-    // `versions` is not a field on GET /v1/memories/{id}; the version chain
-    // lives at /v1/memories/{id}/versions, which realApi does not call. It is
-    // therefore always empty against the real API and only ever populated by
-    // mockData. Rendered as a proper empty state rather than an empty <ol>.
-    const versions = Array.isArray(mem.versions) ? mem.versions : [];
+    // The chain comes from /v1/memories/{id}/versions, not from the memory
+    // object — `mem.versions` does not exist on that response. Three distinct
+    // states below: loading, failed, and genuinely empty.
+    const versions = Array.isArray(versionsRes.data?.versions)
+        ? versionsRes.data.versions
+        : [];
 
     const tags = Array.isArray(mem.tags) ? mem.tags : [];
     const memoryId = mem.id || mem.memory_id || id;
@@ -303,7 +313,23 @@ export default function MemoryDetail() {
                 <aside className="sm-card p-6 flex flex-col">
                     <h2 className="text-title text-content mb-5">Version history</h2>
 
-                    {versions.length === 0 ? (
+                    {versionsRes.loading ? (
+                        <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading version history">
+                            {Array.from({ length: 2 }).map((_, i) => (
+                                <Skeleton key={i} className="h-12 w-full rounded-md" />
+                            ))}
+                            <span className="sr-only">Loading version history…</span>
+                        </div>
+                    ) : versionsRes.error ? (
+                        /* A failed history is NOT an empty one. Without this the
+                           404 a non-member receives would read as "this memory
+                           has never been edited". */
+                        <ErrorState
+                            error={versionsRes.error}
+                            onRetry={versionsRes.retry}
+                            testId="versions-error"
+                        />
+                    ) : versions.length === 0 ? (
                         <EmptyState
                             testId="versions-empty"
                             icon={History}
@@ -312,20 +338,27 @@ export default function MemoryDetail() {
                         />
                     ) : (
                         <ol className="relative border-l border-hairline ml-2 space-y-5">
-                            {versions.map((v, i) => (
-                                <li key={i} className="pl-5 relative">
-                                    <span className="absolute -left-[4.5px] top-1.5 w-2 h-2 rounded-full bg-content-muted" />
+                            {/* MemoryVersionEntry: {id, version, is_current,
+                                content, created_at}. There is no editor field
+                                on this response, so none is invented. */}
+                            {versions.map((v) => (
+                                <li key={v.id ?? v.version} className="pl-5 relative">
+                                    <span className={`absolute -left-[4.5px] top-1.5 w-2 h-2 rounded-full ${
+                                        v.is_current ? "bg-brand" : "bg-content-muted"
+                                    }`} />
                                     <div className="flex items-center gap-2 mb-1">
-                                        <span className="font-mono text-[11px] text-brand">v{v.v ?? v.version}</span>
-                                        <span className="font-mono text-[10.5px] text-content-secondary">
-                                            {relativeTime(v.at ?? v.created_at)}
-                                        </span>
+                                        <span className="font-mono text-[11px] text-brand">v{v.version}</span>
+                                        {v.is_current && <span className="sm-micro-label">Current</span>}
+                                        {v.created_at && (
+                                            <span className="font-mono text-[10.5px] text-content-secondary">
+                                                {relativeTime(v.created_at)}
+                                            </span>
+                                        )}
                                     </div>
-                                    {v.editor && (
-                                        <div className="font-mono text-body text-content">@{v.editor}</div>
-                                    )}
-                                    {v.summary && (
-                                        <div className="text-body text-content-secondary mt-0.5">{v.summary}</div>
+                                    {v.content && (
+                                        <p className="font-mono text-[11.5px] text-content-secondary mt-0.5 line-clamp-2">
+                                            {v.content}
+                                        </p>
                                     )}
                                 </li>
                             ))}

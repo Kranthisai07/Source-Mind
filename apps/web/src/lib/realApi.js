@@ -428,13 +428,31 @@ export const realApi = {
         request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/conflicts`, {
             params: { status },
         }),
+    // GET /v1/memories/{id}/versions -> MemoryVersionsResponse
+    //   { versions: [{id, version, is_current, content, created_at}], total }
+    //
+    // Declared with `response_model=MemoryVersionsResponse`, NOT
+    // `APIResponse[T]`, so the payload is raw and must not be unwrapped.
+    // Guarded by require_memory_access, so a non-member gets 404 rather than
+    // an empty list — the caller has to tell those apart.
+    getMemoryVersions: async (id) =>
+        request(`/v1/memories/${encodeURIComponent(id)}/versions`),
+
     getConflict: (id) => request(`/v1/conflicts/${encodeURIComponent(id)}`),
     reviewConflict: (id) =>
         request(`/v1/conflicts/${encodeURIComponent(id)}/review`, { method: "POST" }),
+    // ResolveBody declares {resolution_type, resolution_note, merged_content,
+    // revisit_at, tag_a, tag_b}. This sent `note`, which Pydantic silently
+    // dropped — the field simply is not on the model — so every resolution
+    // note the user typed was discarded without any error. The value reaches
+    // `resolution_note = :note` in resolver.py once the key is right.
+    //
+    // `note` is still accepted as the caller-facing argument name so existing
+    // call sites keep working; only the wire key changes.
     resolveConflict: (id, { resolution_type, note }) =>
         request(`/v1/conflicts/${encodeURIComponent(id)}/resolve`, {
             method: "POST",
-            body: { resolution_type, note },
+            body: { resolution_type, resolution_note: note ?? null },
         }),
 
     // ----- connectors -----
