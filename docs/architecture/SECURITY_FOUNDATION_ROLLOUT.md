@@ -130,24 +130,64 @@ URL, a Railway URL, or an ordinary development service.
 
 `infra/docker-compose.security-test.yml` is the CI topology: PostgreSQL is
 published only at `127.0.0.1:55432`, Redis only at `127.0.0.1:56379`, and both
-are ephemeral. CI must inject the database credentials instead of copying
-credentials from a workstation.
+are ephemeral. Before startup, inject these non-empty values from the CI secret
+store and never echo them: `SECURITY_TEST_BOOTSTRAP_PASSWORD`,
+`SECURITY_TEST_OWNER_PASSWORD`, and `SECURITY_TEST_RUNTIME_PASSWORD`. The
+`SECURITY_TEST_MIGRATION_DATABASE_URL` and `SECURITY_TEST_DATABASE_URL` values
+must be derived from the owner and runtime credentials respectively; the latter
+must identify `sourcemind_test@127.0.0.1:55432/sourcemind_security_test`.
+The init wrapper creates the owner/runtime roles, the database, and all four
+required extensions without storing a password in the repository.
 
 ```powershell
+$requiredSecrets = @(
+  'SECURITY_TEST_BOOTSTRAP_PASSWORD',
+  'SECURITY_TEST_OWNER_PASSWORD',
+  'SECURITY_TEST_RUNTIME_PASSWORD',
+  'SECURITY_TEST_MIGRATION_DATABASE_URL',
+  'SECURITY_TEST_DATABASE_URL'
+)
+foreach ($name in $requiredSecrets) {
+  if (-not [Environment]::GetEnvironmentVariable($name)) {
+    throw "Missing required CI secret: $name"
+  }
+}
+
 docker compose -f infra/docker-compose.security-test.yml up -d --wait
 
 Push-Location apps/api
 $env:ENVIRONMENT = 'development'
 $env:DEBUG = 'false'
 $env:AUTH_DEV_BYPASS_ENABLED = 'true'
+$env:CLERK_SECRET_KEY = ''
+$env:CLERK_PUBLISHABLE_KEY = ''
+$env:CLERK_AUTHORIZED_PARTIES = '[]'
+
+$env:DATABASE_URL = $env:SECURITY_TEST_MIGRATION_DATABASE_URL
+& .\.venv\Scripts\alembic.exe upgrade head
+
 $env:SECURITY_TEST_ALLOW_DISPOSABLE = '1'
 $env:TEST_DATABASE_URL = $env:SECURITY_TEST_DATABASE_URL
+$env:TEST_REDIS_URL = 'redis://127.0.0.1:56379/15'
 $env:DATABASE_URL = $env:TEST_DATABASE_URL
-$env:REDIS_URL = 'redis://127.0.0.1:56379/15'
+$env:REDIS_URL = $env:TEST_REDIS_URL
+
+$rlsCollection = & .\.venv\Scripts\python.exe -m pytest --collect-only -q -o addopts='' tests/integration/test_security_foundation_real_db.py
+if (($rlsCollection | Out-String) -notmatch '6 tests collected') { throw 'Expected exactly 6 RLS tests' }
+$signedCollection = & .\.venv\Scripts\python.exe -m pytest --collect-only -q -o addopts='' tests/integration/test_security_acceptance_real_services.py::test_signed_api_role_matrix_revocation_and_worker_reauthorization
+if (($signedCollection | Out-String) -notmatch '1 test collected') { throw 'Expected exactly 1 signed acceptance test' }
+$redisCollection = & .\.venv\Scripts\python.exe -m pytest --collect-only -q -o addopts='' tests/integration/test_security_acceptance_real_services.py::test_real_redis_counters_scopes_expiry_sharing_and_fail_closed
+if (($redisCollection | Out-String) -notmatch '1 test collected') { throw 'Expected exactly 1 Redis acceptance test' }
 
 & .\.venv\Scripts\python.exe -u -m pytest tests/integration/test_security_foundation_real_db.py -o addopts='' -q
-& .\.venv\Scripts\python.exe -u -m pytest tests/integration/test_security_acceptance_real_services.py::test_real_redis_counters_scopes_expiry_sharing_and_fail_closed -o addopts='' -q
 & .\.venv\Scripts\python.exe -u -m pytest tests/integration/test_security_acceptance_real_services.py::test_signed_api_role_matrix_revocation_and_worker_reauthorization -o addopts='' -q
+& .\.venv\Scripts\python.exe -u -m pytest tests/integration/test_security_acceptance_real_services.py::test_real_redis_counters_scopes_expiry_sharing_and_fail_closed -o addopts='' -q
+
+$env:SECURITY_TEST_ALLOW_DISPOSABLE = '0'
+Remove-Item Env:TEST_DATABASE_URL -ErrorAction SilentlyContinue
+Remove-Item Env:TEST_REDIS_URL -ErrorAction SilentlyContinue
+& .\.venv\Scripts\python.exe -m pytest tests/unit -o addopts='' -q
+& .\.venv\Scripts\python.exe -m ruff check sourcemind tests
 Pop-Location
 
 docker compose -f infra/docker-compose.security-test.yml down -v
@@ -160,23 +200,20 @@ number. Port numbers alone are not identity proof.
 
 ### Recorded WSL verification environment
 
-The successful 2026-09-13 run used a native-Windows Python client with the
-services already running in Ubuntu WSL. PostgreSQL listened on
-`127.0.0.1:55432`, with its ephemeral data directory at
-`/tmp/sourcemind-security-acceptance-e8af933/pgdata` and local admin socket at
-`/tmp/sourcemind-security-acceptance-e8af933/socket`. Redis listened on
-`127.0.0.1:56379`, database `15`. This is recorded runtime evidence, not a
-portable path requirement; revalidate the target and role identity for every
-run.
+The 2026-09-14 run used a native-Windows Python client with Ubuntu WSL test
+services. PostgreSQL used port `55432`; its original cluster was at
+`/tmp/sourcemind-security-acceptance-e8af933/pgdata` with a matching socket
+directory. Redis used port `56379`, database `15`. An external advisory lease
+was acquired and the original cluster had zero target-database connections
+before a fresh isolated cluster temporarily used the guarded port. The original
+cluster and its other disposable databases were preserved for restoration.
 
-The current WSL cluster did not accept the static owner/bootstrap passwords in
-the compose fixture. That was a local configuration mismatch, not a platform
-restriction. Credentials are intentionally not recorded here. Fresh and
-populated migration verification therefore used the existing WSL PostgreSQL
-admin socket, created only named throwaway databases, installed the required
-extensions there, rendered Alembic SQL offline with `PYTHONUTF8=1` and
-`PYTHONIOENCODING=utf-8`, and applied it after `SET ROLE sourcemind_owner`.
-Do not treat that local admin path as an API/worker runtime configuration.
+Docker was unavailable in both native Windows and Ubuntu WSL, so Compose
+startup is a platform-restricted verification portion in this environment. The
+same committed init wrapper and SQL were instead applied to the fresh isolated
+WSL PostgreSQL cluster, followed by an online owner-role Alembic upgrade. This
+does not make the WSL paths a portable requirement; CI should use Compose and
+the secret-injected procedure above.
 
 ### Migration acceptance contract
 
@@ -286,15 +323,18 @@ remove the local file.
 - Fresh and populated disposable migration checks passed: both reached
   `20260909_0007`; the populated 0006-to-0007 check verified creator backfill,
   active owner bootstrap/access grants, forced RLS, separated table ownership,
-  and no runtime-role select privilege on internal grants.
-- Broader real PostgreSQL RLS coverage passed: 6 tests in 4.16 seconds.
-- Redis acceptance passed: 1 test in 3.23 seconds. Signed
-  authorization/revocation acceptance passed: 1 test in 22.68 seconds.
-- The isolated unit suite passed: 398 passed, 1 skipped in 47.96 seconds.
-- Repository-wide Ruff is not clean: 50 findings in pre-existing unrelated
-  tests. The explicit backend paths also have three findings: one import-order
-  issue in 0007 and two S608 findings in migration/seed SQL construction. No
-  source changes were made during this verification pass.
+  and no runtime-role select privilege on internal grants. On 2026-09-14, a
+  fresh secret-injected WSL provision and online Alembic upgrade also passed.
+- Exact collection assertions passed for 6 RLS tests and one test for each
+  signed and Redis acceptance node. The RLS suite passed: 6 tests in 4.12
+  seconds. Signed acceptance passed: 1 test in 28.51 seconds. Redis acceptance
+  passed: 1 test in 3.69 seconds.
+- The isolated unit suite passed: 398 passed, 1 skipped in 89.78 seconds. The
+  skip is intentional because `test_sql_param_types.py` requires live
+  PostgreSQL `PREPARE` support.
+- Scoped Ruff and `git diff --check` pass. Repository-wide Ruff is not clean:
+  50 findings across 17 pre-existing unrelated test files remain. The three
+  former in-scope findings and the EOF whitespace issue are fixed.
 - No production caller matrix, deployment freshness check, Slack/URL enabled
   flow, owner secret rotation, production migration, rollback execution, push,
   or deployment was performed. Those remain owner-controlled acceptance gaps.

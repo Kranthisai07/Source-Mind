@@ -13,6 +13,7 @@ import os
 import shutil
 import uuid
 from collections.abc import AsyncIterator
+from urllib.parse import urlsplit
 
 import pytest
 import pytest_asyncio
@@ -23,6 +24,13 @@ os.environ["ENVIRONMENT"] = "development"
 os.environ["DEBUG"] = "false"
 os.environ["AUTH_DEV_BYPASS_ENABLED"] = "true"
 
+_DISPOSABLE_HOSTS = {"127.0.0.1", "localhost"}
+_DISPOSABLE_DATABASE_PORT = 55432
+_DISPOSABLE_DATABASE_USER = "sourcemind_test"
+_DISPOSABLE_DATABASE_NAME = "sourcemind_security_test"
+_DISPOSABLE_REDIS_PORT = 56379
+_DISPOSABLE_REDIS_DATABASE = "/15"
+
 
 # ─── pg_ctl availability (legacy guard) ──────────────────────────────────────
 
@@ -31,18 +39,36 @@ def _pg_ctl_available() -> bool:
     return shutil.which("pg_ctl") is not None
 
 
-def _disposable_database_configured() -> bool:
-    if os.getenv("SECURITY_TEST_ALLOW_DISPOSABLE") != "1":
+def _is_disposable_database_url(url: str) -> bool:
+    try:
+        parsed = make_url(url)
+    except Exception:
         return False
-    url = os.getenv("TEST_DATABASE_URL", "")
-    if not url:
-        return False
-    parsed = make_url(url)
     return (
-        parsed.host in {"127.0.0.1", "localhost"}
-        and parsed.port == 55432
-        and parsed.username == "sourcemind_test"
-        and parsed.database == "sourcemind_security_test"
+        parsed.host in _DISPOSABLE_HOSTS
+        and parsed.port == _DISPOSABLE_DATABASE_PORT
+        and parsed.username == _DISPOSABLE_DATABASE_USER
+        and parsed.database == _DISPOSABLE_DATABASE_NAME
+    )
+
+
+def _is_disposable_redis_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+        return (
+            parsed.scheme == "redis"
+            and parsed.hostname in _DISPOSABLE_HOSTS
+            and parsed.port == _DISPOSABLE_REDIS_PORT
+            and parsed.path == _DISPOSABLE_REDIS_DATABASE
+        )
+    except ValueError:
+        return False
+
+
+def _disposable_database_configured() -> bool:
+    return (
+        os.getenv("SECURITY_TEST_ALLOW_DISPOSABLE") == "1"
+        and _is_disposable_database_url(os.getenv("TEST_DATABASE_URL", ""))
     )
 
 
@@ -71,16 +97,26 @@ def supabase_url() -> str:
         pytest.skip("TEST_DATABASE_URL is not configured")
     if not url.startswith("postgresql+asyncpg"):
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    parsed = make_url(url)
-    if (
-        parsed.host not in {"127.0.0.1", "localhost"}
-        or parsed.port != 55432
-        or parsed.username != "sourcemind_test"
-        or parsed.database != "sourcemind_security_test"
-    ):
+    if not _is_disposable_database_url(url):
         raise RuntimeError(
             "Refusing non-disposable TEST_DATABASE_URL; expected "
             "sourcemind_test@127.0.0.1:55432/sourcemind_security_test"
+        )
+    return url
+
+
+@pytest.fixture(scope="session")
+def security_test_redis_url() -> str:
+    """Return an explicitly approved disposable local Redis URL."""
+    if os.getenv("SECURITY_TEST_ALLOW_DISPOSABLE") != "1":
+        pytest.skip("Set SECURITY_TEST_ALLOW_DISPOSABLE=1 to use disposable Redis")
+    url = os.getenv("TEST_REDIS_URL", "")
+    if not url:
+        pytest.skip("TEST_REDIS_URL is not configured")
+    if not _is_disposable_redis_url(url):
+        raise RuntimeError(
+            "Refusing non-disposable TEST_REDIS_URL; expected "
+            "redis://127.0.0.1:56379/15"
         )
     return url
 

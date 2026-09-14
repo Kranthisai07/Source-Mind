@@ -30,23 +30,22 @@ from tests.integration.test_security_foundation_real_db import (
     _seed_security_tenants,
 )
 
-_DATABASE_URL = (
-    "postgresql+asyncpg://sourcemind_test:"
-    "sourcemind_test_local_e8af933@127.0.0.1:55432/"
-    "sourcemind_security_test"
-)
-_REDIS_URL = "redis://127.0.0.1:56379/15"
 _ISSUER = "https://clerk.security.test"
 _AUTHORIZED_PARTY = "https://app.security.test"
 
 
-def _configure_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+def _configure_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+    redis_url: str,
+) -> None:
     publishable_host = base64.b64encode(b"clerk.security.test$").decode()
     values = {
-        "DATABASE_URL": _DATABASE_URL,
-        "TEST_DATABASE_URL": _DATABASE_URL,
+        "DATABASE_URL": database_url,
+        "TEST_DATABASE_URL": database_url,
         "SECURITY_TEST_ALLOW_DISPOSABLE": "1",
-        "REDIS_URL": _REDIS_URL,
+        "REDIS_URL": redis_url,
+        "TEST_REDIS_URL": redis_url,
         "ENVIRONMENT": "development",
         "DEBUG": "false",
         "AUTH_DEV_BYPASS_ENABLED": "false",
@@ -121,9 +120,11 @@ def _mutation_headers(token: str) -> dict[str, str]:
 @pytest.mark.asyncio
 async def test_signed_api_role_matrix_revocation_and_worker_reauthorization(
     supabase_engine,
+    supabase_url: str,
+    security_test_redis_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _configure_environment(monkeypatch)
+    _configure_environment(monkeypatch, supabase_url, security_test_redis_url)
     data = await _seed_security_tenants(supabase_engine)
     private_pem, public_jwk = _signing_material()
     clerk_to_email = {
@@ -344,9 +345,11 @@ async def test_signed_api_role_matrix_revocation_and_worker_reauthorization(
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_real_redis_counters_scopes_expiry_sharing_and_fail_closed(
+    supabase_url: str,
+    security_test_redis_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _configure_environment(monkeypatch)
+    _configure_environment(monkeypatch, supabase_url, security_test_redis_url)
     from sourcemind.core import rate_limit
     from sourcemind.core.redis_client import close_redis, get_redis, init_redis
 
@@ -392,8 +395,8 @@ async def test_real_redis_counters_scopes_expiry_sharing_and_fail_closed(
             RateLimitedOperation.SEARCH, expiry_user, workspace_id
         )
 
-    first_instance = Redis.from_url(_REDIS_URL, decode_responses=True)
-    second_instance = Redis.from_url(_REDIS_URL, decode_responses=True)
+    first_instance = Redis.from_url(security_test_redis_url, decode_responses=True)
+    second_instance = Redis.from_url(security_test_redis_url, decode_responses=True)
     shared_key = f"rate-limit:search:{uuid.uuid4()}:{uuid.uuid4()}"
     try:
         first = await first_instance.eval(

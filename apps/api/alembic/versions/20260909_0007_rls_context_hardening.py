@@ -8,8 +8,9 @@ Create Date: 2026-09-09
 from __future__ import annotations
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision = "20260909_0007"
 down_revision = "20260908_0006"
@@ -567,22 +568,23 @@ def downgrade() -> None:
         """
     )
     op.execute(
-        f"""
+        """
         CREATE POLICY sm_workspace_isolation ON workspaces
         USING (
             deleted_at IS NULL
             AND (
-                id = {_WORKSPACE_ID}
+                id = NULLIF(current_setting('app.current_workspace_id', true), '')::uuid
                 OR EXISTS (
                     SELECT 1 FROM workspace_members AS own_membership
                     WHERE own_membership.workspace_id = workspaces.id
-                      AND own_membership.user_id = {_USER_ID}
+                      AND own_membership.user_id =
+                          NULLIF(current_setting('app.current_user_id', true), '')::uuid
                       AND own_membership.status = 'active'
                       AND own_membership.departed_at IS NULL
                 )
             )
         )
-        WITH CHECK ({_USER_ID} IS NOT NULL)
+        WITH CHECK (NULLIF(current_setting('app.current_user_id', true), '')::uuid IS NOT NULL)
         """
     )
 

@@ -33,6 +33,7 @@ import sys
 import uuid
 
 import psycopg2
+from psycopg2 import sql
 
 from sourcemind.core.config import get_settings
 
@@ -54,7 +55,7 @@ def connect():
 
 def show(cur) -> None:
     for table in ("organizations", "workspaces", "users", "workspace_members"):
-        cur.execute(f"SELECT count(*) FROM {table}")
+        cur.execute(sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table)))
         print(f"  {table:20} {cur.fetchone()[0]}")
     cur.execute(
         "SELECT id, name, slug FROM workspaces ORDER BY created_at LIMIT 5"

@@ -272,5 +272,3 @@ class TestFetchClerkUserProfile:
 
         assert email == "noname@example.com"
         assert name is None
-
-

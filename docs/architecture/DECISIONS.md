@@ -1307,14 +1307,13 @@ if so, and remove the old local file only after verification.
   populated 0006-to-0007 check confirmed creator backfill, owner grants,
   forced RLS, separated ownership, and no direct runtime-role select on
   internal access grants.
-- Alembic reports one head. The current WSL runtime required offline SQL
-  rendering through its existing local PostgreSQL admin socket because its
-  fixture owner/bootstrap passwords did not match the running cluster. That is
-  a local configuration mismatch, not a platform restriction.
-- Ruff remains a quality gap: repository-wide lint reports 50 existing
-  unrelated test findings; the explicit backend paths report three findings
-  (0007 import order and two S608 SQL-construction warnings). No source was
-  edited to mask or fix them during verification.
+- Alembic reports one head. On 2026-09-14, the committed secret-injected init
+  wrapper and SQL provisioned a fresh WSL database and an online owner-role
+  upgrade reached 0007. Docker was unavailable in native Windows and WSL, a
+  platform restriction for Compose startup only.
+- Scoped Ruff and `git diff --check` pass. Repository-wide lint still reports
+  50 existing findings across 17 unrelated test files; the prior three
+  in-scope findings and EOF whitespace issue are fixed.
 
 Unit mocks and offline SQL are not substitutes for the production caller
 matrix. Production deployment, freshness, three-caller, enabled Slack/URL,
