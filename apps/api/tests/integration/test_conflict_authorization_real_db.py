@@ -176,20 +176,47 @@ async def test_owner_passes_the_gate(db_session, test_workspace):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_a_user_from_another_workspace_is_denied(db_session, test_workspace):
-    """Membership is per-workspace: admin elsewhere grants nothing here."""
+    """Membership is per-workspace: ownership elsewhere grants nothing here."""
+    from sourcemind.core.database import (
+        set_rls_user_context,
+        set_rls_workspace_context,
+    )
     from sourcemind.models.organization import Organization
-    from sourcemind.models.workspace import Workspace
+    from sourcemind.models.workspace import Workspace, WorkspaceMember
+
+    outsider = uuid.uuid4()
+    suffix = uuid.uuid4().hex[:10]
+    await db_session.execute(
+        text(
+            "INSERT INTO users (id, clerk_id, email, display_name) VALUES "
+            "(CAST(:id AS uuid), :clerk, :email, 'Outside owner')"
+        ),
+        {
+            "id": str(outsider),
+            "clerk": f"clerk-{suffix}",
+            "email": f"{suffix}@example.com",
+        },
+    )
 
     org = Organization(name="Other Org", slug=f"other-{uuid.uuid4().hex[:8]}", plan="free")
     db_session.add(org)
     await db_session.flush()
+    other_id = uuid.uuid4()
+    await set_rls_user_context(db_session, outsider)
+    await set_rls_workspace_context(db_session, other_id)
     other = Workspace(
-        organization_id=org.id, name="Other", slug=f"other-{uuid.uuid4().hex[:8]}"
+        id=other_id,
+        organization_id=org.id,
+        created_by_user_id=outsider,
+        name="Other",
+        slug=f"other-{uuid.uuid4().hex[:8]}",
     )
     db_session.add(other)
     await db_session.flush()
-
-    outsider = await _member(db_session, other.id, "admin")
+    db_session.add(
+        WorkspaceMember(workspace_id=other.id, user_id=outsider, role="owner")
+    )
+    await db_session.flush()
 
     # 404, not 403: being an admin somewhere else must not even confirm that
     # this workspace exists.

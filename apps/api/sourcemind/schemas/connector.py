@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 
 from sourcemind.schemas.common import ItemList
 
@@ -14,6 +14,31 @@ ConnectorTypeLiteral = Literal["github", "discord", "slack", "notion"]
 ConnectorStatusLiteral = Literal["active", "paused", "error"]
 SyncTypeLiteral = Literal["full", "incremental"]
 SyncStatusLiteral = Literal["running", "completed", "failed"]
+
+_SENSITIVE_CONFIG_PARTS = (
+    "token",
+    "secret",
+    "password",
+    "private_key",
+    "api_key",
+    "credential",
+    "webhook",
+)
+
+
+def _redact_config(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: (
+                "[REDACTED]"
+                if any(part in str(key).lower() for part in _SENSITIVE_CONFIG_PARTS)
+                else _redact_config(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_config(item) for item in value]
+    return value
 
 
 # ─── Request schemas ──────────────────────────────────────────────────────────
@@ -61,6 +86,11 @@ class ConnectorResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
+    @field_serializer("config")
+    def serialize_config(self, value: dict[str, Any]) -> dict[str, Any]:
+        """Never return stored connector credentials from API responses."""
+        return _redact_config(value)
+
 
 class ConnectorListResponse(ItemList[ConnectorResponse]):
     """List of connectors for a workspace."""
@@ -81,6 +111,11 @@ class SyncLogResponse(BaseModel):
     completed_at: datetime | None
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("error_message")
+    def serialize_error_message(self, value: str | None) -> str | None:
+        """Keep provider errors in server logs, not tenant-facing responses."""
+        return "Connector sync failed." if value else None
 
 
 class SyncTriggerResponse(BaseModel):

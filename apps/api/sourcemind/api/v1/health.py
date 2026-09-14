@@ -16,7 +16,7 @@ import time
 from typing import Any, Literal
 
 import structlog
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
@@ -49,11 +49,11 @@ async def _check_postgres() -> dict[str, Any]:
         }
     except Exception as exc:
         latency_ms = round((time.perf_counter() - start) * 1000, 2)
-        logger.error("health.postgres_check_failed", error=str(exc))
+        logger.error("health.postgres_check_failed", error_type=type(exc).__name__)
         return {
             "status": "unhealthy",
             "latency_ms": latency_ms,
-            "error": str(exc),
+            "error": "dependency check failed",
         }
 
 
@@ -72,11 +72,11 @@ async def _check_redis() -> dict[str, Any]:
         }
     except Exception as exc:
         latency_ms = round((time.perf_counter() - start) * 1000, 2)
-        logger.error("health.redis_check_failed", error=str(exc))
+        logger.error("health.redis_check_failed", error_type=type(exc).__name__)
         return {
             "status": "unhealthy",
             "latency_ms": latency_ms,
-            "error": str(exc),
+            "error": "dependency check failed",
         }
 
 
@@ -91,15 +91,16 @@ async def _check_neo4j() -> dict[str, Any]:
         return {"status": "healthy", "latency_ms": latency_ms}
     except Exception as exc:
         latency_ms = round((time.perf_counter() - start) * 1000, 2)
+        logger.error("health.neo4j_check_failed", error_type=type(exc).__name__)
         return {
             "status": "unhealthy",
             "latency_ms": latency_ms,
-            "error": str(exc),
+            "error": "dependency check failed",
         }
 
 
 @router.get("/health", summary="Component health check")
-async def health_check() -> JSONResponse:
+async def health_check(request: Request) -> JSONResponse:
     """
     Check the health of all critical infrastructure components.
 
@@ -145,6 +146,7 @@ async def health_check() -> JSONResponse:
 
     total_ms = round((time.perf_counter() - start) * 1000, 2)
     http_status = 200 if overall in ("healthy", "degraded") else 503
+    runtime = request.app.state.runtime_state.snapshot()
 
     return JSONResponse(
         status_code=http_status,
@@ -152,6 +154,8 @@ async def health_check() -> JSONResponse:
             "status": overall,
             "version": settings.app_version,
             "environment": settings.environment,
+            "process_instance_id": runtime.process_instance_id,
+            "requests_since_start": runtime.requests_since_start,
             "components": components,
             "total_latency_ms": total_ms,
         },

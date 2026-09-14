@@ -8,6 +8,7 @@ Never import from the api/ layer in services.
 
 import base64
 import uuid
+from enum import StrEnum
 from typing import Annotated
 from uuid import UUID
 
@@ -19,13 +20,20 @@ from redis.asyncio import Redis
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sourcemind.core.database import get_db_session
+from sourcemind.core.config import get_settings
+from sourcemind.core.database import (
+    get_db_session,
+    set_rls_user_context,
+    set_rls_workspace_context,
+)
 from sourcemind.core.exceptions import (
     ConflictNotFoundError,
     ConnectorNotFoundError,
     InternalError,
     InvalidIdempotencyKeyError,
     MemoryNotFoundError,
+    TokenExpiredError,
+    TokenInvalidError,
     UnauthorizedError,
     WorkspaceAccessDeniedError,
     WorkspaceNotFoundError,
@@ -199,12 +207,12 @@ def _clerk_jwks_url(publishable_key: str) -> str:
         ) from exc
 
 
-async def _fetch_jwks(jwks_url: str) -> list[dict]:
+async def _fetch_jwks(jwks_url: str, *, force_refresh: bool = False) -> list[dict]:
     """Fetch and cache JWKS keys with a 5-minute TTL."""
     import time
 
     cached = _jwks_cache.get(jwks_url)
-    if cached and (time.time() - cached["fetched_at"]) < 300:
+    if not force_refresh and cached and (time.time() - cached["fetched_at"]) < 300:
         return cached["keys"]
 
     async with httpx.AsyncClient(timeout=10) as client:
@@ -212,27 +220,73 @@ async def _fetch_jwks(jwks_url: str) -> list[dict]:
         resp.raise_for_status()
         data = resp.json()
 
-    _jwks_cache[jwks_url] = {"keys": data["keys"], "fetched_at": time.time()}
-    return data["keys"]
+    keys = data.get("keys")
+    if not isinstance(keys, list) or not keys:
+        raise UnauthorizedError("Token signing keys are unavailable.")
+
+    _jwks_cache[jwks_url] = {"keys": keys, "fetched_at": time.time()}
+    return keys
 
 
-async def _verify_clerk_token(token: str, jwks_url: str) -> dict:
-    """Verify a Clerk JWT and return its claims."""
+async def _verify_clerk_token(
+    token: str,
+    jwks_url: str,
+    *,
+    issuer: str,
+    authorized_parties: list[str],
+    audience: str | None = None,
+) -> dict:
+    """Verify a Clerk session JWT and return its validated claims."""
+    try:
+        header = jwt.get_unverified_header(token)
+    except JWTError as exc:
+        raise TokenInvalidError("Token header is malformed.") from exc
+
+    if header.get("alg") != "RS256" or header.get("typ", "JWT") != "JWT":
+        raise TokenInvalidError("Token uses an unsupported header.")
+
+    key_id = header.get("kid")
+    if not isinstance(key_id, str) or not key_id:
+        raise TokenInvalidError("Token is missing a signing-key identifier.")
+
     keys = await _fetch_jwks(jwks_url)
-    # Try each key — Clerk rotates keys
-    last_err: Exception | None = None
-    for key in keys:
-        try:
-            claims = jwt.decode(
-                token,
-                key,
-                algorithms=["RS256"],
-                options={"verify_aud": False},
-            )
-            return claims
-        except JWTError as e:
-            last_err = e
-    raise UnauthorizedError(f"Token verification failed: {last_err}")
+    key = next((candidate for candidate in keys if candidate.get("kid") == key_id), None)
+    if key is None:
+        keys = await _fetch_jwks(jwks_url, force_refresh=True)
+        key = next((candidate for candidate in keys if candidate.get("kid") == key_id), None)
+    if key is None:
+        raise TokenInvalidError("Token signing key is unknown.")
+
+    options = {
+        "require_exp": True,
+        "require_iat": True,
+        "require_nbf": True,
+        "require_sub": True,
+        "require_iss": True,
+        "verify_aud": audience is not None,
+    }
+    try:
+        claims = jwt.decode(
+            token,
+            key,
+            algorithms=["RS256"],
+            issuer=issuer,
+            audience=audience,
+            options=options,
+        )
+    except JWTError as exc:
+        if "expired" in str(exc).lower():
+            raise TokenExpiredError("Session token has expired.") from exc
+        raise TokenInvalidError("Session token verification failed.") from exc
+
+    if not claims.get("sid"):
+        raise TokenInvalidError("Token is not a Clerk session token.")
+    authorized_party = claims.get("azp")
+    if authorized_party is not None and authorized_party not in authorized_parties:
+        raise TokenInvalidError("Token authorized party is not permitted.")
+    if claims.get("sts") == "pending":
+        raise UnauthorizedError("Clerk session is not fully active.")
+    return claims
 
 
 # Simple in-memory cache for Clerk user profiles {clerk_id: (email, display_name)}
@@ -245,7 +299,8 @@ async def _fetch_clerk_user_profile(
     """
     Fetch email + display name from Clerk's Users API.
     Results are cached in-process (profiles rarely change mid-session).
-    Falls back to a placeholder email if the API call fails.
+    Profile lookup fails closed so invalid responses cannot provision a
+    fabricated identity.
     """
     if clerk_id in _user_profile_cache:
         return _user_profile_cache[clerk_id]
@@ -262,9 +317,15 @@ async def _fetch_clerk_user_profile(
         # Primary email address
         email_id = data.get("primary_email_address_id")
         email = next(
-            (e["email_address"] for e in data.get("email_addresses", []) if e["id"] == email_id),
-            f"{clerk_id}@clerk.local",
+            (
+                entry["email_address"]
+                for entry in data.get("email_addresses", [])
+                if entry.get("id") == email_id and entry.get("email_address")
+            ),
+            None,
         )
+        if email is None:
+            raise UnauthorizedError("Clerk user has no verified primary email.")
         first = data.get("first_name") or ""
         last = data.get("last_name") or ""
         display_name: str | None = (f"{first} {last}".strip()) or None
@@ -272,11 +333,11 @@ async def _fetch_clerk_user_profile(
         _user_profile_cache[clerk_id] = (email, display_name)
         return email, display_name
 
+    except UnauthorizedError:
+        raise
     except Exception as exc:
         logger.warning("auth.clerk_profile_fetch_failed", clerk_id=clerk_id, error=str(exc))
-        fallback = (f"{clerk_id}@clerk.local", None)
-        _user_profile_cache[clerk_id] = fallback
-        return fallback
+        raise UnauthorizedError("Unable to verify the Clerk user profile.") from exc
 
 
 async def _get_or_create_user(
@@ -322,20 +383,20 @@ async def get_current_user(
     Verifies the token signature against the Clerk instance JWKS endpoint,
     extracts claims, and resolves (or auto-provisions) the internal user record.
 
-    In development mode with no Clerk key configured, returns a mock user.
+    Development bypass is available only through the explicit validated flag.
     """
-    from sourcemind.core.config import get_settings
     settings = get_settings()
 
-    # Development bypass: no Clerk key → mock user for local testing
-    if settings.is_development and not settings.clerk_secret_key:
-        logger.warning("auth.bypassed", reason="CLERK_SECRET_KEY not set")
-        return AuthenticatedUser(
+    if settings.auth_dev_bypass_enabled:
+        logger.warning("auth.bypassed", reason="explicit development flag")
+        current_user = AuthenticatedUser(
             user_id=UUID("00000000-0000-4000-8000-000000000001"),
             clerk_id="dev_user_1",
             email="dev@sourcemind.local",
             display_name="Dev User",
         )
+        await set_rls_user_context(db, current_user.user_id)
+        return current_user
 
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
@@ -348,12 +409,20 @@ async def get_current_user(
         raise UnauthorizedError("Bearer token is empty.")
 
     jwks_url = _clerk_jwks_url(settings.clerk_publishable_key)
+    issuer = jwks_url.removesuffix("/.well-known/jwks.json")
     try:
-        claims = await _verify_clerk_token(token, jwks_url)
+        claims = await _verify_clerk_token(
+            token,
+            jwks_url,
+            issuer=issuer,
+            authorized_parties=settings.clerk_authorized_parties,
+            audience=settings.clerk_audience,
+        )
     except UnauthorizedError:
         raise
     except Exception as exc:
-        raise UnauthorizedError(f"Token verification error: {exc}") from exc
+        logger.warning("auth.token_verification_failed", error=type(exc).__name__)
+        raise UnauthorizedError("Token verification failed.") from exc
 
     clerk_id: str = claims.get("sub", "")
     if not clerk_id:
@@ -363,7 +432,9 @@ async def get_current_user(
     # Cache the result in _user_profile_cache to avoid repeated API calls.
     email, display_name = await _fetch_clerk_user_profile(clerk_id, settings.clerk_secret_key)
 
-    return await _get_or_create_user(db, clerk_id, email, display_name)
+    current_user = await _get_or_create_user(db, clerk_id, email, display_name)
+    await set_rls_user_context(db, current_user.user_id)
+    return current_user
 
 
 CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
@@ -380,6 +451,23 @@ RequestID = Annotated[str, Depends(get_request_id)]
 
 
 # ─── Workspace role authorization ─────────────────────────────────────────────
+
+class WorkspacePermission(StrEnum):
+    """Named workspace capabilities used by routes and workers."""
+
+    READ = "read"
+    CONTRIBUTE = "contribute"
+    ADMINISTER = "administer"
+    OWNER = "owner"
+
+
+_PERMISSION_ROLES: dict[WorkspacePermission, frozenset[str]] = {
+    WorkspacePermission.READ: frozenset({"viewer", "member", "admin", "owner"}),
+    WorkspacePermission.CONTRIBUTE: frozenset({"member", "admin", "owner"}),
+    WorkspacePermission.ADMINISTER: frozenset({"admin", "owner"}),
+    WorkspacePermission.OWNER: frozenset({"owner"}),
+}
+
 
 async def require_workspace_member(
     session: AsyncSession,
@@ -401,9 +489,13 @@ async def require_workspace_member(
     row = (
         await session.execute(
             text(
-                "SELECT role FROM workspace_members "
-                "WHERE workspace_id = CAST(:ws AS uuid) "
-                "  AND user_id = CAST(:uid AS uuid)"
+                "SELECT wm.role FROM workspace_members AS wm "
+                "JOIN workspaces AS w ON w.id = wm.workspace_id "
+                "WHERE wm.workspace_id = CAST(:ws AS uuid) "
+                "  AND wm.user_id = CAST(:uid AS uuid) "
+                "  AND wm.status = 'active' "
+                "  AND wm.departed_at IS NULL "
+                "  AND w.deleted_at IS NULL"
             ),
             {"ws": str(workspace_id), "uid": str(user_id)},
         )
@@ -411,7 +503,32 @@ async def require_workspace_member(
 
     if row is None:
         raise WorkspaceNotFoundError(str(workspace_id))
-    return row.role
+    role = str(row.role)
+    if role not in _PERMISSION_ROLES[WorkspacePermission.READ]:
+        logger.error(
+            "auth.invalid_workspace_role",
+            workspace_id=str(workspace_id),
+            user_id=str(user_id),
+            role=role,
+        )
+        raise WorkspaceNotFoundError(str(workspace_id))
+    await set_rls_workspace_context(session, workspace_id)
+    return role
+
+
+async def require_workspace_permission(
+    session: AsyncSession,
+    user_id: UUID,
+    workspace_id: UUID,
+    permission: WorkspacePermission,
+) -> str:
+    """Require an active membership with the requested capability."""
+    return await require_workspace_role(
+        session,
+        user_id,
+        workspace_id,
+        set(_PERMISSION_ROLES[permission]),
+    )
 
 
 async def require_workspace_role(
@@ -458,6 +575,7 @@ async def _require_resource_access(
     table: str,
     not_found: type[Exception],
     label: str,
+    permission: WorkspacePermission,
 ) -> UUID:
     """Resolve the workspace owning `resource_id`, then assert membership.
 
@@ -475,7 +593,7 @@ async def _require_resource_access(
         raise not_found(f"{label} {resource_id} not found.")
 
     try:
-        await require_workspace_member(session, user_id, ws_id)
+        await require_workspace_permission(session, user_id, ws_id, permission)
     except WorkspaceNotFoundError:
         # Deliberately re-raised as the resource's own 404. Letting SM022
         # through would reveal that the resource exists and belongs to a
@@ -486,29 +604,44 @@ async def _require_resource_access(
 
 
 async def require_memory_access(
-    session: AsyncSession, user_id: UUID, memory_id: UUID
+    session: AsyncSession,
+    user_id: UUID,
+    memory_id: UUID,
+    permission: WorkspacePermission = WorkspacePermission.READ,
 ) -> UUID:
     """Assert the caller may touch this memory; return its workspace id."""
     return await _require_resource_access(
-        session, user_id, memory_id, "memories", MemoryNotFoundError, "Memory"
+        session,
+        user_id,
+        memory_id,
+        "memories",
+        MemoryNotFoundError,
+        "Memory",
+        permission,
     )
 
 
 async def require_conflict_access(
-    session: AsyncSession, user_id: UUID, conflict_id: UUID
+    session: AsyncSession,
+    user_id: UUID,
+    conflict_id: UUID,
+    permission: WorkspacePermission = WorkspacePermission.READ,
 ) -> UUID:
     """Assert the caller may touch this conflict; return its workspace id."""
     return await _require_resource_access(
         session, user_id, conflict_id, "memory_conflicts",
-        ConflictNotFoundError, "Conflict",
+        ConflictNotFoundError, "Conflict", permission,
     )
 
 
 async def require_connector_access(
-    session: AsyncSession, user_id: UUID, connector_id: UUID
+    session: AsyncSession,
+    user_id: UUID,
+    connector_id: UUID,
+    permission: WorkspacePermission = WorkspacePermission.ADMINISTER,
 ) -> UUID:
     """Assert the caller may touch this connector; return its workspace id."""
     return await _require_resource_access(
         session, user_id, connector_id, "connector_configs",
-        ConnectorNotFoundError, "Connector",
+        ConnectorNotFoundError, "Connector", permission,
     )

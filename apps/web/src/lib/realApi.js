@@ -27,6 +27,66 @@ const CONFIGURED_WS = (process.env.REACT_APP_DEFAULT_WORKSPACE_ID || "").trim();
 
 let _wsPromise = null;
 
+// Bumped on every identity change. Two jobs:
+//
+//   1. A lookup abandoned by an identity change must not write back into the
+//      module after the fact. Its `.catch` would otherwise null out the NEW
+//      user's in-flight memo (see resolveWorkspaceId), so the generation is
+//      captured when the memo is created and re-checked before clearing it.
+//   2. It gives the React layer something to subscribe to, so mounted screens
+//      can drop the previous identity's rendered rows and invalidate requests
+//      already on the wire. Clearing `_wsPromise` alone does neither: it only
+//      affects lookups that have not started yet.
+let _identityGeneration = 0;
+const _identityListeners = new Set();
+
+/** Current identity generation. Changes iff the signed-in user changed. */
+export function identityGeneration() {
+    return _identityGeneration;
+}
+
+/**
+ * Subscribe to identity changes. Returns an unsubscribe function.
+ *
+ * Listeners are called synchronously from resetIdentityScopedCaches, so a
+ * subscriber can invalidate in-flight work before any newly issued request
+ * has a chance to resolve.
+ */
+export function onIdentityReset(listener) {
+    _identityListeners.add(listener);
+    return () => _identityListeners.delete(listener);
+}
+
+/**
+ * Drop every cached, identity-scoped value.
+ *
+ * `_wsPromise` memoises the workspace UUID for the whole module lifetime. That
+ * is correct for one signed-in user and wrong the instant the user changes: B
+ * would inherit A's workspace id and every scoped request would be issued
+ * against a workspace B may not belong to. The API would answer 404 (the
+ * isolation gate does its job), but the UI would be asking the wrong question
+ * and would report "not available" rather than showing B's own data.
+ *
+ * Today a sign-out is a full document navigation, so module state is discarded
+ * anyway — see the note in ClerkAuthBridge. This exists so that correctness
+ * does not DEPEND on that: it is a property of Clerk's navigation mode, not
+ * something this app states or controls, and adding routerPush/routerReplace
+ * (the ordinary Clerk + React Router integration) would silently remove it.
+ */
+export function resetIdentityScopedCaches() {
+    _identityGeneration += 1;
+    _wsPromise = null;
+    // Copy first: a listener may unsubscribe itself while being notified.
+    for (const listener of Array.from(_identityListeners)) {
+        try {
+            listener(_identityGeneration);
+        } catch {
+            // A broken subscriber must not stop the others from being told the
+            // identity changed — that is the failure mode this exists to stop.
+        }
+    }
+}
+
 /**
  * The workspace UUID to scope requests to.
  *
@@ -56,6 +116,8 @@ async function resolveWorkspaceId(explicit) {
     if (CONFIGURED_WS) return CONFIGURED_WS;
 
     if (!_wsPromise) {
+        // Captured with the memo, checked before the memo is cleared below.
+        const generation = _identityGeneration;
         _wsPromise = request("/v1/workspaces")
             .then((r) => {
                 // This route IS enveloped: {data: [...], meta: {...}}.
@@ -71,7 +133,13 @@ async function resolveWorkspaceId(explicit) {
                 return list[0].id;
             })
             .catch((err) => {
-                _wsPromise = null;
+                // Only clear the memo if it is still the one this lookup
+                // created. If the user changed while this was in flight, the
+                // memo now belongs to the NEW user's lookup, and nulling it
+                // here would discard a live request and force a duplicate.
+                // A failure is the likely case, not a rare one: the previous
+                // user's token is gone, so this call typically ends in 401.
+                if (generation === _identityGeneration) _wsPromise = null;
                 throw err;
             });
     }
@@ -125,11 +193,29 @@ export const ACTION_COLOR = {
 };
 
 class ApiError extends Error {
-    constructor(status, message, body) {
+    constructor(status, message, body, { retryAfterSeconds = null, network = false } = {}) {
         super(message);
         this.status = status;
         this.body = body;
+        // Populated from the Retry-After response header on a 429. The backend
+        // limiter is fail-closed, so a client that retries immediately makes
+        // the situation worse; the UI needs the server's own number.
+        this.retryAfterSeconds = retryAfterSeconds;
+        // True when fetch() itself rejected — DNS failure, offline, CORS,
+        // connection refused. There is no status in that case, and it is not
+        // the same condition as a 5xx, which proves the server was reached.
+        this.network = network;
     }
+}
+
+/** Retry-After is either delta-seconds or an HTTP-date (RFC 9110 §10.2.3). */
+function parseRetryAfter(raw) {
+    if (!raw) return null;
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds)) return seconds >= 0 ? Math.ceil(seconds) : null;
+    const when = Date.parse(raw);
+    if (Number.isNaN(when)) return null;
+    return Math.max(0, Math.ceil((when - Date.now()) / 1000));
 }
 
 async function request(path, { method = "GET", body, params } = {}) {
@@ -155,16 +241,31 @@ async function request(path, { method = "GET", body, params } = {}) {
     if (token) headers.Authorization = `Bearer ${token}`;
 
     const t0 = performance.now();
-    const res = await fetch(url.toString(), {
-        method,
-        credentials: "include",
-        headers,
-        body: body ? JSON.stringify(body) : undefined,
-    });
+    let res;
+    try {
+        res = await fetch(url.toString(), {
+            method,
+            credentials: "include",
+            headers,
+            body: body ? JSON.stringify(body) : undefined,
+        });
+    } catch (cause) {
+        // fetch() rejects only on a transport failure. Surfacing it as an
+        // ApiError with network:true lets callers tell "could not reach the
+        // API" apart from "the API answered with an error", which need
+        // different wording and different retry behaviour.
+        throw new ApiError(0, cause?.message || "Network request failed", null, {
+            network: true,
+        });
+    }
     const latency = Math.round(performance.now() - t0);
     const text = await res.text();
     const data = text ? JSON.parse(text) : {};
-    if (!res.ok) throw new ApiError(res.status, `${res.status} ${res.statusText}`, data);
+    if (!res.ok) {
+        throw new ApiError(res.status, `${res.status} ${res.statusText}`, data, {
+            retryAfterSeconds: parseRetryAfter(res.headers.get("Retry-After")),
+        });
+    }
     return { ...data, __latency_ms: latency };
 }
 
@@ -395,14 +496,55 @@ export const realApi = {
         request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/conflicts`, {
             params: { status },
         }),
+    // GET /v1/memories/{id}/versions -> MemoryVersionsResponse
+    //   { versions: [{id, version, is_current, content, created_at}], total }
+    //
+    // Declared with `response_model=MemoryVersionsResponse`, NOT
+    // `APIResponse[T]`, so the payload is raw and must not be unwrapped.
+    // Guarded by require_memory_access, so a non-member gets 404 rather than
+    // an empty list — the caller has to tell those apart.
+    getMemoryVersions: async (id) =>
+        request(`/v1/memories/${encodeURIComponent(id)}/versions`),
+
     getConflict: (id) => request(`/v1/conflicts/${encodeURIComponent(id)}`),
     reviewConflict: (id) =>
         request(`/v1/conflicts/${encodeURIComponent(id)}/review`, { method: "POST" }),
-    resolveConflict: (id, { resolution_type, note }) =>
-        request(`/v1/conflicts/${encodeURIComponent(id)}/resolve`, {
+    // ResolveBody declares {resolution_type, resolution_note, merged_content,
+    // revisit_at, tag_a, tag_b}. This sent `note`, which Pydantic silently
+    // dropped — the field simply is not on the model — so every resolution
+    // note the user typed was discarded without any error. The value reaches
+    // `resolution_note = :note` in resolver.py once the key is right.
+    //
+    // `note` is still accepted as the caller-facing argument name so existing
+    // call sites keep working; only the wire key changes.
+    // ResolveBody: {resolution_type, resolution_note, merged_content,
+    // revisit_at, tag_a, tag_b}. Only the fields the chosen action needs are
+    // sent; the rest stay absent rather than being sent as null, so a typo in
+    // an action name cannot look like a deliberate empty value.
+    //
+    // revisit_at must carry an offset: memory_conflicts.revisit_at is
+    // TIMESTAMP(timezone=True), and resolver.py binds the parsed datetime
+    // straight through to asyncpg. A naive local string would be stored as
+    // though it were UTC and the conflict would resurface at the wrong hour.
+    // The caller passes an ISO-8601 UTC instant.
+    resolveConflict: (id, {
+        resolution_type,
+        note,
+        merged_content,
+        revisit_at,
+        tag_a,
+        tag_b,
+    } = {}) => {
+        const body = { resolution_type, resolution_note: note ?? null };
+        if (merged_content !== undefined) body.merged_content = merged_content;
+        if (revisit_at !== undefined) body.revisit_at = revisit_at;
+        if (tag_a !== undefined) body.tag_a = tag_a;
+        if (tag_b !== undefined) body.tag_b = tag_b;
+        return request(`/v1/conflicts/${encodeURIComponent(id)}/resolve`, {
             method: "POST",
-            body: { resolution_type, note },
-        }),
+            body,
+        });
+    },
 
     // ----- connectors -----
     listConnectors: async (wsId) => {
@@ -501,4 +643,4 @@ export const realApi = {
 };
 
 export default realApi;
-export { ApiError };
+export { ApiError, parseRetryAfter };

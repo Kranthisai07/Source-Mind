@@ -21,6 +21,7 @@ from sourcemind.core.dependencies import (
     RequestID,
     require_workspace_member,
 )
+from sourcemind.core.rate_limit import RateLimitedOperation, enforce_rate_limit
 
 logger = structlog.get_logger(__name__)
 
@@ -40,6 +41,9 @@ async def workspace_overview(
     Returns health score, top contributors, recent activity.
     """
     await require_workspace_member(db, current_user.user_id, workspace_id)
+    await enforce_rate_limit(
+        RateLimitedOperation.ANALYTICS, current_user.user_id, workspace_id
+    )
 
     from sourcemind.services.analytics.workspace import get_overview
 
@@ -55,6 +59,9 @@ async def contribution_map(
 ) -> dict[str, Any]:
     """Per-contributor breakdown of knowledge ownership and collaboration."""
     await require_workspace_member(db, current_user.user_id, workspace_id)
+    await enforce_rate_limit(
+        RateLimitedOperation.ANALYTICS, current_user.user_id, workspace_id
+    )
 
     from sourcemind.services.analytics.workspace import get_contribution_map
 
@@ -75,6 +82,9 @@ async def knowledge_gaps(
       - high_conflict_area: tag clusters with >20% open conflict rate
     """
     await require_workspace_member(db, current_user.user_id, workspace_id)
+    await enforce_rate_limit(
+        RateLimitedOperation.ANALYTICS, current_user.user_id, workspace_id
+    )
 
     from sourcemind.services.analytics.workspace import get_knowledge_gaps
 
@@ -96,6 +106,9 @@ async def who_would_know(
     across BM25-matching memories.
     """
     await require_workspace_member(db, current_user.user_id, workspace_id)
+    await enforce_rate_limit(
+        RateLimitedOperation.ANALYTICS, current_user.user_id, workspace_id
+    )
 
     from sourcemind.services.analytics.workspace import who_would_know as _wwk
 

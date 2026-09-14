@@ -21,3 +21,9 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Jest --json reports. CI writes these so the gate can prove the tests
+# actually executed, and uploads them as artifacts; they are run output, not
+# source. A developer running the same commands locally produces them too.
+unit-results.json
+integration-results.json

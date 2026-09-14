@@ -1,3 +1,9 @@
+/* Design tokens: primitive -> semantic -> component.
+   Mirrors the primitive layer in tailwind.config.js; see that file's header.
+   Must precede every other rule: a CSS @import after a rule is invalid and
+   postcss will drop or warn on it. */
+@import './styles/tokens.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

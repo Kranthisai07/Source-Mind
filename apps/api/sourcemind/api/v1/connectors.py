@@ -22,10 +22,12 @@ from sourcemind.core.dependencies import (
     CurrentUser,
     DBSession,
     RequestID,
+    WorkspacePermission,
     require_connector_access,
-    require_workspace_member,
+    require_workspace_permission,
 )
 from sourcemind.core.exceptions import ConnectorNotFoundError
+from sourcemind.core.rate_limit import RateLimitedOperation, enforce_rate_limit
 from sourcemind.models.connector import ConnectorConfig, ConnectorSyncLog
 from sourcemind.schemas.connector import (
     ConnectorCreateRequest,
@@ -59,7 +61,9 @@ async def create_connector(
     request_id: RequestID,
 ) -> ConnectorResponse:
     """Register a new connector configuration for the workspace."""
-    await require_workspace_member(db, current_user.user_id, workspace_id)
+    await require_workspace_permission(
+        db, current_user.user_id, workspace_id, WorkspacePermission.ADMINISTER
+    )
 
     connector = ConnectorConfig(
         workspace_id=workspace_id,
@@ -98,7 +102,9 @@ async def list_connectors(
     status_filter: str | None = Query(default=None, alias="status"),
 ) -> ConnectorListResponse:
     """List all connectors for the given workspace, with optional filters."""
-    await require_workspace_member(db, current_user.user_id, workspace_id)
+    await require_workspace_permission(
+        db, current_user.user_id, workspace_id, WorkspacePermission.ADMINISTER
+    )
 
     query = select(ConnectorConfig).where(
         ConnectorConfig.workspace_id == workspace_id
@@ -229,7 +235,12 @@ async def trigger_sync(
     """Enqueue a background sync task for the given connector."""
     from sourcemind.workers.connector_tasks import sync_github_connector
 
-    await require_connector_access(db, current_user.user_id, connector_id)
+    workspace_id = await require_connector_access(
+        db, current_user.user_id, connector_id
+    )
+    await enforce_rate_limit(
+        RateLimitedOperation.CONNECTOR_SYNC, current_user.user_id, workspace_id
+    )
 
     result = await db.execute(
         select(ConnectorConfig).where(ConnectorConfig.id == connector_id)

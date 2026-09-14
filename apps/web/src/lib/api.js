@@ -6,7 +6,7 @@
 // Both clients return identical shapes — UI components need no changes.
 
 import { mockApi } from "./mockApi";
-import { realApi } from "./realApi";
+import { realApi, resetIdentityScopedCaches } from "./realApi";
 
 const useMocks = (process.env.REACT_APP_USE_MOCKS ?? "true").toLowerCase() !== "false";
 
@@ -17,5 +17,13 @@ console.info(
 );
 
 export const api = useMocks ? mockApi : realApi;
+
+// Mock mode has no per-identity cache to clear, so this is a no-op there.
+//
+// Note the asymmetry with onIdentityReset, which consumers import straight
+// from realApi rather than through this switch: subscribing is harmless in
+// either mode, because in mock mode nothing ever calls the reset, so the
+// listeners simply never fire. Only the RESET needs gating.
+export const resetApiCaches = useMocks ? () => {} : resetIdentityScopedCaches;
 export default api;
 export { useMocks };

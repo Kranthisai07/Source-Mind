@@ -78,6 +78,20 @@ export const mockApi = {
         return m || { error: "not_found" };
     }),
 
+    // GET /v1/memories/:id/versions — mirrors MemoryVersionsResponse so mock
+    // mode exercises the same shape the real endpoint returns.
+    getMemoryVersions: (id) => request(() => {
+        const m = MEMORIES.find(x => x.memory_id === id);
+        const versions = (m?.versions ?? []).map((v, i) => ({
+            id: `${id}-v${v.v ?? i + 1}`,
+            version: v.v ?? i + 1,
+            is_current: i === 0,
+            content: v.summary ?? "",
+            created_at: v.at ?? null,
+        }));
+        return { versions, total: versions.length };
+    }),
+
     // POST /v1/memories (returns job_id)
     createMemory: (_payload) => request(() => ({
         job_id: `job_${Date.now().toString(36)}`,

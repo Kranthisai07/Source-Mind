@@ -29,6 +29,7 @@ patched out so no real ingestion work is queued.
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -40,10 +41,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 
 def _live_db() -> bool:
-    from sourcemind.core.config import get_settings
-
-    url = get_settings().database_url or ""
-    return bool(url) and "localhost" not in url and "127.0.0.1" not in url
+    url = os.getenv("TEST_DATABASE_URL", "")
+    return (
+        os.getenv("SECURITY_TEST_ALLOW_DISPOSABLE") == "1"
+        and "sourcemind_test@127.0.0.1:55432/sourcemind_security_test" in url
+    )
 
 
 requires_live_db = pytest.mark.skipif(
@@ -63,15 +65,13 @@ async def committing_engine():
     outside that connection can see the rows, which makes it useless for a test
     about cross-connection visibility.
     """
-    from sourcemind.core.config import get_settings
-
     # Sized for the burst test, which opens 20 concurrent sessions. At 5+5 the
     # pool was exhausted and the test failed with a QueuePool timeout rather
     # than on the property under test - a defect in the scaffolding, not in
     # commit ordering. It only surfaced once Railway latency rose enough for
     # connections to be held longer.
     engine = create_async_engine(
-        get_settings().async_database_url,
+        os.environ["TEST_DATABASE_URL"],
         pool_size=25,
         max_overflow=10,
         pool_pre_ping=True,
@@ -104,8 +104,6 @@ def _visible_from_another_connection(document_id: str) -> bool:
     """
 
     async def check() -> bool:
-        from sourcemind.core.config import get_settings
-
         # NullPool explicitly: poolclass=None means "use the default", which
         # would pool connections this short-lived engine never reuses. Each
         # check runs in its own thread and loop, so the connection must be
@@ -113,7 +111,7 @@ def _visible_from_another_connection(document_id: str) -> bool:
         from sqlalchemy.pool import NullPool
 
         engine = create_async_engine(
-            get_settings().async_database_url,
+            os.environ["TEST_DATABASE_URL"],
             poolclass=NullPool,
             connect_args={"statement_cache_size": 0},
         )

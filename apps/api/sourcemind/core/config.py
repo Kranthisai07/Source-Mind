@@ -7,7 +7,9 @@ All secrets come from environment — never hardcoded.
 
 from enum import StrEnum
 from functools import lru_cache
+from ipaddress import ip_address
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -130,10 +132,18 @@ class Settings(BaseSettings):
         against a *.railway.internal host fails with "server does not support
         SSL". Everything else — public proxies, Supabase — does require it.
         """
-        return (
-            "ssl=require" in self.database_url
-            or ".railway.internal" not in self.database_url
-        )
+        if "ssl=require" in self.database_url or "sslmode=require" in self.database_url:
+            return True
+
+        hostname = urlsplit(self.database_url).hostname
+        if hostname is None or hostname.endswith(".railway.internal"):
+            return False
+        if hostname == "localhost":
+            return False
+        try:
+            return not ip_address(hostname).is_loopback
+        except ValueError:
+            return True
     database_pool_size: int = 20
     database_max_overflow: int = 10
     database_pool_timeout: int = 30
@@ -163,9 +173,11 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-4-6"
 
     # ── Auth (Clerk) ──────────────────────────────────────────────
+    auth_dev_bypass_enabled: bool = False
     clerk_secret_key: Annotated[str, Field(repr=False)] = ""
     clerk_publishable_key: str = ""
-    clerk_jwks_url: str = "https://api.clerk.com/v1/jwks"
+    clerk_authorized_parties: list[str] = Field(default_factory=list)
+    clerk_audience: str | None = None
 
     # ── AWS / S3 ──────────────────────────────────────────────────
     aws_access_key_id: Annotated[str, Field(repr=False)] = ""
@@ -179,11 +191,23 @@ class Settings(BaseSettings):
     ff_conflict_detection: bool = True
     ff_neo4j_attribution: bool = False
     ff_kafka_events: bool = False
+    url_ingestion_enabled: bool = False
+    url_ingestion_timeout_seconds: float = 15.0
+    url_ingestion_max_redirects: int = 5
+    url_ingestion_max_bytes: int = 2_000_000
+    slack_memory_commands_enabled: bool = False
 
     # ── Rate Limiting ─────────────────────────────────────────────
     rate_limit_free: int = 100       # requests per minute
     rate_limit_pro: int = 1000
     rate_limit_enterprise: int = 10000
+    rate_limit_fail_closed: bool = True
+    rate_limit_search_per_minute: int = 60
+    rate_limit_ingestion_per_minute: int = 10
+    rate_limit_analytics_per_minute: int = 30
+    rate_limit_workspace_create_per_hour: int = 5
+    rate_limit_connector_sync_per_hour: int = 5
+    rate_limit_slack_per_minute: int = 20
 
     # ── Sentry ────────────────────────────────────────────────────
     sentry_dsn: Annotated[str, Field(repr=False)] = ""
@@ -202,7 +226,9 @@ class Settings(BaseSettings):
         default="", alias="SLACK_SIGNING_SECRET"
     )
     slack_app_token: Annotated[str, Field(repr=False)] = Field(default="", alias="SLACK_APP_TOKEN")
-    slack_default_workspace_id: str = Field(default="", alias="SLACK_DEFAULT_WORKSPACE_ID")
+    slack_installations: Annotated[
+        dict[str, dict[str, object]], Field(repr=False)
+    ] = Field(default_factory=dict, alias="SLACK_INSTALLATIONS")
 
     # ── App URLs ──────────────────────────────────────────────────
     sourcemind_app_url: str = Field(default="https://app.sourcemind.ai", alias="SOURCEMIND_APP_URL")
@@ -210,6 +236,28 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_production_settings(self) -> "Settings":
         """Enforce required secrets in production."""
+        if self.auth_dev_bypass_enabled:
+            if self.environment != Environment.DEVELOPMENT:
+                raise ValueError(
+                    "AUTH_DEV_BYPASS_ENABLED is permitted only in development"
+                )
+        else:
+            if not self.clerk_secret_key:
+                raise ValueError(
+                    "CLERK_SECRET_KEY is required unless the explicit development-only "
+                    "AUTH_DEV_BYPASS_ENABLED flag is true"
+                )
+            if not self.clerk_publishable_key:
+                raise ValueError(
+                    "CLERK_PUBLISHABLE_KEY is required unless the explicit development-only "
+                    "AUTH_DEV_BYPASS_ENABLED flag is true"
+                )
+            if not self.clerk_authorized_parties:
+                raise ValueError(
+                    "CLERK_AUTHORIZED_PARTIES must list the frontend origins allowed "
+                    "to mint session tokens"
+                )
+
         if self.environment == Environment.PRODUCTION:
             if not self.openai_api_key:
                 raise ValueError("OPENAI_API_KEY is required in production")
@@ -228,6 +276,38 @@ class Settings(BaseSettings):
                 )
             if not self.sentry_dsn:
                 raise ValueError("SENTRY_DSN is required in production")
+            if self.debug:
+                raise ValueError("DEBUG must be false in production")
+
+        if self.url_ingestion_timeout_seconds <= 0:
+            raise ValueError("URL_INGESTION_TIMEOUT_SECONDS must be positive")
+        if not 0 <= self.url_ingestion_max_redirects <= 10:
+            raise ValueError("URL_INGESTION_MAX_REDIRECTS must be between 0 and 10")
+        if not 1_024 <= self.url_ingestion_max_bytes <= 10_000_000:
+            raise ValueError("URL_INGESTION_MAX_BYTES must be between 1024 and 10000000")
+        if self.slack_memory_commands_enabled and not self.slack_installations:
+            raise ValueError(
+                "SLACK_INSTALLATIONS is required when Slack memory commands are enabled"
+            )
+        if self.slack_memory_commands_enabled and (
+            not self.slack_bot_token or not self.slack_signing_secret
+        ):
+            raise ValueError(
+                "SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET are required when Slack "
+                "memory commands are enabled"
+            )
+        if any(
+            limit <= 0
+            for limit in (
+                self.rate_limit_search_per_minute,
+                self.rate_limit_ingestion_per_minute,
+                self.rate_limit_analytics_per_minute,
+                self.rate_limit_workspace_create_per_hour,
+                self.rate_limit_connector_sync_per_hour,
+                self.rate_limit_slack_per_minute,
+            )
+        ):
+            raise ValueError("Operation-specific rate limits must be positive")
         return self
 
     @property
