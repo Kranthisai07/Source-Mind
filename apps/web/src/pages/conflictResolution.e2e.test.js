@@ -46,6 +46,9 @@ const C = {
     deferred: "00000000-0000-4000-8000-0000000c0003",
     missing: "00000000-0000-4000-8000-0000000cffff",
 };
+/** The identity AUTH_DEV_BYPASS_ENABLED pins, in core/dependencies.py. */
+const DEV_USER = "00000000-0000-4000-8000-000000000001";
+
 const M = {
     splitA: "00000000-0000-4000-8000-00000000a002",
     splitB: "00000000-0000-4000-8000-00000000b002",
@@ -173,7 +176,7 @@ describeE2E("conflict resolution against the real API", () => {
             );
             expect(status).toBe("resolved");
             expect(note).toBe(NOTE);
-            expect(resolver).toBe("00000000-0000-4000-8000-000000000001");
+            expect(resolver).toBe(DEV_USER);
             expect(resolvedAt).toBe("t");
             // A settled conflict never blocks, whatever severity it carried.
             expect(blocks).toBe("f");
@@ -285,25 +288,64 @@ describeE2E("conflict resolution against the real API", () => {
         });
 
         /**
-         * DEFECT — backend. Reported to Codex, not fixed here.
+         * Was a recorded defect: the `deferred` branch returned before the
+         * shared UPDATE, so the note the user typed was accepted, answered
+         * 200, and dropped — along with resolver_id. Fixed by Codex in
+         * `04babab`, merged here; D-010 in DECISIONS.md.
          *
-         * resolver.py returns at the end of the `deferred` branch, before the
-         * UPDATE that writes resolution_note. The note the user typed is
-         * accepted, answered 200, and silently dropped. Same class as the
-         * `note` vs `resolution_note` bug: input discarded with no error.
-         *
-         * Asserted as the CURRENT behaviour so the suite records the defect
-         * rather than hiding it. When the backend is fixed, this test fails
-         * and should be inverted to expect the note.
+         * Now asserts the corrected behaviour. Deliberately does NOT assert
+         * through boolean rendering — see the note on `nullness` below.
          */
-        test("KNOWN DEFECT: the note is silently discarded on defer", async () => {
-            const [note, resolver, resolvedAt] = row(
-                `SELECT COALESCE(resolution_note, '<null>'), COALESCE(resolver_id::text, '<null>'), ` +
-                `resolved_at IS NOT NULL FROM memory_conflicts WHERE id = '${C.deferred}'`
+        test("the note and the deferring user are persisted", async () => {
+            const [note, resolver] = row(
+                `SELECT COALESCE(resolution_note, '<NULL>'), ` +
+                `COALESCE(resolver_id::text, '<NULL>') ` +
+                `FROM memory_conflicts WHERE id = '${C.deferred}'`
             );
-            expect(note).toBe("<null>");      // should be NOTE
-            expect(resolver).toBe("<null>");  // should be the deferring user
-            expect(resolvedAt).toBe("f");     // correct: deferral is not resolution
+            expect(note).toBe(NOTE);
+            expect(resolver).toBe(DEV_USER);
+        });
+
+        test("resolved_at stays NULL — a deferral is not a resolution", async () => {
+            // `SELECT resolved_at IS NOT NULL` would render 'f' here, and 'f'
+            // does mean false. But a NULL boolean renders as the EMPTY STRING
+            // under psql -At, not as 'f', so an assertion written against that
+            // rendering conflates "false" with "unknown" the moment the
+            // expression changes. An explicit sentinel cannot be misread.
+            expect(sql(
+                `SELECT CASE WHEN resolved_at IS NULL THEN 'IS_NULL' ELSE 'IS_SET' END ` +
+                `FROM memory_conflicts WHERE id = '${C.deferred}'`
+            )).toBe("IS_NULL");
+        });
+
+        test("blocks_derivation is unchanged — an open question still blocks", async () => {
+            // Seeded false and must stay false. The point is that the deferred
+            // path does not run the shared UPDATE's `blocks_derivation = FALSE`,
+            // so this value is whatever it already was, not something the
+            // resolution set.
+            expect(sql(
+                `SELECT CASE blocks_derivation WHEN TRUE THEN 'BLOCKS' ELSE 'DOES_NOT_BLOCK' END ` +
+                `FROM memory_conflicts WHERE id = '${C.deferred}'`
+            )).toBe("DOES_NOT_BLOCK");
+        });
+
+        test("revisit_at survives the fix — the new columns did not disturb it", async () => {
+            const expected = new Date(LOCAL).toISOString().replace(/\.\d{3}Z$/, "Z");
+            expect(sql(
+                `SELECT to_char(revisit_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') ` +
+                `FROM memory_conflicts WHERE id = '${C.deferred}'`
+            )).toBe(expected);
+        });
+
+        /**
+         * Guards every other assertion in this file that compares against 't'
+         * or 'f'. psql renders a bare boolean as t/f, but `(TRUE)::text` as
+         * 'true', and a NULL boolean as ''. If a future psql or a \pset change
+         * altered that, assertions elsewhere would silently change meaning
+         * rather than fail. This pins it.
+         */
+        test("psql boolean rendering is t / f / empty-for-null, as assumed", () => {
+            expect(sql("SELECT TRUE, FALSE, NULL::boolean")).toBe("t|f|");
         });
     });
 

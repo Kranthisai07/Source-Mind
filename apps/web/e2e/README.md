@@ -102,9 +102,24 @@ It shells out through `wsl.exe` to `psql`, which is specific to the machine
 this was written on. On a host where `psql` is on `PATH` directly, replace the
 body of that helper; nothing else in the suite is environment-specific.
 
-## One case asserts a bug on purpose
+## The defect this run found, and its fix
 
-`KNOWN DEFECT: the note is silently discarded on defer` pins the *current*
-behaviour so the defect is recorded rather than hidden. See
-`docs/handoff/DEFECT-deferred-resolution-note-discarded.md`. When the backend
-is fixed, that test fails, and it should then be inverted to expect the note.
+The `deferred` branch of `resolve_conflict` used to return before the shared
+UPDATE, so the resolution note the form collects for every action was accepted,
+answered 200, and dropped — along with `resolver_id`. Reported in
+`docs/handoff/DEFECT-deferred-resolution-note-discarded.md`, fixed by Codex in
+`04babab`, recorded as D-010.
+
+The suite now asserts the corrected behaviour: the note and the deferring
+user's UUID persist, `resolved_at` stays NULL, `revisit_at` is unchanged, and
+`blocks_derivation` is untouched.
+
+### A note on boolean assertions
+
+Under `psql -At`, a bare boolean renders as `t` / `f`, but `(TRUE)::text`
+renders as `true`, and a **NULL boolean renders as the empty string, not `f`**.
+Assertions written against that rendering therefore conflate "false" with
+"unknown" as soon as the expression changes. Cases that care about nullness
+select an explicit sentinel (`IS_NULL` / `IS_SET`) instead, and one test pins
+the rendering itself so a psql change cannot silently alter what the others
+mean.
