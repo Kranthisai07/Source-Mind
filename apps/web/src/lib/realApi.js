@@ -28,6 +28,26 @@ const CONFIGURED_WS = (process.env.REACT_APP_DEFAULT_WORKSPACE_ID || "").trim();
 let _wsPromise = null;
 
 /**
+ * Drop every cached, identity-scoped value.
+ *
+ * `_wsPromise` memoises the workspace UUID for the whole module lifetime. That
+ * is correct for one signed-in user and wrong the instant the user changes: B
+ * would inherit A's workspace id and every scoped request would be issued
+ * against a workspace B may not belong to. The API would answer 404 (the
+ * isolation gate does its job), but the UI would be asking the wrong question
+ * and would report "not available" rather than showing B's own data.
+ *
+ * Today a sign-out is a full document navigation, so module state is discarded
+ * anyway — see the note in ClerkAuthBridge. This exists so that correctness
+ * does not DEPEND on that: it is a property of Clerk's navigation mode, not
+ * something this app states or controls, and adding routerPush/routerReplace
+ * (the ordinary Clerk + React Router integration) would silently remove it.
+ */
+export function resetIdentityScopedCaches() {
+    _wsPromise = null;
+}
+
+/**
  * The workspace UUID to scope requests to.
  *
  * The lookup is memoised as a promise, not a value, so concurrent callers on
@@ -449,11 +469,34 @@ export const realApi = {
     //
     // `note` is still accepted as the caller-facing argument name so existing
     // call sites keep working; only the wire key changes.
-    resolveConflict: (id, { resolution_type, note }) =>
-        request(`/v1/conflicts/${encodeURIComponent(id)}/resolve`, {
+    // ResolveBody: {resolution_type, resolution_note, merged_content,
+    // revisit_at, tag_a, tag_b}. Only the fields the chosen action needs are
+    // sent; the rest stay absent rather than being sent as null, so a typo in
+    // an action name cannot look like a deliberate empty value.
+    //
+    // revisit_at must carry an offset: memory_conflicts.revisit_at is
+    // TIMESTAMP(timezone=True), and resolver.py binds the parsed datetime
+    // straight through to asyncpg. A naive local string would be stored as
+    // though it were UTC and the conflict would resurface at the wrong hour.
+    // The caller passes an ISO-8601 UTC instant.
+    resolveConflict: (id, {
+        resolution_type,
+        note,
+        merged_content,
+        revisit_at,
+        tag_a,
+        tag_b,
+    } = {}) => {
+        const body = { resolution_type, resolution_note: note ?? null };
+        if (merged_content !== undefined) body.merged_content = merged_content;
+        if (revisit_at !== undefined) body.revisit_at = revisit_at;
+        if (tag_a !== undefined) body.tag_a = tag_a;
+        if (tag_b !== undefined) body.tag_b = tag_b;
+        return request(`/v1/conflicts/${encodeURIComponent(id)}/resolve`, {
             method: "POST",
-            body: { resolution_type, resolution_note: note ?? null },
-        }),
+            body,
+        });
+    },
 
     // ----- connectors -----
     listConnectors: async (wsId) => {

@@ -12,6 +12,9 @@ import { Button } from "../components/ui/button";
 import { toast } from "sonner";
 import api from "../lib/api";
 import { relativeTime, severityColor } from "../lib/format";
+import { classifyApiError } from "../lib/apiError";
+import { validateResolution, buildResolutionPayload } from "../lib/conflictResolution";
+import { Input } from "../components/ui/input";
 
 /**
  * Page 5b of the Supermemory-console redesign.
@@ -37,28 +40,37 @@ import { relativeTime, severityColor } from "../lib/format";
  * kept_a | kept_b | merged | split | deferred. This page was sending
  * accept_a | accept_b | merge | mark_outdated | defer — none of which match,
  * so every button raised ValueError: Unknown resolution_type and returned 500.
- * The two that map cleanly are wired to their real values. The remaining three
- * need payload fields the client does not send (merged requires
- * merged_content, deferred requires revisit_at, split requires tag_a/tag_b)
- * and mark_outdated has no backend equivalent, so they are shown disabled with
- * the reason rather than left as guaranteed-500 buttons.
+ *
+ * All five real actions are now wired. merged, split and deferred were never
+ * a backend gap: resolve_conflict implements all three, they simply required
+ * inputs this screen did not collect, which is frontend work. They now have a
+ * merged-content editor, two tag fields and a datetime picker respectively,
+ * each validated against the same condition the server raises ValueError on.
+ *
+ * mark_outdated is not offered. Its only origin is one line of demo narration
+ * (docs/demo_script.md); it appears in no schema, route or decision record,
+ * and kept_a/kept_b already retire the losing memory via
+ * current_version = FALSE — so it would be a second label for an existing
+ * action, implying an outcome that does not exist.
  */
 
+/**
+ * Every action resolve_conflict accepts. All five are fully implemented
+ * server-side; three simply needed inputs this screen never collected, which
+ * is frontend work, not a backend gap.
+ *
+ * `mark_outdated` is deliberately absent. Its only origin is a line of demo
+ * narration (docs/demo_script.md), it exists in no schema or route, and
+ * kept_a/kept_b already retire the losing memory by setting
+ * current_version = FALSE — so it would be a second label for an existing
+ * action, implying an outcome that does not exist.
+ */
 const OPTIONS = [
-    { key: "kept_a", label: "Accept A", enabled: true },
-    { key: "kept_b", label: "Accept B", enabled: true },
-    {
-        key: "merged", label: "Merge both", enabled: false,
-        reason: "Needs merged content, which this screen does not collect yet",
-    },
-    {
-        key: "deferred", label: "Defer", enabled: false,
-        reason: "Needs a revisit date, which this screen does not collect yet",
-    },
-    {
-        key: "split", label: "Split by tag", enabled: false,
-        reason: "Needs two tags, which this screen does not collect yet",
-    },
+    { key: "kept_a", label: "Accept A", hint: "Keeps memory A; retires memory B." },
+    { key: "kept_b", label: "Accept B", hint: "Keeps memory B; retires memory A." },
+    { key: "merged", label: "Merge both", hint: "Replaces both with one combined memory." },
+    { key: "split",  label: "Split by tag", hint: "Keeps both, scoped to different tags." },
+    { key: "deferred", label: "Defer", hint: "Revisit later; the conflict stays open." },
 ];
 
 const STAGES = ["open", "under_review", "resolved"];
@@ -68,6 +80,11 @@ export default function ConflictDetail() {
     const navigate = useNavigate();
     const [selected, setSelected] = useState(null);
     const [note, setNote] = useState("");
+    const [mergedContent, setMergedContent] = useState("");
+    const [tagA, setTagA] = useState("");
+    const [tagB, setTagB] = useState("");
+    const [revisitAt, setRevisitAt] = useState("");
+    const [fieldErrors, setFieldErrors] = useState({});
     const [submitting, setSubmitting] = useState(false);
 
     // `.catch(() => setC(false))` collapsed 401, 403, 404, 429 and an offline
@@ -78,20 +95,33 @@ export default function ConflictDetail() {
         { resetKey: id }
     );
 
+    const fields = { note, mergedContent, tagA, tagB, revisitAt };
+
     const submit = async () => {
-        if (!selected) return;
+        // Guard against a double click and against a second submit while the
+        // first is still in flight. Resolution is not idempotent — merged
+        // creates a memory, split writes tags — so a duplicate is not harmless.
+        if (!selected || submitting) return;
+
+        const { errors, ok } = validateResolution(selected, fields);
+        setFieldErrors(errors);
+        if (!ok) return;
+
         setSubmitting(true);
         try {
-            await api.resolveConflict(id, { resolution_type: selected, note });
+            await api.resolveConflict(id, buildResolutionPayload(selected, fields));
             toast.success("Conflict resolved", {
                 description: `${OPTIONS.find(o => o.key === selected).label} · saved.`,
             });
-            setTimeout(() => navigate("/conflicts"), 400);
+            // Refetch so the status badge and timeline reflect what the server
+            // actually stored, rather than navigating away on optimism.
+            await retry();
+            setTimeout(() => navigate("/conflicts"), 600);
         } catch (e) {
-            // Previously unhandled: a rejected resolve left the button stuck in
-            // "Saving…" and reported success was never shown nor failure.
-            toast.error("Could not resolve conflict", {
-                description: e?.body?.error?.message || e?.message || "The API rejected the request.",
+            const classified = classifyApiError(e);
+            toast.error(classified.title, {
+                description:
+                    e?.body?.error?.message || classified.detail,
             });
         } finally {
             setSubmitting(false);
@@ -248,28 +278,96 @@ export default function ConflictDetail() {
                                 <button
                                     key={o.key}
                                     data-testid={`resolve-${o.key}`}
-                                    onClick={() => o.enabled && setSelected(o.key)}
-                                    disabled={!o.enabled}
-                                    title={o.enabled ? undefined : o.reason}
-                                    /* §2: selection is the accent; the old
-                                       per-option colour dots were five hues
-                                       used decoratively. */
+                                    onClick={() => { setSelected(o.key); setFieldErrors({}); }}
+                                    title={o.hint}
+                                    /* §2: selection is the accent; no per-option hue. */
                                     className={`h-10 px-4 rounded-md text-body font-medium transition-colors
                                                 flex items-center justify-between sm-focusable ${
-                                        !o.enabled
-                                            ? "bg-surface-page border border-hairline text-content-muted cursor-not-allowed"
-                                            : selected === o.key
-                                                ? "bg-brand/10 border border-brand/40 text-content"
-                                                : "bg-surface border border-hairline text-content-secondary hover:text-content hover:border-hairline-hover"
+                                        selected === o.key
+                                            ? "bg-brand/10 border border-brand/40 text-content"
+                                            : "bg-surface border border-hairline text-content-secondary hover:text-content hover:border-hairline-hover"
                                     }`}
                                 >
                                     <span>{o.label}</span>
-                                    {selected === o.key && o.enabled && (
+                                    {selected === o.key && (
                                         <CheckCircle2 className="w-4 h-4 text-brand" />
                                     )}
                                 </button>
                             ))}
                         </div>
+
+                        {/* Only the chosen action's inputs are shown. Each is
+                            required by resolve_conflict, which raises
+                            ValueError without it. */}
+                        {selected === "merged" && (
+                            <div className="mb-4">
+                                <label htmlFor="merged-content" className="sm-micro-label block mb-2">
+                                    Merged content
+                                </label>
+                                <Textarea
+                                    id="merged-content"
+                                    data-testid="merged-content"
+                                    value={mergedContent}
+                                    onChange={(e) => setMergedContent(e.target.value)}
+                                    placeholder="The single statement that replaces both memories…"
+                                    rows={5}
+                                    className="bg-surface-page border-hairline text-content placeholder:text-content-muted font-mono text-[12.5px] resize-none"
+                                />
+                                <FieldError message={fieldErrors.mergedContent} />
+                            </div>
+                        )}
+
+                        {selected === "split" && (
+                            <div className="mb-4 grid grid-cols-2 gap-2">
+                                <div>
+                                    <label htmlFor="tag-a" className="sm-micro-label block mb-2">Tag for A</label>
+                                    <Input
+                                        id="tag-a"
+                                        data-testid="tag-a"
+                                        value={tagA}
+                                        onChange={(e) => setTagA(e.target.value)}
+                                        placeholder="e.g. postgres-16"
+                                        className="bg-surface-page border-hairline text-content font-mono text-[12.5px] h-9"
+                                    />
+                                    <FieldError message={fieldErrors.tagA} />
+                                </div>
+                                <div>
+                                    <label htmlFor="tag-b" className="sm-micro-label block mb-2">Tag for B</label>
+                                    <Input
+                                        id="tag-b"
+                                        data-testid="tag-b"
+                                        value={tagB}
+                                        onChange={(e) => setTagB(e.target.value)}
+                                        placeholder="e.g. postgres-18"
+                                        className="bg-surface-page border-hairline text-content font-mono text-[12.5px] h-9"
+                                    />
+                                    <FieldError message={fieldErrors.tagB} />
+                                </div>
+                            </div>
+                        )}
+
+                        {selected === "deferred" && (
+                            <div className="mb-4">
+                                <label htmlFor="revisit-at" className="sm-micro-label block mb-2">
+                                    Revisit at
+                                </label>
+                                <Input
+                                    id="revisit-at"
+                                    data-testid="revisit-at"
+                                    type="datetime-local"
+                                    value={revisitAt}
+                                    onChange={(e) => setRevisitAt(e.target.value)}
+                                    className="bg-surface-page border-hairline text-content font-mono text-[12.5px] h-9"
+                                />
+                                {/* datetime-local has no offset. It is converted
+                                    to a UTC instant before sending, because the
+                                    column is TIMESTAMP(timezone=True). */}
+                                <p className="text-[10.5px] text-content-muted mt-1.5">
+                                    Interpreted in your local timezone and stored as UTC.
+                                </p>
+                                <FieldError message={fieldErrors.revisitAt} />
+                            </div>
+                        )}
 
                         <label htmlFor="resolve-note" className="sm-micro-label block mb-2">
                             Resolution note
@@ -322,5 +420,15 @@ function ExcerptCard({ label, memory }) {
                 {memory?.content || "—"}
             </p>
         </div>
+    );
+}
+
+/** Inline validation message. §2: red only where it is semantic. */
+function FieldError({ message }) {
+    if (!message) return null;
+    return (
+        <p role="alert" className="text-[11px] text-danger mt-1.5">
+            {message}
+        </p>
     );
 }
