@@ -141,7 +141,16 @@ jobs:
           # it here keeps the secret out of a workflow-level expression.
           ENVIRONMENT: development
           DEBUG: "false"
-          AUTH_DEV_BYPASS_ENABLED: "false"
+          # Migrations do not authenticate anything, but alembic/env.py calls
+          # get_settings(), and Settings rejects bypass=false unless CLERK_SECRET_KEY,
+          # CLERK_PUBLISHABLE_KEY and CLERK_AUTHORIZED_PARTIES are all present. With
+          # "false" here and no Clerk values, alembic died on a ValidationError before
+          # reaching the database. The explicit development bypass is the honest fix:
+          # this step needs a valid configuration, not an authenticated one.
+          #
+          # Scoped to THIS step deliberately. It must not reach the acceptance step,
+          # which runs with the bypass disabled on purpose.
+          AUTH_DEV_BYPASS_ENABLED: "true"
         run: DATABASE_URL="$MIGRATION_DATABASE_URL" alembic upgrade head
 
       - name: Record applied revision
