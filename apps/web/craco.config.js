@@ -40,6 +40,18 @@ let webpackConfig = {
     configure: {
       moduleNameMapper: {
         '^@/(.*)$': '<rootDir>/src/$1',
+
+        // react-router-dom 7.14.2 declares `main: ./dist/main.js`, a file the
+        // package does not contain. It resolves through its `exports` map
+        // instead, which webpack honours and CRA's Jest resolver does not — so
+        // under Jest the import fails outright, and every component using the
+        // router was untestable. Point Jest at the real CommonJS entry.
+        // Remove this once react-scripts ships an exports-aware resolver.
+        '^react-router-dom$': '<rootDir>/node_modules/react-router-dom/dist/index.js',
+        // Its own dependency reaches react-router through the `./dom` subpath
+        // export, which the same resolver cannot follow either.
+        '^react-router/dom$':
+          '<rootDir>/node_modules/react-router/dist/development/dom-export.js',
       },
     },
   },
