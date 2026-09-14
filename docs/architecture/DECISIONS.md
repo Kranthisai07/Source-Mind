@@ -1490,3 +1490,124 @@ investigated.
 Python invoked from the repository root does not load `apps/api/.env`, so
 `DATABASE_URL` falls back and name resolution fails. This cost time three times
 in one session.
+
+---
+
+## D-010 — Conflict resolution verified against a running system, not against a belief
+
+**Status:** Done (2026-09-14). `merged`, `split` and `deferred` exercised
+through the real page against a real API and a real database. One backend
+defect found and handed to Codex; one frontend restriction removed as
+invented; three identity-lifecycle gaps closed.
+
+### Why this was worth doing at all
+
+The three payload-carrying resolutions had been called a backend dependency,
+then implemented, then described as finished — all without any of them ever
+having been run. That is the same position the feature was in before the two
+defects it has already had: a resolution note the API dropped because the key
+was not on the model, and a version history read off a field the response did
+not contain. Both returned 200. Both discarded user input. Neither produced a
+failure anywhere.
+
+So nothing here is asserted from reading code. Every claim below is a
+committed row read out of the database after driving the actual form.
+
+### The split rule was invented here
+
+The form required the two tags to differ. Nothing in the backend does.
+`resolve_conflict` checks only `if not tag_a or not tag_b`, then:
+
+```sql
+UPDATE memories SET tags = array_append(COALESCE(tags, ARRAY[]::text[]), :tag)
+```
+
+Two facts follow, and the UI had the second one backwards. Identical tags are
+accepted. And tagging **adds** — it does not replace, and does not deduplicate.
+The hint said "scoped to different tags", which implies a replace; a memory
+seeded `{retention,staging}` came back `{retention,staging,env-staging}`.
+
+The distinctness rule was removed rather than kept, because a frontend may not
+unilaterally refuse a payload the API would accept. Whether it *should* be a
+rule is a product question, and it is written down as one rather than settled
+by a validation branch.
+
+### Backend defect: `deferred` discards the note
+
+`resolver.py` returns at the end of the `deferred` branch, before the shared
+UPDATE that writes `resolution_note`, `resolver_id` and `resolved_at`. The
+note field is offered for every action. So a user explains why they are
+deferring, sees "saved", and the explanation does not exist. 200, no log,
+nothing to notice.
+
+Reported to Codex with path, reproduction and expected contract in
+`docs/handoff/DEFECT-deferred-resolution-note-discarded.md`; not fixed here,
+because `apps/api/**` is not mine. The e2e suite asserts the **current**
+behaviour on purpose, so the defect is recorded rather than hidden — when it
+is fixed, that case fails, and it should then be inverted.
+
+`revisit_at` itself is correct: `2026-12-24T09:30` entered in a UTC-6 zone
+stored as `15:30Z`. That is +6h for December CST, not +5h CDT, so the
+conversion is DST-aware and not a fixed offset.
+
+### Clearing `_wsPromise` was not enough
+
+The earlier identity fix cleared the memoised workspace id on a user change.
+That governs lookups which have not started yet, and says nothing about what a
+user can actually see. Three gaps, each now covered by a test that fails
+without its fix:
+
+- **Rendered rows survived the change.** `resetKey` is only ever a route
+  parameter, and no route parameter changes when the signed-in user does.
+- **A read issued for A, resolving after B signed in, was accepted and
+  rendered on B's screen.** The API never saw this and could not have stopped
+  it: A's read was authorized when it was issued and simply landed late.
+- **The abandoned lookup's `.catch` cleared the memo unconditionally.** After
+  an identity change that memo belongs to the *new* user's in-flight lookup,
+  and failing is the expected outcome for the old one, whose token is gone. It
+  discarded a live request.
+
+Handled with an identity generation: the reset bumps it and notifies
+subscribers, the abandoned catch re-checks it before clearing, and
+`useApiResource` subscribes so it can drop rendered data and invalidate work
+already on the wire.
+
+### Two silent limits on what was testable
+
+Neither was known before this, and both had been suppressing coverage:
+
+- The `@` alias was configured for webpack only, so **any** module importing
+  `@/...` failed to resolve under Jest. That is why every suite in the repo
+  uses relative paths.
+- `react-router-dom` 7.14.2 declares `main: ./dist/main.js`, a file it does not
+  ship, and resolves through an `exports` map CRA's Jest resolver does not
+  read. Every router-using component was therefore untestable, which is why an
+  earlier session worked around it by extracting pure functions to `lib/`
+  rather than testing the page.
+
+### What this run does NOT prove
+
+Stated plainly because a test suite that overstates its reach is worse than
+none:
+
+- **No browser.** jsdom rendered the component; `fetch` was a shim over Node's
+  `http`. CSS, layout and real event dispatch are untested.
+- **No Clerk.** The API ran under the validated development-only
+  `AUTH_DEV_BYPASS_ENABLED` flag. Token handling is not covered.
+- **Embeddings were stubbed.** The `merged` path calls the embedding service;
+  a local stub answered with a deterministic vector, so no request left the
+  machine. That proves the call is made and the result stored. It proves
+  nothing about embedding quality, and conflict **detection**, which depends on
+  real embeddings, was not exercised at all.
+
+### Resource discipline
+
+Two agents share this machine, and test infrastructure is the one thing they
+can destroy for each other without Git noticing: a truncate against a database
+the other is mid-run on yields a wrong answer, not a merge conflict. A
+disposable cluster was created on ports 55433/56380 — claimed first in
+`docs/handoff/RESOURCE_LEASES.md` — rather than contending for the acceptance
+stack on 55432/56379, whose lease status was unresolved. Ordinary development
+data on 5432 was never a target. The API ran as `sourcemind_test`
+(`NOSUPERUSER NOBYPASSRLS`) so RLS was genuinely in force rather than bypassed
+by a superuser connection, and everything was destroyed afterwards.
