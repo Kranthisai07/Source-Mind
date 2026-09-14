@@ -13,9 +13,17 @@ A lease is released by deleting its row and tearing the resource down.
 
 ## Active
 
-| Ports         | Holder | Purpose                                   | Data directory                  | Claimed    |
-|---------------|--------|-------------------------------------------|---------------------------------|------------|
-| 55433 / 56380 | Claude | Conflict-resolution end-to-end exercise   | WSL `/tmp/sm-claude-e2e`        | 2026-09-14 |
+None.
+
+## Released
+
+| Ports         | Holder | Purpose                                 | Claimed    | Released   |
+|---------------|--------|-----------------------------------------|------------|------------|
+| 55433 / 56380 | Claude | Conflict-resolution end-to-end exercise | 2026-09-14 | 2026-09-14 |
+
+Cluster stopped, redis shut down, and `/tmp/sm-claude-e2e` removed. Both ports
+verified free. Nothing from that run outlived it; to reproduce, rebuild from
+`apps/web/e2e/README.md`.
 
 ## Not available
 
