@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
     ArrowLeft, Edit3, Trash2, AlertTriangle, Share2, History, Users,
@@ -7,6 +7,8 @@ import PageHeader from "../components/ui-kit/PageHeader";
 import EmptyState from "../components/ui-kit/EmptyState";
 import InlineBar from "../components/ui-kit/InlineBar";
 import { Skeleton } from "../components/ui-kit/Skeleton";
+import ErrorState from "../components/ui-kit/ErrorState";
+import useApiResource from "../hooks/useApiResource";
 import Markdown from "../components/widgets/Markdown";
 import { Button } from "../components/ui/button";
 import api from "../lib/api";
@@ -48,13 +50,26 @@ import { relativeTime, formatDate, initials } from "../lib/format";
 export default function MemoryDetail() {
     const { id } = useParams();
     const navigate = useNavigate();
-    const [mem, setMem] = useState(null);
+    // resetKey = id: navigating to another memory clears the previous one
+    // before the new request lands, so a slow response for the memory you just
+    // left cannot repopulate the page you are now on.
+    const { data: mem, error, loading, retry } = useApiResource(
+        () => api.getMemory(id),
+        { resetKey: id }
+    );
 
-    useEffect(() => {
-        api.getMemory(id).then(setMem);
-    }, [id]);
+    if (error) {
+        return (
+            <>
+                <PageHeader title="Memory" subtitle="This memory could not be loaded." />
+                <div className="sm-card">
+                    <ErrorState error={error} onRetry={retry} />
+                </div>
+            </>
+        );
+    }
 
-    if (!mem) {
+    if (loading || !mem) {
         return (
             <>
                 <PageHeader title="Memory" subtitle="Loading…" />

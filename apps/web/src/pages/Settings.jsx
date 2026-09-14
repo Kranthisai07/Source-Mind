@@ -1,8 +1,10 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { KeyRound, Trash2, UserPlus } from "lucide-react";
 import PageHeader from "../components/ui-kit/PageHeader";
 import EmptyState from "../components/ui-kit/EmptyState";
 import { Skeleton } from "../components/ui-kit/Skeleton";
+import ErrorState from "../components/ui-kit/ErrorState";
+import useApiResource from "../hooks/useApiResource";
 import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
 import api from "../lib/api";
@@ -55,18 +57,16 @@ const ACCESS_BY_ROLE = {
 };
 
 export default function Settings() {
-    const [members, setMembers] = useState(null);
-    const [workspace, setWorkspace] = useState(null);
-    const [wsName, setWsName] = useState("");
+    // Both previously collapsed failures into an empty list / null workspace,
+    // so a revoked member saw an empty-but-plausible settings page.
+    const membersRes = useApiResource(() => api.listTeamMembers());
+    const workspaceRes = useApiResource(() => api.getWorkspace());
 
-    useEffect(() => {
-        api.listTeamMembers()
-            .then(r => setMembers(Array.isArray(r?.members) ? r.members : []))
-            .catch(() => setMembers([]));
-        api.getWorkspace()
-            .then((w) => { setWorkspace(w); setWsName(w?.name ?? ""); })
-            .catch(() => setWorkspace(null));
-    }, []);
+    const members = membersRes.error
+        ? null
+        : (Array.isArray(membersRes.data?.members) ? membersRes.data.members : null);
+    const workspace = workspaceRes.data ?? null;
+    const wsName = workspace?.name ?? "";
 
     const wsSlug = workspace?.slug ?? "";
     const rows = members ?? [];
@@ -156,7 +156,9 @@ export default function Settings() {
                     </div>
 
                     <div className="sm-card p-6">
-                        {members === null ? (
+                        {membersRes.error ? (
+                            <ErrorState error={membersRes.error} onRetry={membersRes.retry} testId="members-error" />
+                        ) : members === null ? (
                             <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading members">
                                 {Array.from({ length: 2 }).map((_, i) => (
                                     <Skeleton key={i} className="h-tablerow w-full" />

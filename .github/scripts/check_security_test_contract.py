@@ -4,9 +4,11 @@ Run as the first CI step. Checks three things that are cheap here and expensive
 to diagnose later, and prints no secret values in the process.
 
 1. Every required credential is present AND non-empty.
-   compose uses `${VAR:?...}`, which only fires when a variable is *unset*. An
-   exported-but-empty value passes that guard, reaches PostgreSQL, and fails
-   much later as an authentication error inside a session-scoped fixture.
+   compose's `${VAR:?...}` already rejects both unset and empty (the colon form
+   tests for null as well as unset), so this is not closing a hole in compose.
+   It runs anyway because it fires BEFORE any container starts, names the
+   offending variable directly, and covers the two URLs compose never sees —
+   turning "container exited during init" into one sentence naming the cause.
 
 2. The disposable URLs satisfy the guard conftest.py enforces.
    `supabase_url` and `security_test_redis_url` call `pytest.skip()` when the
@@ -81,9 +83,10 @@ def check_secrets() -> None:
             problem(f"{name} is not set; compose requires it")
         elif not value.strip():
             problem(
-                f"{name} is set but empty. compose's `${{{name}:?}}` guard only "
-                "catches an UNSET variable, so an empty one would reach "
-                "PostgreSQL and surface later as an authentication failure."
+                f"{name} is set but empty. compose would also reject this "
+                "(`${VAR:?}` tests for null as well as unset); failing here "
+                "names the variable instead of surfacing as a container that "
+                "exited during initialization."
             )
         else:
             print(f"  {name}: present (length {len(value)})")

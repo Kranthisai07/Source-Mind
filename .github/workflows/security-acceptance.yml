@@ -52,9 +52,16 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # Injected, never committed. Compose refuses to start if any is unset;
-      # the preflight additionally refuses if any is set-but-empty, which
-      # compose's `:?` guard does not catch.
+      # Uniquely names this job's Compose project, so `down -v` can only ever
+      # remove containers, networks and volumes this run created. Without it the
+      # project name defaults to the directory ("infra") and would be shared by
+      # any other run on the same host.
+      COMPOSE_PROJECT_NAME: security-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # Injected, never committed. Compose's `${VAR:?...}` rejects both unset
+      # and empty values (the colon form tests for null too), so it is the
+      # enforcing guard; the preflight simply fails earlier and names the
+      # variable rather than leaving a container exiting during init.
       SECURITY_TEST_BOOTSTRAP_PASSWORD: ${{ secrets.SECURITY_TEST_BOOTSTRAP_PASSWORD }}
       SECURITY_TEST_OWNER_PASSWORD: ${{ secrets.SECURITY_TEST_OWNER_PASSWORD }}
       SECURITY_TEST_RUNTIME_PASSWORD: ${{ secrets.SECURITY_TEST_RUNTIME_PASSWORD }}
@@ -68,10 +75,10 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      # Build the two URLs from the injected secrets. Written to GITHUB_ENV via
-      # a heredoc rather than an inline string so a password containing shell
-      # metacharacters cannot be re-interpreted, and masked so it cannot reach
-      # the log even on failure.
+      # Secret values are never interpolated into shell source. They arrive as
+      # environment variables (set once at job level from the secret store) and
+      # every reference below is a quoted "$VAR" passed as a printf argument,
+      # so a password containing quotes, $ or backticks cannot be re-parsed.
       - name: Compose disposable service URLs
         run: |
           {
@@ -130,11 +137,12 @@ jobs:
       - name: Apply migrations as the migration-owner role
         working-directory: apps/api
         env:
-          DATABASE_URL: ${{ env.MIGRATION_DATABASE_URL }}
+          # MIGRATION_DATABASE_URL is already exported via GITHUB_ENV; aliasing
+          # it here keeps the secret out of a workflow-level expression.
           ENVIRONMENT: development
           DEBUG: "false"
           AUTH_DEV_BYPASS_ENABLED: "false"
-        run: alembic upgrade head
+        run: DATABASE_URL="$MIGRATION_DATABASE_URL" alembic upgrade head
 
       - name: Record applied revision
         run: |
@@ -150,10 +158,8 @@ jobs:
       # bare count would not catch.
       - name: Verify exact test selection (8 nodes)
         working-directory: apps/api
-        env:
-          SECURITY_TEST_ALLOW_DISPOSABLE: "1"
-          TEST_DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
-          TEST_REDIS_URL: ${{ env.TEST_REDIS_URL }}
+        # SECURITY_TEST_ALLOW_DISPOSABLE / TEST_DATABASE_URL / TEST_REDIS_URL
+        # are already in the environment via GITHUB_ENV.
         run: |
           set -euo pipefail
           expected=$(mktemp); actual=$(mktemp)
@@ -191,9 +197,7 @@ jobs:
         timeout-minutes: 3
         working-directory: apps/api
         env:
-          SECURITY_TEST_ALLOW_DISPOSABLE: "1"
-          TEST_DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
-          TEST_REDIS_URL: ${{ env.TEST_REDIS_URL }}
+          # Disposable URLs come from GITHUB_ENV, not from an expression.
           ENVIRONMENT: development
           DEBUG: "false"
           AUTH_DEV_BYPASS_ENABLED: "false"

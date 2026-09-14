@@ -1,9 +1,11 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { ArrowRight, ArrowRightLeft } from "lucide-react";
 import PageHeader from "../components/ui-kit/PageHeader";
 import EmptyState from "../components/ui-kit/EmptyState";
 import InlineBar from "../components/ui-kit/InlineBar";
 import { Skeleton } from "../components/ui-kit/Skeleton";
+import ErrorState from "../components/ui-kit/ErrorState";
+import useApiResource from "../hooks/useApiResource";
 import StatusBadge from "../components/widgets/StatusBadge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Button } from "../components/ui/button";
@@ -42,24 +44,21 @@ import { relativeTime, initials, stripMarkdown } from "../lib/format";
 const STATUS_ORDER = ["in_progress", "completed"];
 
 export default function Handoff() {
-    const [members, setMembers] = useState(null);
-    const [handoffs, setHandoffs] = useState(null);
     const [departingId, setDepartingId] = useState("");
     const [classified, setClassified] = useState(null);
     const [classifying, setClassifying] = useState(false);
 
-    const loadHandoffs = () =>
-        api.listHandoffs()
-            .then(r => setHandoffs(r.handoffs || []))
-            .catch(() => setHandoffs([]));
+    const membersRes = useApiResource(() => api.listContributors());
+    const handoffsRes = useApiResource(() => api.listHandoffs());
 
-    useEffect(() => {
-        api.listContributors()
-            .then(r => setMembers(r.contributors || []))
-            .catch(() => setMembers([]));
-        loadHandoffs();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    // Memoised because `byId` below depends on it; a fresh array identity each
+    // render would rebuild that map on every render.
+    const members = useMemo(
+        () => (membersRes.error ? [] : (membersRes.data?.contributors ?? null)),
+        [membersRes.error, membersRes.data]
+    );
+    const handoffs = handoffsRes.error ? null : (handoffsRes.data?.handoffs ?? null);
+    const loadHandoffs = handoffsRes.retry;
 
     const byId = useMemo(() => {
         const m = {};
@@ -148,7 +147,9 @@ export default function Handoff() {
                         )}
                     </div>
 
-                    {handoffs === null ? (
+                    {handoffsRes.error ? (
+                        <ErrorState error={handoffsRes.error} onRetry={handoffsRes.retry} testId="handoffs-error" />
+                    ) : handoffs === null ? (
                         <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading handoffs">
                             {Array.from({ length: 2 }).map((_, i) => (
                                 <Skeleton key={i} className="h-[168px] w-full rounded-md" />

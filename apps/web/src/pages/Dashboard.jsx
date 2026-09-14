@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { Brain, Users, TrendingUp, AlertCircle, ArrowRight } from "lucide-react";
 import { Link } from "react-router-dom";
 import PageHeader from "../components/ui-kit/PageHeader";
@@ -6,6 +6,8 @@ import StatCard from "../components/ui-kit/StatCard";
 import InlineBar from "../components/ui-kit/InlineBar";
 import EmptyState from "../components/ui-kit/EmptyState";
 import { Skeleton } from "../components/ui-kit/Skeleton";
+import ErrorState from "../components/ui-kit/ErrorState";
+import useApiResource from "../hooks/useApiResource";
 import RiskBadge from "../components/widgets/RiskBadge";
 import WhoWouldKnow from "../components/widgets/WhoWouldKnow";
 import api from "../lib/api";
@@ -46,15 +48,16 @@ const HEALTH_WEIGHTS = [
 ];
 
 export default function Dashboard() {
-    const [data, setData] = useState(null);
-    const [gaps, setGaps] = useState(null);
+    // Previously `.then(setData)` with no `.catch`. A rejected request left
+    // `data` null forever, so a revoked member saw the loading skeleton
+    // permanently rather than being told what happened.
+    const overview = useApiResource(() => api.getAnalyticsOverview());
+    const gapsRes = useApiResource(() => api.getKnowledgeGaps());
 
-    useEffect(() => {
-        api.getAnalyticsOverview().then(setData);
-        api.getKnowledgeGaps().then(r => setGaps(r.gaps));
-    }, []);
-
-    const loading = data === null;
+    const data = overview.data;
+    const gaps = gapsRes.data?.gaps ?? null;
+    const loading = overview.loading;
+    const error = overview.error;
 
     return (
         <>
@@ -76,6 +79,11 @@ export default function Dashboard() {
                 }
             />
 
+            {error ? (
+                <div className="sm-card">
+                    <ErrorState error={error} onRetry={overview.retry} />
+                </div>
+            ) : (
             <div className="space-y-6">
                 {/* Row 1 — stat cards. §3: hero metric first. */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -308,7 +316,9 @@ export default function Dashboard() {
                             </Link>
                         </div>
 
-                        {gaps === null ? (
+                        {gapsRes.error ? (
+                            <ErrorState error={gapsRes.error} onRetry={gapsRes.retry} testId="gaps-error" />
+                        ) : gaps === null ? (
                             <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading knowledge gaps">
                                 {Array.from({ length: 3 }).map((_, i) => (
                                     <Skeleton key={i} className="h-[92px] w-full rounded-md" />
@@ -354,6 +364,7 @@ export default function Dashboard() {
                     </section>
                 </div>
             </div>
+            )}
         </>
     );
 }

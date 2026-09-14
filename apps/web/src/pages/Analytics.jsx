@@ -1,10 +1,12 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis, LineChart, Line } from "recharts";
 import { Filter, LineChart as LineChartIcon, Users, AlertCircle } from "lucide-react";
 import PageHeader from "../components/ui-kit/PageHeader";
 import EmptyState from "../components/ui-kit/EmptyState";
 import InlineBar from "../components/ui-kit/InlineBar";
 import { Skeleton } from "../components/ui-kit/Skeleton";
+import ErrorState from "../components/ui-kit/ErrorState";
+import useApiResource from "../hooks/useApiResource";
 import RiskBadge from "../components/widgets/RiskBadge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
 import api, { useMocks } from "../lib/api";
@@ -39,20 +41,21 @@ import { relativeTime } from "../lib/format";
  * product needs.
  */
 export default function Analytics() {
-    const [overview, setOverview] = useState(null);
-    const [gaps, setGaps] = useState(null);
-    const [contribs, setContribs] = useState(null);
-    const [series, setSeries] = useState([]);
-    const [searchSeries, setSearchSeries] = useState([]);
     const [riskFilter, setRiskFilter] = useState("ALL");
 
-    useEffect(() => {
-        api.getAnalyticsOverview().then(setOverview);
-        api.getKnowledgeGaps().then(r => setGaps(r.gaps ?? []));
-        api.listContributors().then(r => setContribs(r.contributors ?? []));
-        api.getMemoriesOverTime().then(r => setSeries(r.series ?? []));
-        api.getSearchActivity().then(r => setSearchSeries(r.series ?? []));
-    }, []);
+    // Each panel owns its own lifecycle: one failing call must not blank the
+    // whole page, and none of them may leave a permanent skeleton.
+    const overviewRes = useApiResource(() => api.getAnalyticsOverview());
+    const gapsRes = useApiResource(() => api.getKnowledgeGaps());
+    const contribRes = useApiResource(() => api.listContributors());
+    const seriesRes = useApiResource(() => api.getMemoriesOverTime());
+    const searchRes = useApiResource(() => api.getSearchActivity());
+
+    const overview = overviewRes.data;
+    const gaps = gapsRes.error ? [] : (gapsRes.data?.gaps ?? null);
+    const contribs = contribRes.error ? [] : (contribRes.data?.contributors ?? null);
+    const series = seriesRes.data?.series ?? [];
+    const searchSeries = searchRes.data?.series ?? [];
 
     // The API returns lowercase risk levels; the filter labels are uppercase.
     const filteredGaps = (gaps ?? []).filter(
@@ -94,6 +97,11 @@ export default function Analytics() {
 
                 {/* ─── OVERVIEW ─────────────────────────────────────────── */}
                 <TabsContent value="overview" className="space-y-4 mt-0">
+                    {overviewRes.error && (
+                        <div className="sm-card">
+                            <ErrorState error={overviewRes.error} onRetry={overviewRes.retry} testId="overview-error" />
+                        </div>
+                    )}
                     <section className="sm-card p-6">
                         <div className="flex items-start justify-between gap-6 mb-6">
                             <div>
@@ -331,7 +339,11 @@ export default function Analytics() {
                         ))}
                     </div>
 
-                    {gaps === null ? (
+                    {gapsRes.error ? (
+                        <div className="sm-card">
+                            <ErrorState error={gapsRes.error} onRetry={gapsRes.retry} testId="gaps-error" />
+                        </div>
+                    ) : gaps === null ? (
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4" role="status" aria-busy="true" aria-label="Loading knowledge gaps">
                             {Array.from({ length: 2 }).map((_, i) => (
                                 <Skeleton key={i} className="h-[168px] w-full rounded-card" />

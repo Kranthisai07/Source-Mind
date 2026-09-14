@@ -3,6 +3,7 @@ import { Search, Plus, X, Brain } from "lucide-react";
 import PageHeader from "../components/ui-kit/PageHeader";
 import EmptyState from "../components/ui-kit/EmptyState";
 import { Skeleton } from "../components/ui-kit/Skeleton";
+import ErrorState from "../components/ui-kit/ErrorState";
 import MemoryCard from "../components/widgets/MemoryCard";
 import PipelineTracker from "../components/widgets/PipelineTracker";
 import { Button } from "../components/ui/button";
@@ -10,6 +11,7 @@ import { Textarea } from "../components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "../components/ui/sheet";
 import api from "../lib/api";
+import { classifyApiError } from "../lib/apiError";
 
 /**
  * Page 3 of the Supermemory-console redesign, modelled on §4.2 (Documents):
@@ -42,11 +44,13 @@ export default function Memories() {
     const [total, setTotal] = useState(0);
     const [latency, setLatency] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
     const [open, setOpen] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
         setLoading(true);
+        setError(null);
         const t = setTimeout(() => {
             api.searchMemories({ query, mode, limit: 24 }).then(r => {
                 if (cancelled) return;
@@ -55,9 +59,13 @@ export default function Memories() {
                 // The response field is `latency_ms`. `__latency_ms` was never
                 // on it, so this rendered "undefinedms".
                 setLatency(r?.latency_ms ?? r?.__latency_ms ?? null);
+                setError(null);
                 setLoading(false);
-            }).catch(() => {
+            }).catch((err) => {
                 if (cancelled) return;
+                // Previously `.catch` set results to [] — a failed search was
+                // indistinguishable from one that genuinely matched nothing.
+                setError(classifyApiError(err));
                 setResults([]);
                 setTotal(0);
                 setLatency(null);
@@ -138,7 +146,14 @@ export default function Memories() {
                 </Button>
             </div>
 
-            {loading ? (
+            {error ? (
+                <div className="sm-card">
+                    <ErrorState
+                        error={error}
+                        onRetry={() => setQuery((q) => q)}
+                    />
+                </div>
+            ) : loading ? (
                 <div
                     className="space-y-3"
                     role="status"

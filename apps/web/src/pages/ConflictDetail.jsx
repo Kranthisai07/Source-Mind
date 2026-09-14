@@ -1,9 +1,11 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, CheckCircle2 } from "lucide-react";
 import PageHeader from "../components/ui-kit/PageHeader";
 import InlineBar from "../components/ui-kit/InlineBar";
 import { Skeleton } from "../components/ui-kit/Skeleton";
+import ErrorState from "../components/ui-kit/ErrorState";
+import useApiResource from "../hooks/useApiResource";
 import StatusBadge from "../components/widgets/StatusBadge";
 import { Textarea } from "../components/ui/textarea";
 import { Button } from "../components/ui/button";
@@ -64,12 +66,17 @@ const STAGES = ["open", "under_review", "resolved"];
 export default function ConflictDetail() {
     const { id } = useParams();
     const navigate = useNavigate();
-    const [c, setC] = useState(null);
     const [selected, setSelected] = useState(null);
     const [note, setNote] = useState("");
     const [submitting, setSubmitting] = useState(false);
 
-    useEffect(() => { api.getConflict(id).then(setC).catch(() => setC(false)); }, [id]);
+    // `.catch(() => setC(false))` collapsed 401, 403, 404, 429 and an offline
+    // browser into one "could not be loaded" line. resetKey = id so navigating
+    // between conflicts cannot show the previous one's data.
+    const { data: c, error, loading, retry } = useApiResource(
+        () => api.getConflict(id),
+        { resetKey: id }
+    );
 
     const submit = async () => {
         if (!selected) return;
@@ -91,7 +98,18 @@ export default function ConflictDetail() {
         }
     };
 
-    if (c === null) {
+    if (error) {
+        return (
+            <>
+                <PageHeader title="Conflict" subtitle="This conflict could not be loaded." />
+                <div className="sm-card">
+                    <ErrorState error={error} onRetry={retry} />
+                </div>
+            </>
+        );
+    }
+
+    if (loading || !c) {
         return (
             <>
                 <PageHeader title="Conflict" subtitle="Loading…" />
@@ -120,17 +138,6 @@ export default function ConflictDetail() {
                     </div>
                     <span className="sr-only">Loading conflict…</span>
                 </div>
-            </>
-        );
-    }
-
-    if (c === false) {
-        return (
-            <>
-                <PageHeader title="Conflict" subtitle="This conflict could not be loaded." />
-                <Button variant="ghost" size="sm" onClick={() => navigate("/conflicts")} className="text-content-secondary">
-                    <ArrowLeft className="w-4 h-4" /> Back to conflicts
-                </Button>
             </>
         );
     }

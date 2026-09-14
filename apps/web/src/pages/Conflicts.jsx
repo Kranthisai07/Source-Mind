@@ -1,10 +1,12 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ShieldCheck } from "lucide-react";
 import PageHeader from "../components/ui-kit/PageHeader";
 import EmptyState from "../components/ui-kit/EmptyState";
 import InlineBar from "../components/ui-kit/InlineBar";
 import { Skeleton } from "../components/ui-kit/Skeleton";
+import ErrorState from "../components/ui-kit/ErrorState";
+import useApiResource from "../hooks/useApiResource";
 import StatusBadge from "../components/widgets/StatusBadge";
 import api from "../lib/api";
 import { relativeTime, severityColor } from "../lib/format";
@@ -46,35 +48,21 @@ const STATUS_TABS = [
 export default function Conflicts() {
     const navigate = useNavigate();
     const [status, setStatus] = useState("all");
-    const [conflicts, setConflicts] = useState(null);
-    const [loading, setLoading] = useState(true);
-
-    useEffect(() => {
-        let cancelled = false;
-        setLoading(true);
+    // `.catch(() => setConflicts([]))` previously turned 401/403/404/429 and
+    // an offline browser into "No conflicts yet" — indistinguishable from a
+    // genuinely clean workspace.
+    const { data, error, loading, retry } = useApiResource(
         // "all" is a UI-only sentinel, not a status the API knows. The route
         // does `if conflict_status:` and appends `mc.status = :status`, so the
         // truthy string "all" filters for a literal status of 'all' and
-        // matches nothing — the default tab returned zero conflicts even when
-        // conflicts existed. Verified: status=all -> 0, status=open -> 1,
-        // omitted -> 1, against a real conflict.
-        //
-        // Passing null (not undefined) omits the parameter entirely: realApi's
-        // request() skips null params, while a destructuring default would
-        // substitute "all" back in for undefined.
-        api.listConflicts(undefined, { status: status === "all" ? null : status })
-            .then(r => {
-                if (cancelled) return;
-                setConflicts(Array.isArray(r?.conflicts) ? r.conflicts : []);
-                setLoading(false);
-            })
-            .catch(() => {
-                if (cancelled) return;
-                setConflicts([]);
-                setLoading(false);
-            });
-        return () => { cancelled = true; };
-    }, [status]);
+        // matches nothing. Passing null omits the parameter entirely, because
+        // realApi's request() skips null params while a destructuring default
+        // would substitute "all" back in for undefined.
+        () => api.listConflicts(undefined, { status: status === "all" ? null : status }),
+        { resetKey: status }
+    );
+
+    const conflicts = Array.isArray(data?.conflicts) ? data.conflicts : null;
 
     const rows = conflicts ?? [];
     const stateWord = status !== "all" ? `${status.replace("_", " ")} ` : "";
@@ -110,7 +98,11 @@ export default function Conflicts() {
                 ))}
             </div>
 
-            {loading ? (
+            {error ? (
+                <div className="sm-card">
+                    <ErrorState error={error} onRetry={retry} />
+                </div>
+            ) : loading ? (
                 /* §6: skeletons, never spinners, shaped like the real card. */
                 <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading conflicts">
                     {Array.from({ length: 3 }).map((_, i) => (

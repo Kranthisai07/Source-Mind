@@ -125,11 +125,29 @@ export const ACTION_COLOR = {
 };
 
 class ApiError extends Error {
-    constructor(status, message, body) {
+    constructor(status, message, body, { retryAfterSeconds = null, network = false } = {}) {
         super(message);
         this.status = status;
         this.body = body;
+        // Populated from the Retry-After response header on a 429. The backend
+        // limiter is fail-closed, so a client that retries immediately makes
+        // the situation worse; the UI needs the server's own number.
+        this.retryAfterSeconds = retryAfterSeconds;
+        // True when fetch() itself rejected — DNS failure, offline, CORS,
+        // connection refused. There is no status in that case, and it is not
+        // the same condition as a 5xx, which proves the server was reached.
+        this.network = network;
     }
+}
+
+/** Retry-After is either delta-seconds or an HTTP-date (RFC 9110 §10.2.3). */
+function parseRetryAfter(raw) {
+    if (!raw) return null;
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds)) return seconds >= 0 ? Math.ceil(seconds) : null;
+    const when = Date.parse(raw);
+    if (Number.isNaN(when)) return null;
+    return Math.max(0, Math.ceil((when - Date.now()) / 1000));
 }
 
 async function request(path, { method = "GET", body, params } = {}) {
@@ -155,16 +173,31 @@ async function request(path, { method = "GET", body, params } = {}) {
     if (token) headers.Authorization = `Bearer ${token}`;
 
     const t0 = performance.now();
-    const res = await fetch(url.toString(), {
-        method,
-        credentials: "include",
-        headers,
-        body: body ? JSON.stringify(body) : undefined,
-    });
+    let res;
+    try {
+        res = await fetch(url.toString(), {
+            method,
+            credentials: "include",
+            headers,
+            body: body ? JSON.stringify(body) : undefined,
+        });
+    } catch (cause) {
+        // fetch() rejects only on a transport failure. Surfacing it as an
+        // ApiError with network:true lets callers tell "could not reach the
+        // API" apart from "the API answered with an error", which need
+        // different wording and different retry behaviour.
+        throw new ApiError(0, cause?.message || "Network request failed", null, {
+            network: true,
+        });
+    }
     const latency = Math.round(performance.now() - t0);
     const text = await res.text();
     const data = text ? JSON.parse(text) : {};
-    if (!res.ok) throw new ApiError(res.status, `${res.status} ${res.statusText}`, data);
+    if (!res.ok) {
+        throw new ApiError(res.status, `${res.status} ${res.statusText}`, data, {
+            retryAfterSeconds: parseRetryAfter(res.headers.get("Retry-After")),
+        });
+    }
     return { ...data, __latency_ms: latency };
 }
 
@@ -501,4 +534,4 @@ export const realApi = {
 };
 
 export default realApi;
-export { ApiError };
+export { ApiError, parseRetryAfter };
