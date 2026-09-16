@@ -1235,6 +1235,17 @@ workspace/member policies require active access rather than trusting a
 caller-supplied workspace context alone. The transaction-local context still
 limits query scope; it is not authorization.
 
+Migration `20260916_0008` fixes a populated-upgrade compatibility defect in
+that design. The original bootstrap table omitted legacy workspaces whose
+creator could not be inferred from an active owner, and its inner join then hid
+those workspaces even from valid active members. `0008` creates an internal
+lifecycle row for every workspace while leaving unknown creator provenance
+`NULL`. Active membership remains the authority, deleted workspaces still fail
+closed, cross-workspace isolation is unchanged, and creator-only owner
+bootstrap remains unavailable when the creator is unknown. No owner is assigned
+as part of this correction; organization administration, invitations, and
+ownership transfer remain deferred.
+
 Review found and fixed a rollback bug before release: the first downgrade
 dropped the new policies but left newly protected tables with RLS enabled and
 no policy, which would make the old application fail closed everywhere. The
@@ -1317,6 +1328,13 @@ if so, and remove the old local file only after verification.
   populated 0006-to-0007 check confirmed creator backfill, owner grants,
   forced RLS, separated ownership, and no direct runtime-role select on
   internal access grants.
+- A synthetic legacy workspace created at `0005` with active admin/member rows
+  and no owner reproduced the compatibility failure at the previous `0007`
+  definition. The restricted role saw `0/0/0` workspace/membership/document
+  rows there, then `1/3/1` after `0008`; the owner-backed control remained
+  available, all denial cases held, and row counts survived downgrade to
+  `0005` and re-upgrade to `0008`. The exact regression and six existing RLS
+  tests pass locally; PostgreSQL 18 CI remains the integration gate.
 - Alembic reports one head. On 2026-09-14, the committed secret-injected init
   wrapper and SQL provisioned a fresh WSL database and an online owner-role
   upgrade reached 0007. Docker was unavailable in native Windows and WSL, a

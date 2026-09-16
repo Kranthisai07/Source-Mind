@@ -15,7 +15,7 @@ data, paid API, deployment, or push was used.
 | Membership revocation | `apps/api/sourcemind/api/v1/workspaces.py::revoke_workspace_member` |
 | Route enforcement | `apps/api/sourcemind/api/v1/{analytics,conflicts,connectors,memories,search,team,workspaces}.py` |
 | Transaction RLS context | `apps/api/sourcemind/core/database.py::set_rls_user_context`, `set_rls_workspace_context` |
-| RLS policy migrations | `apps/api/alembic/versions/20260908_0006_security_foundation.py`, `apps/api/alembic/versions/20260909_0007_rls_context_hardening.py` |
+| RLS policy migrations | `apps/api/alembic/versions/20260908_0006_security_foundation.py`, `apps/api/alembic/versions/20260909_0007_rls_context_hardening.py`, `apps/api/alembic/versions/20260916_0008_ownerless_workspace_compatibility.py` |
 | Queued reauthorization | `apps/api/sourcemind/workers/ingestion.py`, `connector_tasks.py` |
 | Slack identity and transport | `apps/api/sourcemind/services/slack/bot.py`, `apps/api/sourcemind/api/v1/slack.py` |
 | URL SSRF boundary | `apps/api/sourcemind/core/url_security.py`, `apps/api/sourcemind/services/ingestion/{receiver,extractor}.py` |
@@ -45,6 +45,15 @@ resource's 404 to outsiders; workspace-ID routes return SM022/404. A real
 member with an insufficient role receives SM005/403.
 Although admins can manage ordinary handoffs, only an owner can initiate
 another owner's departure.
+
+Migration `20260916_0008` preserves the same membership contract for legacy
+workspaces that have active members but no historical owner. Every workspace
+gets an internal lifecycle row even when creator provenance is unknown; the
+creator remains `NULL`, active members retain their existing role-based access,
+and the owner-bootstrap predicate remains unavailable without a known creator.
+This compatibility migration does not assign owners or define an ownership
+policy. Organization administration, invitations, and ownership transfer remain
+deferred product work.
 
 Workers repeat authorization at execution time. A queued ingestion or connector
 sync accepted before revocation must not run after that membership is revoked.
@@ -220,13 +229,20 @@ the secret-injected procedure above.
 Run these checks only on newly created disposable databases:
 
 1. **Fresh:** create the required PostgreSQL extensions, apply head, and assert
-   Alembic revision `20260909_0007`, the creator column, the bootstrap/access
+   Alembic revision `20260916_0008`, the creator column, the bootstrap/access
    grant tables, and forced RLS ownership.
-2. **Populated:** apply through `20260908_0006`, create one active owner,
-   organization, and workspace, then apply `0007`. Assert the creator is
+2. **Populated owner-backed:** apply through `20260908_0006`, create one active
+   owner, organization, and workspace, then apply head. Assert the creator is
    backfilled, one active bootstrap/access grant has the owner role, RLS is
    forced, and the runtime role has no direct select privilege on the internal
    access-grant table.
+3. **Populated ownerless:** at `20250817_0005`, create an ownerless workspace
+   with active admin/member rows and data plus an owner-backed control. Confirm
+   the regression fails at the previous `0007` definition, then apply `0008`.
+   Assert active-member and owner-backed access, cross-workspace denial,
+   departed-member denial, deleted-workspace denial, and rejection of an owner
+   claim when creator provenance is unknown. Downgrade to `0005`, re-upgrade to
+   head, and repeat the assertions without changing row counts.
 
 `0007` makes membership/access grants, rather than a caller-supplied workspace
 context alone, the authority for workspace and member visibility. The
@@ -246,8 +262,10 @@ row and receive the resource 404; A sees no row after revocation.
 
 1. Take and verify a database backup. Drain writes and queued ingestion/sync
    work.
-2. Preflight membership data for unknown roles/statuses and ensure at least one
-   active owner remains per live workspace.
+2. Preflight membership data for unknown roles/statuses. Do not assign owners as
+   a migration-compatibility repair: `0008` preserves legitimate active-member
+   access while leaving unknown creator provenance unchanged. Any future owner
+   assignment is a separate governance decision.
 3. Run Alembic as a migration/table-owner credential, never as the long-lived
    API/worker runtime credential.
 4. Confirm the API and worker runtime role is not superuser, cannot bypass RLS,
@@ -298,14 +316,11 @@ ORDER BY c.relname;
 
 - First disable `SLACK_MEMORY_COMMANDS_ENABLED` and
   `URL_INGESTION_ENABLED`, stop new ingestion/sync work, and drain workers.
-- Prefer an application rollback that remains compatible with migration
-  `20260909_0007`; the stronger policy can safely remain during diagnosis.
-- If the application requires the pre-0007 schema, first run
-  `alembic downgrade 20260908_0006` as the migration owner. Only if reverting
-  the D-009 policy foundation as well, follow with
-  `alembic downgrade 20250817_0005`. The 0006 downgrade restores the exact
-  legacy policies on tables that previously had RLS and disables RLS only on
-  tables newly protected by that migration.
+- The previous API and worker do not include migrations `0006` through `0008`.
+  Before restoring those application revisions, run
+  `alembic downgrade 20250817_0005` as the migration owner. The downgrade
+  traverses `0008`, `0007`, and `0006`; the corrected 0006 downgrade restores
+  the exact legacy RLS flags and policies.
 - Re-run the role/ownership query after either direction. Never leave the
   migration-owner credential in API or worker configuration.
 
@@ -325,6 +340,13 @@ remove the local file.
   active owner bootstrap/access grants, forced RLS, separated table ownership,
   and no runtime-role select privilege on internal grants. On 2026-09-14, a
   fresh secret-injected WSL provision and online Alembic upgrade also passed.
+- On 2026-09-16, the synthetic ownerless regression failed at the previous
+  `0007` definition with `0/0/0` workspace/membership/document visibility,
+  passed at `0008`, failed again after the exact `0008 -> 0007` downgrade, and
+  passed after `0005 -> head` re-upgrade. Row counts stayed `1/6/3/5/3` for
+  organizations/users/workspaces/memberships/documents. The six existing RLS
+  tests also passed. PostgreSQL 18 CI integration remains required before this
+  evidence is release-complete.
 - Exact collection assertions passed for 6 RLS tests and one test for each
   signed and Redis acceptance node. The RLS suite passed: 6 tests in 4.12
   seconds. Signed acceptance passed: 1 test in 28.51 seconds. Redis acceptance
