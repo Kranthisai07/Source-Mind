@@ -92,27 +92,49 @@ continues to be served. "Archival" implied a state transition that no code
 performs. The accurate phrase is **"leave unchanged"**, and I have stopped
 calling it anything else.
 
-## 2. What I cannot reconcile, and why
+## 2. The recorded identifier, and the Run 4 reconciliation
 
-The instruction was to use workspace UUIDs and reconcile the two Run 4 entries
-against the recorded inventory. **There is no recorded workspace inventory in
-this repository, and no production workspace UUID anywhere in it.**
+**Correction to my own correction.** I first wrote that no production workspace
+UUID exists anywhere in this repository. That was wrong — I had searched only
+`*.md`. A wider search found one:
 
-- The only workspace UUIDs in the docs are synthetic fixtures in
-  `SECURITY_FOUNDATION_ROLLOUT.md` (`11111111-…`, `22222222-…`). Promoting
-  those would be exactly the fabrication I was told not to commit.
-- D-007 records a **name and counts** — `name=Eval Run 4`,
-  `total_memories=1167`, `contributors=2`, and "8 live workspaces" — but no
-  identifier for any of the eight.
-- "Run 4" denotes two different kinds of object in the record: the
-  **evaluation run** analysed in D-005 (`DECISIONS.md:184,503,522,563`), and a
-  **workspace named `Eval Run 4`** observed during the D-007 verification
-  (`DECISIONS.md:859,863`). They share a label; one is a benchmark execution,
-  the other a tenant row. Nothing in the repository links either to a UUID.
+`evaluation/data/sourcemind_id_map.json`
 
-I will not invent ids, and I will not ask for an eight-owner mapping — §1.3
-shows it is not technically required, so requesting one would be asking for
-work I cannot justify.
+```
+workspace_id               451e69b4-ed93-4615-9f32-7f747853fce6
+memory_to_ground_truth     1156 memory UUIDs
+ground_truth_artifact_type 300 entries
+```
+
+This is a **real production workspace UUID** — the evaluation workspace — and it
+is the only one recorded. The remaining seven of the eight have no identifier
+anywhere in the repository.
+
+### Reconciling the two Run 4 entries
+
+They are two different kinds of object that share a label, and they do **not**
+agree numerically:
+
+| Entry | Source | Figure |
+|---|---|---|
+| Evaluation **run 4** | `evaluation/data/report_run4.md`, generated 2026-09-03 | 300 ground-truth items; recall@5 0.703 |
+| Workspace **`Eval Run 4`** | `DECISIONS.md:859,863` (D-007, 2026-09-07) | 1167 current memories, 2 contributors |
+| Memory→ground-truth map | `sourcemind_id_map.json` | **1156** memory UUIDs, workspace `451e69b4-…` |
+
+So one is a benchmark execution and its report; the other is the tenant row the
+benchmark's data lives in. The map ties the workspace UUID to 1156 memories,
+while D-007 counted 1167 current memories in the workspace named `Eval Run 4`
+four days later — **a difference of 11**.
+
+`451e69b4-ed93-4615-9f32-7f747853fce6` is therefore the **strong candidate** for
+the `Eval Run 4` workspace, on three grounds: it is the evaluation workspace, it
+holds the evaluation corpus, and 1156 is within 1% of 1167. It is **not
+confirmed**, because the counts differ and nothing in the repository maps a
+workspace UUID to a workspace *name*. Confirming it requires one read-only
+lookup of that id against production, which I have not run.
+
+I am not asserting the identification, and I have not invented an id for any of
+the other seven, because none is recorded.
 
 ## 3. The decision, correctly narrowed
 
@@ -148,6 +170,20 @@ ORDER BY w.name;
 
 `active_members` is the column that matters. `active_owners` is informational.
 
+For the one workspace that does have a recorded id, the narrower lookup is:
+
+```sql
+SELECT w.id, w.name, w.deleted_at,
+       count(m.id) FILTER (WHERE m.status = 'active'
+                             AND m.departed_at IS NULL) AS active_members
+FROM workspaces AS w
+LEFT JOIN workspace_members AS m ON m.workspace_id = w.id
+WHERE w.id = '451e69b4-ed93-4615-9f32-7f747853fce6'
+GROUP BY w.id, w.name, w.deleted_at;
+```
+
+That single query also settles whether this id is the workspace D-007 saw as `Eval Run 4`, by returning its name.
+
 **On the evaluation data specifically:** D-007 recorded that a member still
 received `Eval Run 4`'s full contents through the deployed API *after* the
 isolation fix. If that membership is still active, that workspace already has a
@@ -163,10 +199,13 @@ are yours:
    that active membership alone grants access, and that no route can create a
    membership on an existing workspace. If either is wrong, the narrowing in §3
    collapses and should be redone.
-2. **The inventory.** If a production workspace inventory with UUIDs exists
-   outside this repository, it belongs in the reconciliation. If it does not,
-   then the eight are identified only by the aggregate count in D-007, and that
-   should be stated plainly rather than implied.
+2. **The inventory.** One production workspace UUID is recorded —
+   `451e69b4-ed93-4615-9f32-7f747853fce6`, in
+   `evaluation/data/sourcemind_id_map.json`. The other seven are not recorded
+   anywhere in this repository; they exist in the record only as D-007's
+   aggregate "8 live workspaces". If an inventory exists outside the repo, it
+   belongs in the reconciliation. Confirming that the recorded id is the
+   workspace named `Eval Run 4` needs one read-only lookup.
 
 ## 5. Deferred — recorded, not implemented
 
