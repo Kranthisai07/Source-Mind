@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import os
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import delete, select, text, update
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
+from sourcemind.api.v1.workspaces import revoke_workspace_member
 from sourcemind.core.database import set_rls_user_context, set_rls_workspace_context
-from sourcemind.core.dependencies import require_memory_access
+from sourcemind.core.dependencies import AuthenticatedUser, require_memory_access
 from sourcemind.core.exceptions import MemoryNotFoundError
 from sourcemind.models.memory import Memory
 from sourcemind.models.organization import Organization
@@ -35,6 +41,82 @@ class SecurityTenantData:
     target_memory_id: uuid.UUID
     other_memory_id: uuid.UUID
     clerk_ids: dict[uuid.UUID, str]
+
+
+class _OwnerCountBarrierSession:
+    def __init__(
+        self,
+        session: AsyncSession,
+        barrier: asyncio.Barrier,
+    ) -> None:
+        self._session = session
+        self._barrier = barrier
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._session, name)
+
+    async def execute(
+        self,
+        statement: object,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        result = await self._session.execute(statement, *args, **kwargs)
+        sql = str(statement)
+        if (
+            "workspace_members.id" in sql
+            and "workspace_members.role" in sql
+            and "workspace_members.user_id" not in sql
+        ):
+            await self._barrier.wait()
+        return result
+
+
+@pytest.fixture(scope="session")
+def owner_race_database_url(request: pytest.FixtureRequest) -> str:
+    custom_url = os.getenv("OWNER_RACE_DATABASE_URL", "")
+    if not custom_url:
+        return str(request.getfixturevalue("supabase_url"))
+
+    if os.getenv("OWNER_RACE_TEST_ALLOW_DISPOSABLE") != "1":
+        raise RuntimeError("owner-removal race database target is not enabled")
+    expected_database = os.getenv("OWNER_RACE_EXPECTED_DATABASE", "")
+    expected_port = os.getenv("OWNER_RACE_EXPECTED_PORT", "")
+    if not expected_database or not expected_port:
+        raise RuntimeError("owner-removal race database identity is incomplete")
+
+    if not custom_url.startswith("postgresql+asyncpg://"):
+        custom_url = custom_url.replace(
+            "postgresql://",
+            "postgresql+asyncpg://",
+            1,
+        )
+    parsed = make_url(custom_url)
+    if parsed.host not in {"127.0.0.1", "localhost"}:
+        raise RuntimeError("refusing non-loopback owner-removal race database")
+    if (
+        parsed.username != "sourcemind_test"
+        or parsed.database != expected_database
+        or parsed.port != int(expected_port)
+    ):
+        raise RuntimeError("refusing unexpected owner-removal race database identity")
+    return custom_url
+
+
+@pytest_asyncio.fixture
+async def owner_race_engine(
+    owner_race_database_url: str,
+) -> AsyncIterator[AsyncEngine]:
+    engine = create_async_engine(
+        owner_race_database_url,
+        pool_size=2,
+        max_overflow=0,
+        pool_pre_ping=True,
+    )
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
 
 
 async def _seed_security_tenants(supabase_engine) -> SecurityTenantData:
@@ -457,6 +539,80 @@ async def test_database_rejects_removing_the_last_active_owner(
         owner.departed_at = datetime.now(UTC)
         with pytest.raises(DBAPIError, match="last active workspace owner"):
             await remove_last.flush()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_owner_revocations_preserve_one_active_owner(
+    owner_race_engine,
+) -> None:
+    data = await _seed_security_tenants(owner_race_engine)
+    barrier = asyncio.Barrier(2)
+
+    async def remove_owner(
+        actor_id: uuid.UUID,
+        target_id: uuid.UUID,
+    ) -> Exception | None:
+        async with AsyncSession(owner_race_engine, expire_on_commit=False) as session:
+            await set_rls_user_context(session, actor_id)
+            guarded_session = _OwnerCountBarrierSession(session, barrier)
+            current_user = AuthenticatedUser(
+                user_id=actor_id,
+                clerk_id=data.clerk_ids[actor_id],
+                email=f"{actor_id}@example.com",
+            )
+            try:
+                await revoke_workspace_member(
+                    workspace_id=data.target_workspace_id,
+                    user_id=target_id,
+                    db=guarded_session,  # type: ignore[arg-type]
+                    current_user=current_user,
+                    idempotency_key=str(uuid.uuid4()),
+                )
+            except Exception as exc:
+                await session.rollback()
+                return exc
+            return None
+
+    async with AsyncSession(owner_race_engine) as identity_session:
+        identity = (
+            await identity_session.execute(
+                text(
+                    "SELECT current_user, rolsuper, rolbypassrls "
+                    "FROM pg_roles WHERE rolname = current_user"
+                )
+            )
+        ).one()
+        assert identity == ("sourcemind_test", False, False)
+
+    outcomes = await asyncio.gather(
+        remove_owner(data.owner_id, data.backup_owner_id),
+        remove_owner(data.backup_owner_id, data.owner_id),
+    )
+
+    assert sum(outcome is None for outcome in outcomes) == 1
+    failures = [outcome for outcome in outcomes if outcome is not None]
+    assert len(failures) == 1
+    assert isinstance(failures[0], DBAPIError)
+    assert "last active workspace owner" in str(failures[0])
+
+    surviving_owner_id = (
+        data.owner_id if outcomes[0] is None else data.backup_owner_id
+    )
+    async with AsyncSession(owner_race_engine) as verify:
+        await set_rls_user_context(verify, surviving_owner_id)
+        await set_rls_workspace_context(verify, data.target_workspace_id)
+        active_owner_count = await verify.scalar(
+            select(text("count(*)"))
+            .select_from(WorkspaceMember)
+            .where(
+                WorkspaceMember.workspace_id == data.target_workspace_id,
+                WorkspaceMember.role == "owner",
+                WorkspaceMember.status == "active",
+                WorkspaceMember.departed_at.is_(None),
+            )
+        )
+        assert active_owner_count == 1
 
 
 @pytest.mark.integration
