@@ -261,23 +261,35 @@ jobs:
       - name: Restricted-role visibility after re-upgrade
         run: |
           set -euo pipefail
-          member=$(PGPASSWORD="$E2E_DB_RUNTIME_PASSWORD" psql -U sourcemind_test -d "$DB" -At -v ON_ERROR_STOP=1 -c "
-            BEGIN;
-            SELECT set_config('app.current_user_id', '${MEMBER_ID}', true);
+          # `SET LOCAL` rather than `SELECT set_config(...)`: set_config is a
+          # SELECT and prints its value, which then has to be told apart from
+          # the count. And the count is extracted by matching a bare numeric
+          # line rather than by position — psql also prints the COMMIT command
+          # tag, so `tail -1` returns "COMMIT". That is not hypothetical: it is
+          # what the first run of this lane did, and the gate caught it.
+          visible() {
+            local sql="$1"
+            PGPASSWORD="$E2E_DB_RUNTIME_PASSWORD" psql -U sourcemind_test -d "$DB"               -At -v ON_ERROR_STOP=1 -c "$sql" | grep -E '^[0-9]+$' | tail -1
+          }
+          member=$(visible "BEGIN;
+            SET LOCAL app.current_user_id = '${MEMBER_ID}';
             SELECT count(*) FROM memories;
-            COMMIT;
-          " | tail -1)
-          outsider=$(PGPASSWORD="$E2E_DB_RUNTIME_PASSWORD" psql -U sourcemind_test -d "$DB" -At -v ON_ERROR_STOP=1 -c "
-            BEGIN;
-            SELECT set_config('app.current_user_id', '${OUTSIDER_ID}', true);
+            COMMIT;")
+          outsider=$(visible "BEGIN;
+            SET LOCAL app.current_user_id = '${OUTSIDER_ID}';
             SELECT count(*) FROM memories;
-            COMMIT;
-          " | tail -1)
-          nocontext=$(PGPASSWORD="$E2E_DB_RUNTIME_PASSWORD" psql -U sourcemind_test -d "$DB" -At -v ON_ERROR_STOP=1 -c "
-            SELECT count(*) FROM memories;
-          " | tail -1)
-          printf 'member=%s\noutsider=%s\nnocontext=%s\n' "$member" "$outsider" "$nocontext" \
-            | tee "$EVIDENCE/restricted.txt"
+            COMMIT;")
+          nocontext=$(visible "SELECT count(*) FROM memories;")
+          for pair in "member=$member" "outsider=$outsider" "nocontext=$nocontext"; do
+            case "${pair#*=}" in
+              ''|*[!0-9]*) echo "::error::${pair%%=*} did not yield a count: '${pair#*=}'"; exit 1 ;;
+            esac
+          done
+          {
+            echo "member=$member"
+            echo "outsider=$outsider"
+            echo "nocontext=$nocontext"
+          } | tee "$EVIDENCE/restricted.txt"
 
       # ── The gate ─────────────────────────────────────────────────────────
       # always(), so a phase that was skipped fails here rather than leaving a

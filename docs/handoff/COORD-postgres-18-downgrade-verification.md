@@ -145,6 +145,35 @@ after downgrade). It is caught, named, and fails the job. Also caught: rows
 lost, isolation broken, policy failing open, a skipped phase, and a server that
 is not PostgreSQL 18.
 
+### First run: the lane found a bug in itself
+
+Worth recording, because it is the gate behaving exactly as intended. On
+`d67af47` every phase executed — the digest-pinned image pulled, PostgreSQL 18
+confirmed, baseline measured, upgrade, seed, downgrade, re-upgrade and the
+restricted-role queries all succeeded — and **only the gate failed**.
+
+The cause was mine, in the harness, not in a migration. The restricted-role
+step took the query result with `tail -1`, but `psql` also prints the
+`set_config` value and the `COMMIT` command tag, so the captured "count" was
+the string `COMMIT`. The gate refused to accept it, which is right: a value it
+cannot interpret is not evidence of isolation.
+
+Reproduced locally on PostgreSQL 16.15 before changing anything, running the
+identical cycle with the repo's own scripts. That reproduction also confirmed
+the migration behaviour independently of CI:
+
+| Assertion | Result on PostgreSQL 16.15 |
+|---|---|
+| Flags after downgrade vs measured baseline | **identical, all 13 tables** |
+| Row counts and content digest across the trip | **unchanged** |
+| Active member sees | 8 of 8 memories |
+| Non-member sees | 0 |
+| No RLS context sees | 0 |
+
+The fix uses `SET LOCAL` and extracts a bare numeric line rather than trusting
+position. The corrected step rejects `COMMIT` and an empty result, and accepts
+only a count.
+
 **Residual, stated rather than glossed:** there is no `18.6`-pinned pgvector
 tag. This lane proves the behaviour on the digest above and records the exact
 minor it ran. If that digest is not 18.6 and you need 18.6 specifically, that
