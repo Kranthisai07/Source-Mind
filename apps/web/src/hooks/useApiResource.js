@@ -51,7 +51,15 @@ export function useApiResource(fetcher, options = {}) {
     const previousKey = useRef(resetKey);
 
     const run = useCallback(() => {
-        const token = gate.current.begin();
+        // Capture the gate INSTANCE, not the ref, for the lifetime of this
+        // request. Reading `gate.current` when the response lands would consult
+        // whichever gate is installed by then — and since a fresh gate restarts
+        // its counter at 1, a response belonging to a closed gate could match
+        // the new gate's first token and be accepted. Holding the instance
+        // means a closed gate rejects its own in-flight responses, which is
+        // exactly what closing is for.
+        const g = gate.current;
+        const token = g.begin();
         setLoading(true);
         setError(null);
 
@@ -61,7 +69,7 @@ export function useApiResource(fetcher, options = {}) {
                 // A superseded or closed request must not touch state. This is
                 // what stops a slow response from a previous workspace from
                 // repopulating the screen.
-                if (!gate.current.accept(token)) return;
+                if (!g.accept(token)) return;
                 attempts.current = 0;
                 setData(result);
                 setError(null);
@@ -69,7 +77,7 @@ export function useApiResource(fetcher, options = {}) {
                 setRetryAt(null);
             })
             .catch((err) => {
-                if (!gate.current.accept(token)) return;
+                if (!g.accept(token)) return;
                 const classified = classifyApiError(err);
 
                 // Losing access clears what is on screen. Leaving a stale list
@@ -85,7 +93,7 @@ export function useApiResource(fetcher, options = {}) {
                     setError(classified);
                     setRetryAt(Date.now() + delay);
                     timer.current = setTimeout(() => {
-                        if (!gate.current.isClosed) run();
+                        if (!g.isClosed) run();
                     }, delay);
                     return;
                 }
@@ -121,6 +129,31 @@ export function useApiResource(fetcher, options = {}) {
         });
     }, []);
 
+    // Closing on cleanup is what stops a response landing in an unmounted
+    // component. But `gate` lives in a ref, so the SAME object survives Strict
+    // Mode's deliberate setup → cleanup → setup, and a permanently closed gate
+    // there would reject every response for the rest of the component's life:
+    // the screen would sit on its skeleton while data arrived and was thrown
+    // away.
+    //
+    // So setup installs a FRESH gate whenever the current one has been closed.
+    // Declared BEFORE the fetching effect on purpose: React runs effects in
+    // declaration order, so the gate must be replaced before anything uses it.
+    // Declared after, run() would capture the closed gate and drop its own
+    // response — which is precisely how the first attempt at this fix failed.
+    // Requests issued before the cleanup still hold the old instance (see
+    // `run`), so they remain correctly rejected — nothing is weakened. This is
+    // what Strict Mode's double invoke is for: it surfaced a cleanup that
+    // destroyed something setup never rebuilt.
+    useEffect(() => {
+        if (gate.current.isClosed) gate.current = createRequestGate();
+        const g = gate.current;
+        return () => {
+            g.close();
+            if (timer.current) clearTimeout(timer.current);
+        };
+    }, []);
+
     useEffect(() => {
         // Scope changed: drop the old scope's data before anything new lands,
         // and invalidate whatever is already in flight for the old scope.
@@ -138,14 +171,6 @@ export function useApiResource(fetcher, options = {}) {
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [run, resetKey, identityEpoch, ...deps]);
-
-    useEffect(() => {
-        const g = gate.current;
-        return () => {
-            g.close();
-            if (timer.current) clearTimeout(timer.current);
-        };
-    }, []);
 
     const retry = useCallback(() => {
         attempts.current = 0;

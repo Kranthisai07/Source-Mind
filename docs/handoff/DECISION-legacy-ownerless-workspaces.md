@@ -177,3 +177,32 @@ Organization-level administration, invitation workflow, and ownership transfer
 remain out of scope and unimplemented. §2 sharpens why the third matters: the
 absence of any membership-granting route is why a zero-member workspace has no
 in-product remedy.
+
+## 8. Migration CI result on record
+
+Captured before the next push, because the next push changes the SHA and these
+runs will no longer be the head.
+
+**Revision `d7808a9e579b28ca81d9eb5fa1df3a834cb3b01b`** — backend `a5f7c56`
+(Codex's `19d43bd`, cherry-picked unamended) plus CI `d7808a9`.
+
+| Workflow | Event | Result | Run |
+|---|---|---|---|
+| Migration Round-Trip (PostgreSQL 18) | push | success | 35126660090 |
+| Migration Round-Trip (PostgreSQL 18) | pull_request | success | 35126669446 |
+| Security Acceptance | push | success | 35126660182 |
+| Security Acceptance | pull_request | success | 35126669492 |
+| Web CI | push | success | 35126660125 |
+| Web CI | pull_request | success | 35126669431 |
+| API CI | pull_request | success | 35126669545 |
+
+7/7 green; 10/10 Actions checks. The PostgreSQL 18 lane ran all 25 steps,
+including the three ownerless phases in order: the regression **failed** at
+`20260909_0007`, **passed** at head, and **passed again** after the full
+downgrade to `20250817_0005` and re-upgrade. The gate accepted that only
+because each recorded post-migration revision matched its target and the
+failing phase was an executed assertion failure rather than an `error` or a
+`skipped` node.
+
+The only red check on the PR is GitGuardian incident 37270182, which is a
+false positive and gates no test.

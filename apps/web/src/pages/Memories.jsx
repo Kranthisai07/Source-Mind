@@ -46,6 +46,12 @@ export default function Memories() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [open, setOpen] = useState(false);
+    // Bumped by "Try again". The retry has to reissue the SAME query and mode,
+    // so it cannot work by changing either of them — and the previous handler,
+    // `setQuery((q) => q)`, set state to a value React considers identical, so
+    // React bailed out of the render and the effect below never re-ran. The
+    // button did nothing. A counter is a state change React cannot bail out of.
+    const [reloadNonce, setReloadNonce] = useState(0);
 
     useEffect(() => {
         let cancelled = false;
@@ -73,7 +79,7 @@ export default function Memories() {
             });
         }, 120);
         return () => { cancelled = true; clearTimeout(t); };
-    }, [query, mode]);
+    }, [query, mode, reloadNonce]);
 
     return (
         <>
@@ -150,7 +156,7 @@ export default function Memories() {
                 <div className="sm-card">
                     <ErrorState
                         error={error}
-                        onRetry={() => setQuery((q) => q)}
+                        onRetry={() => setReloadNonce((n) => n + 1)}
                     />
                 </div>
             ) : loading ? (
