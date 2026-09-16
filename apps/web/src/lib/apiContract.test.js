@@ -219,6 +219,24 @@ describe("creating a memory matches the route's actual signature", () => {
         expect(keys[0]).not.toBe(keys[1]);
     });
 
+    test("a caller-supplied key is sent verbatim — this is how a retry stays a retry", async () => {
+        // The rule the header exists for: a retry of the SAME logical
+        // submission must carry the key the first attempt used, or the backend
+        // sees two unrelated ingestions of the same content.
+        resetIdentityScopedCaches();
+        const calls = captureRouted({ workspaces: WORKSPACES, created: CREATED });
+        const key = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+
+        await realApi.createMemory({ content: "same text", idempotencyKey: key });
+        await realApi.createMemory({ content: "same text", idempotencyKey: key });
+
+        const posts = calls.filter((c) => c.init?.method === "POST");
+        expect(posts).toHaveLength(2);
+        expect(posts.map((c) => c.init.headers["Idempotency-Key"])).toEqual([key, key]);
+        // And it must not leak into the body.
+        expect(JSON.parse(posts[0].init.body)).not.toHaveProperty("idempotencyKey");
+    });
+
     test("an explicit workspace_id is honoured and still not sent in the body", async () => {
         resetIdentityScopedCaches();
         const calls = captureRouted({ workspaces: WORKSPACES, created: CREATED });

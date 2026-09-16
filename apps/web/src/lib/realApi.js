@@ -8,6 +8,7 @@
 
 import { mockApi } from "./mockApi";
 import { getAuthToken, logTokenFingerprintOnce } from "./authToken";
+import { newIdempotencyKey } from "./idempotency";
 
 const BASE = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
 
@@ -25,25 +26,7 @@ const BASE = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
 // then the first workspace the signed-in user can actually see.
 const CONFIGURED_WS = (process.env.REACT_APP_DEFAULT_WORKSPACE_ID || "").trim();
 
-/**
- * A UUID v4 for the Idempotency-Key header.
- *
- * `crypto.randomUUID` is unavailable on insecure origins and in jsdom, so it
- * is used when present and a getRandomValues fallback otherwise. Both set the
- * version and variant bits, because require_idempotency_key parses the value
- * with `uuid.UUID(key, version=4)`.
- */
-function newIdempotencyKey() {
-    const c = typeof crypto !== "undefined" ? crypto : undefined;
-    if (c && typeof c.randomUUID === "function") return c.randomUUID();
-    const b = new Uint8Array(16);
-    if (c && typeof c.getRandomValues === "function") c.getRandomValues(b);
-    else for (let i = 0; i < 16; i++) b[i] = Math.floor(Math.random() * 256);
-    b[6] = (b[6] & 0x0f) | 0x40;   // version 4
-    b[8] = (b[8] & 0x3f) | 0x80;   // variant 10x
-    const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
-    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
-}
+
 
 let _wsPromise = null;
 
@@ -503,14 +486,18 @@ export const realApi = {
      * The adapter read perfectly sensibly on its own; only the route's
      * signature shows it was wrong, which is why apiContract.test.js pins it.
      */
-    createMemory: async ({ workspace_id, ...payload } = {}) =>
+    createMemory: async ({ workspace_id, idempotencyKey, ...payload } = {}) =>
         unwrapOne(
             await request(`/v1/memories`, {
                 method: "POST",
                 params: { workspace_id: await resolveWorkspaceId(workspace_id) },
-                // Fresh per call. A fixed key would make every ingestion after
-                // the first a replay of it.
-                headers: { "Idempotency-Key": newIdempotencyKey() },
+                // A caller RETRYING the same logical submission passes the key
+                // it already sent, so the backend can recognise the repeat
+                // instead of ingesting the content twice. Only a caller with
+                // no key gets a fresh one — a key minted per call would make
+                // every retry a new submission, which is the opposite of what
+                // the header is for.
+                headers: { "Idempotency-Key": idempotencyKey || newIdempotencyKey() },
                 body: payload,
             })
         ),

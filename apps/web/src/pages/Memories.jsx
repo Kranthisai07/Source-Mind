@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Search, Plus, X, Brain } from "lucide-react";
 import PageHeader from "../components/ui-kit/PageHeader";
 import EmptyState from "../components/ui-kit/EmptyState";
@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "../components/ui/sheet";
 import api from "../lib/api";
 import { classifyApiError } from "../lib/apiError";
+import { newIdempotencyKey } from "../lib/idempotency";
 
 /**
  * Page 3 of the Supermemory-console redesign, modelled on §4.2 (Documents):
@@ -278,13 +279,25 @@ function IngestPanel({ open, onOpenChange }) {
         }
     };
 
+    // Held across attempts on purpose. If a submission fails and the user
+    // presses the button again, that is a RETRY of the same content, not a
+    // second submission, and it must carry the key the first attempt used —
+    // otherwise the backend sees two unrelated ingestions of the same text.
+    // Cleared once a submission is accepted, so the next one is genuinely new.
+    const submissionKey = useRef(null);
+
     const submit = async () => {
         if (!content.trim()) return;
-        const r = await api.createMemory({ content, tags, category });
+        if (!submissionKey.current) submissionKey.current = newIdempotencyKey();
+        const r = await api.createMemory({
+            content, tags, category, idempotencyKey: submissionKey.current,
+        });
+        submissionKey.current = null;
         setJobId(r.job_id);
     };
 
     const reset = () => {
+        submissionKey.current = null;
         setContent(""); setTagsRaw(""); setTags([]); setCategory("general"); setJobId(null); setJob(null);
     };
 
