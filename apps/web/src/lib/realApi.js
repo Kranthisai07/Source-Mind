@@ -76,6 +76,20 @@ export function onIdentityReset(listener) {
  * something this app states or controls, and adding routerPush/routerReplace
  * (the ordinary Clerk + React Router integration) would silently remove it.
  */
+/**
+ * The workspace a request would be scoped to, resolved once.
+ *
+ * Exported so a caller can resolve the workspace ITSELF and then use the same
+ * value twice — for the idempotency-key identity and for the request — instead
+ * of letting the adapter resolve independently. Two resolutions could differ
+ * across an identity change, and a key chosen against one workspace while the
+ * request goes to another is precisely the mismatch the key is meant to rule
+ * out.
+ */
+export async function resolveWorkspace(explicit) {
+    return resolveWorkspaceId(explicit);
+}
+
 export function resetIdentityScopedCaches() {
     _identityGeneration += 1;
     _wsPromise = null;

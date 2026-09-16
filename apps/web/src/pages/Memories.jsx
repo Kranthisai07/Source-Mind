@@ -10,9 +10,11 @@ import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "../components/ui/sheet";
-import api from "../lib/api";
+import api, { resolveCurrentWorkspace } from "../lib/api";
 import { classifyApiError } from "../lib/apiError";
-import { newIdempotencyKey } from "../lib/idempotency";
+import { toast } from "sonner";
+import { createSubmissionKeyHolder, submissionIdentity } from "../lib/submissionKey";
+import { getCurrentUserId } from "../lib/currentUser";
 
 /**
  * Page 3 of the Supermemory-console redesign, modelled on §4.2 (Documents):
@@ -279,25 +281,58 @@ function IngestPanel({ open, onOpenChange }) {
         }
     };
 
-    // Held across attempts on purpose. If a submission fails and the user
-    // presses the button again, that is a RETRY of the same content, not a
-    // second submission, and it must carry the key the first attempt used —
-    // otherwise the backend sees two unrelated ingestions of the same text.
-    // Cleared once a submission is accepted, so the next one is genuinely new.
-    const submissionKey = useRef(null);
+    // The key is bound to the submission, not to the panel. An unchanged retry
+    // reuses it; changing the content, tags, category, workspace or user earns
+    // a new one. The earlier version held a key on the panel alone, so editing
+    // the text after a failure resent the NEW text under the OLD key — which
+    // the backend can read as a replay, returning the first job while the edit
+    // is silently discarded.
+    const keyHolder = useRef(null);
+    if (keyHolder.current === null) keyHolder.current = createSubmissionKeyHolder();
+    // Duplicate-submit protection: a second click while one is in flight would
+    // otherwise issue a second request.
+    const inFlight = useRef(false);
 
     const submit = async () => {
-        if (!content.trim()) return;
-        if (!submissionKey.current) submissionKey.current = newIdempotencyKey();
-        const r = await api.createMemory({
-            content, tags, category, idempotencyKey: submissionKey.current,
-        });
-        submissionKey.current = null;
-        setJobId(r.job_id);
+        if (!content.trim() || inFlight.current) return;
+        inFlight.current = true;
+        try {
+            // Resolved ONCE, then used for both the key identity and the
+            // request. Letting the adapter resolve separately could key
+            // against one workspace and send to another.
+            const workspaceId = await resolveCurrentWorkspace();
+            const payload = { content, tags, category };
+            const key = keyHolder.current.keyFor(
+                submissionIdentity({
+                    payload,
+                    workspaceId,
+                    userId: getCurrentUserId(),
+                })
+            );
+            const r = await api.createMemory({
+                ...payload,
+                workspace_id: workspaceId,
+                idempotencyKey: key,
+            });
+            keyHolder.current.clear();
+            setJobId(r.job_id);
+        } catch (e) {
+            // Without this the rejected promise escapes the click handler as
+            // an unhandled rejection and the panel gives no sign of failure —
+            // so the user cannot even know to retry, which is the situation
+            // the key binding above exists to handle. The key is deliberately
+            // NOT cleared: the next attempt at the same content is a retry.
+            const classified = classifyApiError(e);
+            toast.error(classified.title, {
+                description: e?.body?.error?.message || classified.detail,
+            });
+        } finally {
+            inFlight.current = false;
+        }
     };
 
     const reset = () => {
-        submissionKey.current = null;
+        keyHolder.current?.clear();
         setContent(""); setTagsRaw(""); setTags([]); setCategory("general"); setJobId(null); setJob(null);
     };
 

@@ -14,6 +14,7 @@ import { Navigate, useLocation } from "react-router-dom";
 
 import { useMocks, resetApiCaches } from "@/lib/api";
 import { setTokenGetter } from "@/lib/authToken";
+import { setCurrentUserId } from "@/lib/currentUser";
 
 export function ClerkTokenBridge() {
     const { getToken, isLoaded, userId } = useAuth();
@@ -43,6 +44,11 @@ export function ClerkTokenBridge() {
             previousUserId.current = userId ?? null;
             return;
         }
+        // Published on every settled render, not only on change: a plain
+        // module cannot read Clerk's context, and a submission key minted
+        // before this ran would otherwise carry a null user for the life of
+        // the panel.
+        setCurrentUserId(userId ?? null);
         if (previousUserId.current !== (userId ?? null)) {
             previousUserId.current = userId ?? null;
             resetApiCaches();

@@ -30,6 +30,7 @@ on:
       - ".github/scripts/check_web_e2e_contract.py"
       - ".github/scripts/check_web_integration_report.py"
       - ".github/scripts/expected_web_integration_tests.txt"
+      - ".github/scripts/expected_ingest_tests.txt"
   workflow_dispatch:
 
 permissions:
@@ -379,6 +380,30 @@ jobs:
           python .github/scripts/check_web_integration_report.py \
             apps/web/integration-results.json
 
+      # ── Ingestion submission-acceptance checks ────────────────────────
+      # Runs AFTER the conflict suite so it cannot perturb those fixtures. Its
+      # own gate is separate, so the existing 16-test conflict gate keeps
+      # meaning exactly what it meant before.
+      #
+      # These assert a submission is ACCEPTED and returns a job id. They do NOT
+      # assert completed ingestion: no Celery worker runs in this job, so the
+      # jobs stay queued and nothing here may be reported as finished work.
+      - name: Ingestion submission-acceptance tests
+        id: ingest
+        continue-on-error: true
+        timeout-minutes: 5
+        working-directory: apps/web
+        env:
+          CI: "true"
+          INGEST_API_URL: http://127.0.0.1:8010
+        run: |
+          npx craco test --watchAll=false --runInBand             --testPathPattern "ingestContract\.e2e"             --json --outputFile=ingest-results.json
+
+      - name: Assert all 4 ingestion submission tests executed and passed
+        if: always()
+        run: |
+          python .github/scripts/check_web_integration_report.py             apps/web/ingest-results.json             .github/scripts/expected_ingest_tests.txt
+
       - name: API log
         if: failure()
         run: tail -100 /tmp/api.log || true
@@ -388,5 +413,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: web-integration-results
-          path: apps/web/integration-results.json
+          path: |
+            apps/web/integration-results.json
+            apps/web/ingest-results.json
           if-no-files-found: ignore
