@@ -29,10 +29,24 @@ import structlog
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from sourcemind.core.runtime_state import ProcessRuntimeState
+
 logger = structlog.get_logger(__name__)
 
 # Paths excluded from access logging
 _SILENT_PATHS = frozenset({"/health", "/metrics", "/favicon.ico"})
+
+
+class ProcessRequestCounterMiddleware(BaseHTTPMiddleware):
+    """Count real application requests without counting health probes."""
+
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        if request.url.path != "/health":
+            runtime_state: ProcessRuntimeState = request.app.state.runtime_state
+            runtime_state.record_request()
+        return await call_next(request)
 
 
 class CorrelationIDMiddleware(BaseHTTPMiddleware):

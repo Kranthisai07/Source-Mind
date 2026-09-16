@@ -960,6 +960,396 @@ rows. The 44 non-current rows were all written 2026-09-03, inside eval run 4's
 own ingestion window.
 
 
+## D-008 — Frontend redesign to the Supermemory console reference, and the seven bugs it exposed
+
+**Status:** Done (2026-09-08). All seven in-scope pages migrated and verified
+against the real API. Frontend suite and production build clean; see "Final
+state" for why the backend figure from that session is not a clean signal for
+this work.
+
+### What this was, and what it turned out to be
+
+The brief was a pure visual/UX redesign: match a verified UI/UX audit of
+Supermemory's console, change no API call, no routing, no Clerk integration.
+Seven pages — Dashboard, MemoryDetail, Memories, Analytics, Conflicts, Handoff,
+Settings — each with a checkpoint.
+
+It did not stay a visual exercise. **Every single one of the seven pages was
+reading at least one field the API does not return.** Not one of those bugs was
+found by reading code; each came from checking a live response before writing
+the replacement. That pattern is now WORKING_STANDARDS rule 7, and this entry
+is the evidence behind it.
+
+| page | what it read | what the API returns | effect |
+|---|---|---|---|
+| MemoryDetail | `mem.tags.map()` | `tags` is null | **crashed on 6 of 6 real memories** |
+| MemoryDetail | `mem.memory_id` | `id` | blank H1 |
+| Memories | result item as the memory | `{memory, score, rank, match_type}` wrapper | **a successful search crashed the page**; an empty one rendered fine |
+| Memories | `r.__latency_ms` | `latency_ms` | rendered `undefinedms` |
+| Memories | `m.memory_id` for links | `id` | every result linked to `/memories/undefined` |
+| Analytics | `g.affected_count` | `affected_memories` | blank number |
+| Analytics | `g.recommended_action` | `recommendation` | whole recommendation line empty |
+| Analytics | `risk_level === "HIGH"` | `"high"` | **every risk filter returned zero** |
+| Conflicts | `status=all` query param | `if conflict_status:` matches literal `'all'` | **list returned zero unconditionally** |
+| Conflicts | `c.contributors.map()` | field does not exist | crashes on the first conflict |
+| Conflicts | `accept_a`/`merge`/`defer`… | `kept_a`/`kept_b`/`merged`/`split`/`deferred` | **all five resolve buttons 500'd** |
+| Handoff | `handoff.tier`, `total_memories` | `tier_1/2/3_count` | empty badge, blank stat |
+| Handoff | `STATUS_ORDER` of initiated/assigned/complete | `in_progress`/`completed` | **progress bar stuck at 0/3 forever** |
+| Settings | `m.name`, `m.email`, `m.role === "Owner"` | nested `m.user`, no email at all, lowercase role | no names, dead branches, **delete button on owners** |
+
+Two of these are worth singling out because they are the same shape as the
+D-007 isolation bug — a screen that looks correct precisely because it is
+broken:
+
+- **Conflicts returned zero unconditionally.** `"all"` is a UI-only sentinel;
+  the route treats any truthy status as a literal filter. The page rendered a
+  perfectly good empty state, forever, whatever the data said. Building a new
+  §5 empty state on top of that would have made it more convincing, not more
+  correct.
+- **Memories crashed only on success.** An empty result set rendered fine,
+  which is exactly what every prior round of testing had exercised.
+
+### The design system
+
+Three layers, in `apps/web/src/styles/tokens.css` and `tailwind.config.js`:
+primitive (raw values, single source in a JS object) → semantic (roles) →
+component (the reference's literal measurements). Every token is tagged
+`[SPEC]` or `[DERIVED]`, because the audit gives exact dimensions but only
+qualitative colour language — "roughly a very dark charcoal", "a single
+saturated blue". Recording which numbers came from the document and which were
+derived stops a later reader treating an inference as a citation.
+
+The committed palette was kept as the primitive layer rather than regenerated.
+It already satisfied §2's description, and the vendored ui-ux-pro-max skill
+explicitly says not to overwrite it.
+
+**Two accessibility failures, found by measuring rather than eyeballing:**
+
+| | before | after |
+|---|---|---|
+| white on the primary button | 3.65:1, fails AA | **4.63:1** via a deeper blue for solid fills only |
+| micro-labels and table headers | 2.20:1, fails even the 3.0 non-text floor | **5.44:1** |
+
+The accent stays `#4F7EFF` for links, active nav and bars (5.42:1); only the
+fill step changed, so §2's single accent is intact.
+
+**A collision caught before it shipped:** the semantic accent was initially
+named `accent`, which is the key shadcn's 46 vendored components use for
+neutral hover and focus surfaces. Every dropdown item would have turned blue.
+Renamed to `brand`, and `.bg-accent` verified to still resolve to
+`hsl(var(--accent))` in the built CSS.
+
+### Colour discipline (§2)
+
+The reference permits exactly one accent hue, with green and red reserved for
+meaning. The old UI had a decorative 8-hue contributor palette, a 5-hue tag
+hash, a blue→purple logo gradient, four differently-coloured health bars, four
+differently-coloured stat cards, and a Treemap filled per contributor. All
+removed: quantitative series now step one hue by opacity through
+`--c-data-1..4`, and colour appears only where it carries meaning.
+
+One deliberate deviation: **amber survives as a single `warning` token**. The
+reference names only green and red, but conflict severity is
+`low | medium | critical`, and collapsing medium into grey or red destroys a
+distinction the data actually carries. It is used nowhere decoratively.
+
+`severityColor()` was itself wrong: it mapped `high → red`, but the DB
+constrains severity to `low|medium|critical`, so that branch was dead code and
+`critical` — the most severe tier — fell through to the neutral grey default.
+
+### Fabricated data removed
+
+Three things presented invented content as fact:
+
+- **Analytics** rendered two time-series charts from `mockApi` while in real
+  mode, beside 1167 real memories. The page now asks the exported `useMocks`
+  flag and shows the §5 template naming the missing endpoint.
+- **Settings** shipped `sm_live_4f7eff_…` in a credential field with a reveal
+  toggle and a copy button, plus a "Rotate key" flow that only fired a toast.
+  There are no API-key routes anywhere in the backend. Removed rather than
+  labelled: a `sm_live_`-shaped string with a copy button invites someone to
+  paste it into an integration, or to treat its leak as a real incident.
+- Hardcoded `"↑ 6 pts vs last month"`, `"last edited 2d ago"`, and
+  `"1,000 req/min"` — all deleted.
+
+Controls that could not work are now disabled with the reason visible rather
+than left as convincing no-ops: Save workspace, Invite member, Delete workspace
+(previously behind a type-the-slug confirmation ending in
+`toast.error("Workspace deleted (demo)")`), Assign/Complete on handoffs, and
+the three conflict resolutions needing payload fields the client never sends.
+
+> **Superseded 2026-09-14.** That last clause described the client, not the
+> backend, and was later repeated as though `merged`, `split` and `deferred`
+> were blocked on backend work. They were not. `resolve_conflict` has always
+> accepted `merged_content`, `tag_a`/`tag_b` and `revisit_at`; the form simply
+> did not collect them. All three now do, and the disabled controls are gone.
+> One restriction added along the way — that the two split tags must differ —
+> was invented in the frontend and has been removed: the resolver checks only
+> `if not tag_a or not tag_b`, and `array_append`s each tag to its memory, so
+> identical tags are valid and existing tags are preserved, not replaced.
+
+### Verification, and one thing that could not be verified
+
+Every page was checked against a live response, and where the corpus was empty
+the populated path was created rather than skipped: a real conflict and a real
+handoff record were each inserted into a disposable workspace, read back
+through the API, and torn down. That is what caught the Conflicts and Handoff
+field mismatches, neither of which is reachable from an empty list.
+
+Mid-way through, **the machine's clock drifted 26 minutes behind**, which makes
+every Clerk token fail `nbf` validation — its 60-second validity window sits
+entirely in the local clock's future, so no retry can ever succeed. The
+remaining verification ran against a second API instance started with
+`CLERK_SECRET_KEY=''` to reach the development auth bypass. Worth recording as
+a diagnosis: a sudden wall of `SM001 / token is not yet valid` against a local
+API is a clock problem, not an auth problem. `w32time` was stopped and could
+not be restarted without elevation.
+
+**Not verified: the visual result.** There is no browser automation in this
+environment, and the clock skew blocks a manual browser session against the
+local API. Everything in this entry was confirmed through the API, the built
+CSS bundle, the test suites and the build — the rendering itself has not been
+seen.
+
+### Final state
+
+Frontend 5/5 passing. Production build clean, and about 11 kB smaller, almost
+entirely Recharts' `PieChart` and `Treemap` no longer being imported after
+§4.5 replaced both gauges with inline number-plus-bar cells. Those two are
+clean measurements of this work: nothing outside `apps/web/` was touched.
+
+The backend suite was also run and reported 408 passed / 12 skipped / 0
+failed, but that figure is **not** a clean signal for this entry and should
+not be read as one. A second agent was working in the same tree on
+security-foundation changes at the time, and `core/config.py`,
+`core/dependencies.py` and `core/rate_limit.py` were already modified when
+that run started; `tests/conftest.py` changed again afterwards. The run
+therefore measured a mixture, and no longer describes the tree as it stands.
+The redesign touches no backend file, so the relevant evidence here is the
+frontend suite, the build, and the per-page API verification above.
+
+### Still open
+
+- `Connectors.jsx` was not in the seven-page scope and still imports the
+  `TopBar` shim, which is why that shim survives.
+- `AuthPage.jsx` and `Landing.jsx` are out of scope and still carry the
+  blue→purple gradient, which is why the deprecated `sm-purple` token cannot
+  be deleted yet.
+- Version history on MemoryDetail is permanently empty: the chain lives at
+  `/v1/memories/{id}/versions`, which `realApi` does not call. Rendered as a
+  §5 empty state rather than wired, since that is a data-layer change.
+- Resolution notes on ConflictDetail are not persisted — the client sends
+  `note` where the API expects `resolution_note`, so Pydantic drops it. The
+  field is disabled and says so.
+
+
+## D-009 — SECURITY: active revocation, role enforcement, and database isolation
+
+**Status:** Implemented and locally verified through 0007 on 2026-09-13; not
+deployed. Fresh and populated disposable migration checks, broader PostgreSQL
+RLS coverage, Redis acceptance, signed authorization/revocation acceptance,
+and the isolated unit suite passed. Production remains deliberately unverified
+until the real three-caller production matrix and owner-controlled rollout
+steps run. No live database, Railway service, Slack workspace, customer data,
+paid API, deployment, or push was used.
+
+### Why D-007 was necessary but not sufficient
+
+D-007 closed the production incident in which nested routes had no workspace
+membership gate. That fix answered whether a user had a membership row for the
+resource at request time. It did not make membership lifecycle, role
+capabilities, delayed work, database access, production token claims, Slack
+identity, or untrusted URL fetching one coherent security boundary.
+
+The follow-up audit found these separate gaps:
+
+- `workspace_members.status` and `departed_at` existed but were not part of
+  the shared gate, so departed users could retain access through valid rows.
+- Most mutations required membership but not the appropriate role.
+- API checks were the only tenant boundary; the committed RLS policies trusted
+  a caller-supplied workspace setting and several newer tables had no RLS.
+- Clerk verification did not pin every required session-token claim and the
+  development fallback could silently create a fake identity.
+- Slack used a hardcoded SourceMind workspace and did not bind Slack team,
+  channel, and user identities to an active SourceMind member.
+- URL ingestion launched a browser against untrusted destinations without an
+  IP policy, redirect revalidation, response bound, or feature gate.
+- Connector responses/logs could serialize provider credential/error details.
+- Expensive search, ingestion, analytics, connector, workspace-create, and
+  Slack operations lacked one consistent atomic limit.
+- Queued workers trusted authorization performed before enqueue, so revocation
+  did not necessarily stop already accepted work.
+- Final privilege review found that an admin could initiate an owner's
+  departure even though only owners could revoke owners. Because entering the
+  departing state removes access, owner departures now require an owner caller.
+
+### Decision
+
+One centralized permission model now defines four capabilities:
+
+| permission | accepted roles |
+|---|---|
+| read | viewer, member, admin, owner |
+| contribute | member, admin, owner |
+| administer | admin, owner |
+| owner | owner |
+
+Every access requires `status='active'`, `departed_at IS NULL`, a known
+role, and a non-deleted workspace. Reads use `read`; memory create/update use
+`contribute`; deletes, conflict review/resolve, connectors, handoffs, and
+member revocation use `administer`; only an owner can revoke another owner.
+Only an owner can initiate another owner's departure, and the final active
+owner cannot be revoked. Outsiders still receive 404 while a known member with
+insufficient privilege receives 403.
+
+Ingestion and connector workers carry user/workspace/resource identity and
+repeat the same authorization immediately before execution. Revocation is
+therefore effective for queued work, not just new HTTP requests.
+
+### Database boundary
+
+Migration `20260908_0006` adds role/status constraints and enables plus
+forces RLS on every workspace-owned table:
+
+`workspaces`, `workspace_members`, `documents`, `memories`,
+`attributions`, `attribution_edits`, `memory_relations`,
+`memory_conflicts`, `connector_configs`, `connector_sync_logs`,
+`artifact_links`, `handoff_records`, and `handoff_assignments`.
+
+Policies require the trusted current user to hold the same active membership;
+indirect tables resolve their workspace through the protected parent. The
+session installs user/workspace values with transaction-local
+`set_config(..., true)` and an SQLAlchemy `after_begin` hook reapplies them
+after every commit begins a new transaction.
+
+The migration must run as a table-owner/migration role. API and worker
+connections must use a different `NOSUPERUSER NOBYPASSRLS` runtime role.
+`FORCE ROW LEVEL SECURITY` prevents accidental owner bypass, but role
+separation remains required so the application cannot alter the policies.
+
+Migration `20260909_0007` hardens the two most sensitive policy roots:
+`workspaces` and `workspace_members`. It records the creating user, creates
+internal bootstrap and access-grant state, synchronizes that state with
+membership changes, prevents removal of the final active owner, and makes
+workspace/member policies require active access rather than trusting a
+caller-supplied workspace context alone. The transaction-local context still
+limits query scope; it is not authorization.
+
+Migration `20260916_0008` fixes a populated-upgrade compatibility defect in
+that design. The original bootstrap table omitted legacy workspaces whose
+creator could not be inferred from an active owner, and its inner join then hid
+those workspaces even from valid active members. `0008` creates an internal
+lifecycle row for every workspace while leaving unknown creator provenance
+`NULL`. Active membership remains the authority, deleted workspaces still fail
+closed, cross-workspace isolation is unchanged, and creator-only owner
+bootstrap remains unavailable when the creator is unknown. No owner is assigned
+as part of this correction; organization administration, invitations, and
+ownership transfer remain deferred.
+
+Review found and fixed a rollback bug before release: the first downgrade
+dropped the new policies but left newly protected tables with RLS enabled and
+no policy, which would make the old application fail closed everywhere. The
+downgrade now recreates every exact legacy policy and disables RLS only on
+tables that had none before this migration. Both directions compile offline.
+
+### Authentication and external boundaries
+
+Production boot now requires Clerk secret and publishable keys plus a non-empty
+authorized-party allowlist. The development bypass is explicit, defaults off,
+and is rejected outside development. Session tokens require RS256, `kid`,
+signature, issuer, `sub`, `sid`, `iat`, `nbf`, `exp`, optional
+configured audience, and an allowed `azp` when present; pending sessions and
+failed profile lookups fail closed. An unknown `kid` forces one JWKS refresh
+for legitimate key rotation.
+
+Slack memory commands default off. When enabled, an operator-owned mapping
+must bind exact Slack team, channel, and user IDs to a SourceMind workspace and
+user; active membership is checked again. Bolt's request-verification
+middleware remains the HTTP signature boundary, slash responses are ephemeral,
+and app mentions do not return memory.
+
+URL ingestion also defaults off. When enabled it permits only HTTP/HTTPS on
+default ports without credentials, rejects local/internal names and every
+non-global address, rejects a hostname if any DNS answer is non-public, pins
+the validated DNS answers, revalidates every redirect, ignores proxy
+environment variables, loads no scripts/subresources, and bounds timeout,
+redirects, bytes, status, and content type. Playwright was removed because a
+static bounded main-document fetch has a much smaller attack surface. The
+final cross-repository sweep also caught and removed the stale Chromium
+installation from the API Docker image.
+
+### Secrets, errors, and limits
+
+Connector configuration serialization recursively masks token, secret,
+password, private-key, API-key, credential, and webhook fields. Provider and
+model error details, including raw response previews, are replaced with generic
+failure categories. Public health and disabled Slack responses no longer
+return raw dependency/configuration exceptions.
+
+Redis limits use one atomic Lua INCR/EXPIRE operation scoped by operation,
+workspace where applicable, and user. The security default is fail closed if
+Redis is unavailable. Current defaults are 60 search/minute, 10
+ingestion/minute, 30 analytics/minute, 5 workspace creates/hour, 5 connector
+syncs/hour, and 20 Slack commands/minute.
+
+A local PEM exists at
+`apps/api/sourcemind-kranthi.2026-04-14.private-key.pem`. Only metadata was
+examined: it is ignored, untracked, and absent from Git history. Development
+container mounts were narrowed and Docker ignore rules now exclude common key
+extensions, but the owner must determine whether the key is active, rotate it
+if so, and remove the old local file only after verification.
+
+### Rejected assumptions
+
+- **A valid signature is enough for a session token:** rejected. Wrong issuer
+  and wrong authorized party are validly signed attacker-controlled tokens.
+- **Application checks alone are tenant isolation:** rejected. Direct SQL,
+  worker regressions, or a missed future route require an independent RLS
+  boundary.
+- **Authorization at enqueue grants the job authority:** rejected. Authority
+  can be revoked before execution.
+- **A disabled feature makes its dangerous implementation harmless:** rejected.
+  Both Slack memory access and URL ingestion are disabled by default *and*
+  hardened before they can be enabled.
+- **A health hostname/version proves a fresh deploy:** rejected. `/health`
+  now exposes a per-app-instance UUID and `requests_since_start`, which is
+  initialized to zero and does not count health probes.
+- **An existing lockfile proves dependencies are locked:** rejected.
+  `uv lock --check` found older missing declared packages after Playwright was
+  removed; the full lock was regenerated and now checks cleanly.
+
+### Verification
+
+- Isolated unit suite: **398 passed, 1 skipped** in 47.96 seconds.
+- Real PostgreSQL RLS suite: **6 passed** in 4.16 seconds. Redis acceptance:
+  **1 passed** in 3.23 seconds. Signed authorization/revocation acceptance:
+  **1 passed** in 22.68 seconds.
+- Fresh and populated disposable databases reached `20260909_0007`. The
+  populated 0006-to-0007 check confirmed creator backfill, owner grants,
+  forced RLS, separated ownership, and no direct runtime-role select on
+  internal access grants.
+- A synthetic legacy workspace created at `0005` with active admin/member rows
+  and no owner reproduced the compatibility failure at the previous `0007`
+  definition. The restricted role saw `0/0/0` workspace/membership/document
+  rows there, then `1/3/1` after `0008`; the owner-backed control remained
+  available, all denial cases held, and row counts survived downgrade to
+  `0005` and re-upgrade to `0008`. The exact regression and six existing RLS
+  tests pass locally; PostgreSQL 18 CI remains the integration gate.
+- Alembic reports one head. On 2026-09-14, the committed secret-injected init
+  wrapper and SQL provisioned a fresh WSL database and an online owner-role
+  upgrade reached 0007. Docker was unavailable in native Windows and WSL, a
+  platform restriction for Compose startup only.
+- Scoped Ruff and `git diff --check` pass. Repository-wide lint still reports
+  50 existing findings across 17 unrelated test files; the prior three
+  in-scope findings and EOF whitespace issue are fixed.
+
+Unit mocks and offline SQL are not substitutes for the production caller
+matrix. Production deployment, freshness, three-caller, enabled Slack/URL,
+secret-rotation, and rollback verification remain owner-controlled. The exact
+disposable and WSL setup is in
+`docs/architecture/SECURITY_FOUNDATION_ROLLOUT.md`.
+
+
 ## Deferred — not done, with reasons
 
 ### Option 2 — query-adaptive fusion weighting
@@ -1118,3 +1508,151 @@ investigated.
 Python invoked from the repository root does not load `apps/api/.env`, so
 `DATABASE_URL` falls back and name resolution fails. This cost time three times
 in one session.
+
+## D-010 — Deferred conflict decisions retain author and rationale
+
+**Status:** Fixed and locally verified on 2026-09-14; not deployed.
+
+The deferred branch in `resolve_conflict` returned after storing only the
+status and revisit time. The API had already accepted a resolution note and
+authenticated resolver identity, but both values were discarded while the
+request still returned success.
+
+A deferral now writes `resolution_note` and `resolver_id` in the same update as
+`status='deferred'` and `revisit_at`. It deliberately does not set
+`resolved_at`, clear `blocks_derivation`, retire either memory, or run the
+shared resolved-conflict recomputation path. Authorization and transaction
+ownership remain at the existing API layer.
+
+The new regression failed against the old query because `resolver_id` was
+absent, then passed after the update. The complete conflict-resolver unit file
+and conflict-authorization unit file each passed with 9 tests. No database,
+Redis, Railway, deployment, or shared disposable resource was used.
+
+---
+---
+
+## D-011 — Conflict resolution verified against a running system, not against a belief
+
+**Status:** Done (2026-09-14). The `deferred` defect recorded here was
+fixed by Codex in D-010 (`04babab`), which this entry precedes in time and
+follows in numbering — both were written the same day, on two branches,
+each appending to the end of this file and each claiming D-010. Renumbered
+on merge.
+
+**Scope:** `merged`, `split` and `deferred` exercised
+through the real page against a real API and a real database. One backend
+defect found and handed to Codex; one frontend restriction removed as
+invented; three identity-lifecycle gaps closed.
+
+### Why this was worth doing at all
+
+The three payload-carrying resolutions had been called a backend dependency,
+then implemented, then described as finished — all without any of them ever
+having been run. That is the same position the feature was in before the two
+defects it has already had: a resolution note the API dropped because the key
+was not on the model, and a version history read off a field the response did
+not contain. Both returned 200. Both discarded user input. Neither produced a
+failure anywhere.
+
+So nothing here is asserted from reading code. Every claim below is a
+committed row read out of the database after driving the actual form.
+
+### The split rule was invented here
+
+The form required the two tags to differ. Nothing in the backend does.
+`resolve_conflict` checks only `if not tag_a or not tag_b`, then:
+
+```sql
+UPDATE memories SET tags = array_append(COALESCE(tags, ARRAY[]::text[]), :tag)
+```
+
+Two facts follow, and the UI had the second one backwards. Identical tags are
+accepted. And tagging **adds** — it does not replace, and does not deduplicate.
+The hint said "scoped to different tags", which implies a replace; a memory
+seeded `{retention,staging}` came back `{retention,staging,env-staging}`.
+
+The distinctness rule was removed rather than kept, because a frontend may not
+unilaterally refuse a payload the API would accept. Whether it *should* be a
+rule is a product question, and it is written down as one rather than settled
+by a validation branch.
+
+### Backend defect: `deferred` discards the note
+
+`resolver.py` returns at the end of the `deferred` branch, before the shared
+UPDATE that writes `resolution_note`, `resolver_id` and `resolved_at`. The
+note field is offered for every action. So a user explains why they are
+deferring, sees "saved", and the explanation does not exist. 200, no log,
+nothing to notice.
+
+Reported to Codex with path, reproduction and expected contract in
+`docs/handoff/DEFECT-deferred-resolution-note-discarded.md`; not fixed here,
+because `apps/api/**` is not mine. The e2e suite asserts the **current**
+behaviour on purpose, so the defect is recorded rather than hidden — when it
+is fixed, that case fails, and it should then be inverted.
+
+`revisit_at` itself is correct: `2026-12-24T09:30` entered in a UTC-6 zone
+stored as `15:30Z`. That is +6h for December CST, not +5h CDT, so the
+conversion is DST-aware and not a fixed offset.
+
+### Clearing `_wsPromise` was not enough
+
+The earlier identity fix cleared the memoised workspace id on a user change.
+That governs lookups which have not started yet, and says nothing about what a
+user can actually see. Three gaps, each now covered by a test that fails
+without its fix:
+
+- **Rendered rows survived the change.** `resetKey` is only ever a route
+  parameter, and no route parameter changes when the signed-in user does.
+- **A read issued for A, resolving after B signed in, was accepted and
+  rendered on B's screen.** The API never saw this and could not have stopped
+  it: A's read was authorized when it was issued and simply landed late.
+- **The abandoned lookup's `.catch` cleared the memo unconditionally.** After
+  an identity change that memo belongs to the *new* user's in-flight lookup,
+  and failing is the expected outcome for the old one, whose token is gone. It
+  discarded a live request.
+
+Handled with an identity generation: the reset bumps it and notifies
+subscribers, the abandoned catch re-checks it before clearing, and
+`useApiResource` subscribes so it can drop rendered data and invalidate work
+already on the wire.
+
+### Two silent limits on what was testable
+
+Neither was known before this, and both had been suppressing coverage:
+
+- The `@` alias was configured for webpack only, so **any** module importing
+  `@/...` failed to resolve under Jest. That is why every suite in the repo
+  uses relative paths.
+- `react-router-dom` 7.14.2 declares `main: ./dist/main.js`, a file it does not
+  ship, and resolves through an `exports` map CRA's Jest resolver does not
+  read. Every router-using component was therefore untestable, which is why an
+  earlier session worked around it by extracting pure functions to `lib/`
+  rather than testing the page.
+
+### What this run does NOT prove
+
+Stated plainly because a test suite that overstates its reach is worse than
+none:
+
+- **No browser.** jsdom rendered the component; `fetch` was a shim over Node's
+  `http`. CSS, layout and real event dispatch are untested.
+- **No Clerk.** The API ran under the validated development-only
+  `AUTH_DEV_BYPASS_ENABLED` flag. Token handling is not covered.
+- **Embeddings were stubbed.** The `merged` path calls the embedding service;
+  a local stub answered with a deterministic vector, so no request left the
+  machine. That proves the call is made and the result stored. It proves
+  nothing about embedding quality, and conflict **detection**, which depends on
+  real embeddings, was not exercised at all.
+
+### Resource discipline
+
+Two agents share this machine, and test infrastructure is the one thing they
+can destroy for each other without Git noticing: a truncate against a database
+the other is mid-run on yields a wrong answer, not a merge conflict. A
+disposable cluster was created on ports 55433/56380 — claimed first in
+`docs/handoff/RESOURCE_LEASES.md` — rather than contending for the acceptance
+stack on 55432/56379, whose lease status was unresolved. Ordinary development
+data on 5432 was never a target. The API ran as `sourcemind_test`
+(`NOSUPERUSER NOBYPASSRLS`) so RLS was genuinely in force rather than bypassed
+by a superuser connection, and everything was destroyed afterwards.

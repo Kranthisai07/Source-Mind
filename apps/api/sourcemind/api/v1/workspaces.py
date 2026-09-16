@@ -17,17 +17,30 @@ import structlog
 from fastapi import APIRouter, status
 from sqlalchemy import select
 
+from sourcemind.core.database import set_rls_workspace_context
 from sourcemind.core.dependencies import (
     CurrentUser,
     DBSession,
     IdempotencyKey,
     RequestID,
+    WorkspacePermission,
     require_workspace_member,
+    require_workspace_permission,
 )
-from sourcemind.core.exceptions import WorkspaceNotFoundError
+from sourcemind.core.exceptions import (
+    UserNotFoundError,
+    WorkspaceAccessDeniedError,
+    WorkspaceNotFoundError,
+)
+from sourcemind.core.rate_limit import RateLimitedOperation, enforce_rate_limit
 from sourcemind.models.organization import Organization
 from sourcemind.models.user import User
-from sourcemind.models.workspace import Workspace, WorkspaceMember, WorkspaceRole
+from sourcemind.models.workspace import (
+    Workspace,
+    WorkspaceMember,
+    WorkspaceMembershipStatus,
+    WorkspaceRole,
+)
 from sourcemind.schemas.common import APIResponse, ResponseMeta
 from sourcemind.schemas.user import UserSummary
 from sourcemind.schemas.workspace import (
@@ -67,6 +80,8 @@ async def list_workspaces(
         .join(WorkspaceMember, WorkspaceMember.workspace_id == Workspace.id)
         .where(
             WorkspaceMember.user_id == current_user.user_id,
+            WorkspaceMember.status == WorkspaceMembershipStatus.ACTIVE,
+            WorkspaceMember.departed_at.is_(None),
             Workspace.deleted_at.is_(None),
         )
         .order_by(Workspace.created_at.asc())
@@ -98,6 +113,10 @@ async def create_workspace(
     """
     start = time.perf_counter()
 
+    await enforce_rate_limit(
+        RateLimitedOperation.WORKSPACE_CREATE, current_user.user_id
+    )
+
     # Find or auto-create an organization for this user
     # Look for an org where the user already owns a workspace
     existing_org_result = await db.execute(
@@ -107,6 +126,8 @@ async def create_workspace(
         .where(
             WorkspaceMember.user_id == current_user.user_id,
             WorkspaceMember.role == WorkspaceRole.OWNER,
+            WorkspaceMember.status == WorkspaceMembershipStatus.ACTIVE,
+            WorkspaceMember.departed_at.is_(None),
             Organization.deleted_at.is_(None),
         )
         .limit(1)
@@ -133,8 +154,12 @@ async def create_workspace(
         logger.info("workspace.org_auto_created", org_id=str(org.id), slug=org_slug)
 
     # Create the workspace
+    workspace_id = uuid.uuid4()
+    await set_rls_workspace_context(db, workspace_id)
     workspace = Workspace(
+        id=workspace_id,
         organization_id=org.id,
+        created_by_user_id=current_user.user_id,
         name=body.name,
         slug=body.slug,
         description=body.description,
@@ -192,6 +217,8 @@ async def get_workspace(
         .where(
             Workspace.id == workspace_id,
             WorkspaceMember.user_id == current_user.user_id,
+            WorkspaceMember.status == WorkspaceMembershipStatus.ACTIVE,
+            WorkspaceMember.departed_at.is_(None),
             Workspace.deleted_at.is_(None),
         )
     )
@@ -227,7 +254,11 @@ async def list_workspace_members(
     result = await db.execute(
         select(WorkspaceMember, User)
         .join(User, User.id == WorkspaceMember.user_id)
-        .where(WorkspaceMember.workspace_id == workspace_id)
+        .where(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.status == WorkspaceMembershipStatus.ACTIVE,
+            WorkspaceMember.departed_at.is_(None),
+        )
         .order_by(WorkspaceMember.created_at.asc())
     )
     members = [
@@ -240,3 +271,57 @@ async def list_workspace_members(
     ]
 
     return APIResponse(data=members, meta=_make_meta(request_id, start))
+
+
+@router.delete(
+    "/{workspace_id}/members/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Revoke a workspace membership",
+)
+async def revoke_workspace_member(
+    workspace_id: UUID,
+    user_id: UUID,
+    db: DBSession,
+    current_user: CurrentUser,
+    idempotency_key: IdempotencyKey,
+) -> None:
+    """Soft-revoke an active member without deleting audit history."""
+    caller_role = await require_workspace_permission(
+        db,
+        current_user.user_id,
+        workspace_id,
+        WorkspacePermission.ADMINISTER,
+    )
+    result = await db.execute(
+        select(WorkspaceMember)
+        .where(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.user_id == user_id,
+            WorkspaceMember.status == WorkspaceMembershipStatus.ACTIVE,
+            WorkspaceMember.departed_at.is_(None),
+        )
+        .with_for_update()
+    )
+    membership = result.scalar_one_or_none()
+    if membership is None:
+        raise UserNotFoundError("Active workspace member not found.")
+
+    if membership.role == WorkspaceRole.OWNER:
+        if caller_role != WorkspaceRole.OWNER.value:
+            raise WorkspaceAccessDeniedError("Only an owner can revoke an owner.")
+        owners_result = await db.execute(
+            select(WorkspaceMember.id).where(
+                WorkspaceMember.workspace_id == workspace_id,
+                WorkspaceMember.role == WorkspaceRole.OWNER,
+                WorkspaceMember.status == WorkspaceMembershipStatus.ACTIVE,
+                WorkspaceMember.departed_at.is_(None),
+            )
+        )
+        if len(owners_result.scalars().all()) <= 1:
+            raise WorkspaceAccessDeniedError(
+                "The last active workspace owner cannot be revoked."
+            )
+
+    membership.status = WorkspaceMembershipStatus.DEPARTED.value
+    membership.departed_at = datetime.now(UTC)
+    await db.commit()

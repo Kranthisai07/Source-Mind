@@ -4,12 +4,13 @@ Unit tests for workspace API endpoints.
 Uses FastAPI dependency_overrides to inject mocked DB and auth.
 No real database required.
 """
+# ruff: noqa: I001
 
-import pytest
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
-from datetime import datetime, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
 from sourcemind.core.config import get_settings
@@ -21,7 +22,7 @@ from sourcemind.core.dependencies import AuthenticatedUser
 MOCK_USER_ID  = UUID("00000000-0000-4000-8000-000000000001")
 MOCK_WS_ID    = UUID("00000000-0000-4000-8000-000000000010")
 MOCK_ORG_ID   = UUID("00000000-0000-4000-8000-000000000020")
-_NOW = datetime(2026, 4, 12, tzinfo=timezone.utc)
+_NOW = datetime(2026, 4, 12, tzinfo=UTC)
 _IDEM_KEY = "550e8400-e29b-41d4-a716-446655440000"
 
 
@@ -64,9 +65,9 @@ def _make_app(mock_session: AsyncMock):
          patch("sourcemind.main._close_kafka", new_callable=AsyncMock), \
          patch("sourcemind.main.close_redis", new_callable=AsyncMock), \
          patch("sourcemind.main.close_db", new_callable=AsyncMock):
-        from sourcemind.main import create_app
         from sourcemind.core.database import get_db_session
         from sourcemind.core.dependencies import get_current_user
+        from sourcemind.main import create_app
 
         app = create_app()
 
@@ -84,7 +85,11 @@ def _make_app(mock_session: AsyncMock):
 @pytest.fixture(autouse=True)
 def reset_settings_cache():
     get_settings.cache_clear()
-    yield
+    with patch(
+        "sourcemind.api.v1.workspaces.enforce_rate_limit",
+        new_callable=AsyncMock,
+    ):
+        yield
     get_settings.cache_clear()
 
 
@@ -170,8 +175,10 @@ class TestCreateWorkspace:
         slug_result.scalar_one_or_none.return_value = None  # no slug collision
 
         session = AsyncMock()
-        # Return org_result first call, slug_result second, None for rest
-        session.execute = AsyncMock(side_effect=[org_result, slug_result])
+        # Organization lookup, slug collision check, then RLS workspace context.
+        session.execute = AsyncMock(
+            side_effect=[org_result, slug_result, MagicMock()]
+        )
         session.add = MagicMock()
         session.flush = AsyncMock()
         session.commit = AsyncMock()
@@ -280,23 +287,3 @@ class TestCreateWorkspace:
                 headers={"Idempotency-Key": _IDEM_KEY},
             )
         assert resp.status_code == 422
-
-
-# ── DB integration tests (skipped without local PostgreSQL) ───────────────────
-
-_pg_available = pytest.mark.skipif(
-    True,
-    reason="Requires local PostgreSQL (pg_ctl not found). Run when storage permits.",
-)
-
-
-@_pg_available
-class TestWorkspaceDbIntegration:
-    def test_create_and_list_workspace(self):
-        pass
-
-    def test_second_workspace_reuses_existing_org(self):
-        pass
-
-    def test_list_only_returns_members_workspaces(self):
-        pass

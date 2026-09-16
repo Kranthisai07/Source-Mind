@@ -1,14 +1,41 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { Search, Plus, X, Loader2 } from "lucide-react";
-import TopBar from "../components/layout/TopBar";
+import React, { useEffect, useRef, useState } from "react";
+import { Search, Plus, X, Brain } from "lucide-react";
+import PageHeader from "../components/ui-kit/PageHeader";
+import EmptyState from "../components/ui-kit/EmptyState";
+import { Skeleton } from "../components/ui-kit/Skeleton";
+import ErrorState from "../components/ui-kit/ErrorState";
 import MemoryCard from "../components/widgets/MemoryCard";
 import PipelineTracker from "../components/widgets/PipelineTracker";
 import { Button } from "../components/ui/button";
-import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "../components/ui/sheet";
-import api from "../lib/api";
+import api, { resolveCurrentWorkspace } from "../lib/api";
+import { classifyApiError } from "../lib/apiError";
+import { toast } from "sonner";
+import { createSubmissionKeyHolder, submissionIdentity } from "../lib/submissionKey";
+import { getCurrentUserId } from "../lib/currentUser";
+
+/**
+ * Page 3 of the Supermemory-console redesign, modelled on §4.2 (Documents):
+ * toolbar row (search + filters + right-aligned primary button), then the
+ * result list, then the §4.5 footer summary line.
+ *
+ * The data call is unchanged. Three real bugs the live response exposed:
+ *
+ *   1. `results` items are WRAPPERS — {memory, score, rank, match_type,
+ *      highlight} — and the whole wrapper was handed to MemoryCard as its
+ *      `memory` prop. So `memory.content` was undefined and
+ *      `memory.tags.map(...)` threw as soon as any result came back. The page
+ *      crashed on a successful search.
+ *   2. `r.__latency_ms` does not exist; the field is `latency_ms`, so the
+ *      timing read "undefinedms".
+ *   3. The list keyed on and linked to `m.memory_id`, which does not exist —
+ *      every result linked to /memories/undefined.
+ *
+ * §6: the six `shimmer` blocks are replaced by skeleton rows matching the real
+ * row height, so the layout does not jump when results land.
+ */
 
 const MODES = ["hybrid", "semantic", "keyword"];
 const CATEGORIES = ["general", "architecture", "decision", "incident", "onboarding"];
@@ -18,127 +45,205 @@ export default function Memories() {
     const [mode, setMode] = useState("hybrid");
     const [results, setResults] = useState([]);
     const [total, setTotal] = useState(0);
-    const [latency, setLatency] = useState(0);
+    const [latency, setLatency] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
     const [open, setOpen] = useState(false);
+    // Bumped by "Try again". The retry has to reissue the SAME query and mode,
+    // so it cannot work by changing either of them — and the previous handler,
+    // `setQuery((q) => q)`, set state to a value React considers identical, so
+    // React bailed out of the render and the effect below never re-ran. The
+    // button did nothing. A counter is a state change React cannot bail out of.
+    const [reloadNonce, setReloadNonce] = useState(0);
 
     useEffect(() => {
         let cancelled = false;
         setLoading(true);
+        setError(null);
         const t = setTimeout(() => {
             api.searchMemories({ query, mode, limit: 24 }).then(r => {
                 if (cancelled) return;
-                setResults(r.results);
-                setTotal(r.total_found);
-                setLatency(r.__latency_ms);
+                setResults(Array.isArray(r?.results) ? r.results : []);
+                setTotal(r?.total_found ?? 0);
+                // The response field is `latency_ms`. `__latency_ms` was never
+                // on it, so this rendered "undefinedms".
+                setLatency(r?.latency_ms ?? r?.__latency_ms ?? null);
+                setError(null);
+                setLoading(false);
+            }).catch((err) => {
+                if (cancelled) return;
+                // Previously `.catch` set results to [] — a failed search was
+                // indistinguishable from one that genuinely matched nothing.
+                setError(classifyApiError(err));
+                setResults([]);
+                setTotal(0);
+                setLatency(null);
                 setLoading(false);
             });
         }, 120);
         return () => { cancelled = true; clearTimeout(t); };
-    }, [query, mode]);
+    }, [query, mode, reloadNonce]);
 
     return (
         <>
-            <TopBar
+            <PageHeader
                 title="Memories"
-                subtitle="Your team's extracted knowledge, ranked by relevance"
-                actions={
-                    <Button
-                        data-testid="ingest-open-btn"
-                        onClick={() => setOpen(true)}
-                        className="bg-sm-blue hover:bg-sm-blue/90 text-white h-9 shadow-[0_0_0_1px_rgba(79,126,255,0.4)_inset]"
-                    >
-                        <Plus className="w-4 h-4" /> Ingest
-                    </Button>
-                }
+                subtitle="Search your team's extracted knowledge, ranked by relevance across semantic and keyword signals."
             />
-            <div className="flex-1 px-8 py-6 space-y-5">
-                {/* Search */}
-                <div className="sm-card p-1.5 flex items-center gap-2">
-                    <div className="relative flex-1 flex items-center">
-                        <Search className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-sm-text-muted pointer-events-none" />
-                        <input
-                            data-testid="memories-search-input"
-                            type="text"
-                            value={query}
-                            onChange={(e) => setQuery(e.target.value)}
-                            placeholder="Search your team's knowledge..."
-                            className="w-full h-11 pl-11 pr-3 bg-transparent text-[14px] text-sm-text placeholder:text-sm-text-muted outline-none"
-                        />
-                        {query && (
-                            <button
-                                data-testid="memories-search-clear"
-                                onClick={() => setQuery("")}
-                                className="absolute right-3 top-1/2 -translate-y-1/2 text-sm-text-muted hover:text-sm-text"
+
+            {/* §4.2 toolbar: search, filters, right-aligned primary button. */}
+            <div className="flex items-center gap-2 mb-5">
+                <div className="relative flex-1 min-w-0 flex items-center">
+                    <Search
+                        className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-content-muted pointer-events-none"
+                        aria-hidden="true"
+                    />
+                    <input
+                        data-testid="memories-search-input"
+                        type="text"
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        placeholder="Search your team's knowledge…"
+                        aria-label="Search memories"
+                        className="w-full h-9 pl-10 pr-9 rounded-md bg-surface border border-hairline
+                                   text-body text-content placeholder:text-content-muted
+                                   focus:border-hairline-hover outline-none sm-focusable transition-colors"
+                    />
+                    {query && (
+                        <button
+                            data-testid="memories-search-clear"
+                            onClick={() => setQuery("")}
+                            aria-label="Clear search"
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-content-muted
+                                       hover:text-content sm-focusable rounded"
+                        >
+                            <X className="w-3.5 h-3.5" />
+                        </button>
+                    )}
+                </div>
+
+                {/* §2: the active mode is the one blue affordance here — an
+                    active tab/pill is on the accent's permitted list. */}
+                <div
+                    className="flex items-center gap-1 shrink-0"
+                    role="group"
+                    aria-label="Search mode"
+                >
+                    {MODES.map((m) => (
+                        <button
+                            key={m}
+                            data-testid={`mode-${m}`}
+                            onClick={() => setMode(m)}
+                            aria-pressed={mode === m}
+                            className={`h-9 px-3 rounded-md text-[11.5px] font-mono transition-colors sm-focusable ${
+                                mode === m
+                                    ? "bg-brand/10 text-brand"
+                                    : "text-content-secondary hover:text-content hover:bg-white/[0.03]"
+                            }`}
+                        >
+                            {m}
+                        </button>
+                    ))}
+                </div>
+
+                <Button
+                    data-testid="ingest-open-btn"
+                    onClick={() => setOpen(true)}
+                    className="h-9 shrink-0 bg-brand-fill hover:bg-brand-fill-hover text-white text-body font-medium"
+                >
+                    <Plus className="w-4 h-4" /> Ingest
+                </Button>
+            </div>
+
+            {error ? (
+                <div className="sm-card">
+                    <ErrorState
+                        error={error}
+                        onRetry={() => setReloadNonce((n) => n + 1)}
+                    />
+                </div>
+            ) : loading ? (
+                <div
+                    className="space-y-3"
+                    role="status"
+                    aria-busy="true"
+                    aria-label="Searching"
+                >
+                    {Array.from({ length: 6 }).map((_, i) => (
+                        <div key={i} className="sm-card p-5 space-y-3">
+                            <Skeleton className="h-[1em] w-full" />
+                            <Skeleton className="h-[1em] w-4/5" />
+                            <div className="flex justify-between pt-3 border-t border-hairline">
+                                <Skeleton className="h-4 w-32" />
+                                <Skeleton className="h-4 w-24" />
+                            </div>
+                        </div>
+                    ))}
+                    <span className="sr-only">Searching…</span>
+                </div>
+            ) : results.length === 0 ? (
+                /* §5 template, via the shared component so the copy formula and
+                   vertical rhythm match every other empty state. */
+                <div className="sm-card">
+                    <EmptyState
+                        testId="memories-empty"
+                        icon={Search}
+                        headline={query ? "No matches yet" : "No memories yet"}
+                        description={
+                            query
+                                ? "Nothing matched that query. Try different wording, or switch the search mode to broaden the match."
+                                : "Ingest a document, meeting note or decision record and its extracted memories will appear here."
+                        }
+                        action={
+                            <Button
+                                onClick={() => setOpen(true)}
+                                className="h-9 bg-brand-fill hover:bg-brand-fill-hover text-white text-body font-medium"
                             >
-                                <X className="w-4 h-4" />
-                            </button>
+                                <Plus className="w-4 h-4" /> Ingest a document
+                            </Button>
+                        }
+                    />
+                </div>
+            ) : (
+                <>
+                    <div className="space-y-3">
+                        {results.map((r, i) => {
+                            // Unwrap. `r.memory` is the memory; the rest is
+                            // search metadata about it.
+                            const memory = r?.memory ?? r;
+                            return (
+                                <MemoryCard
+                                    key={memory?.id || memory?.memory_id || i}
+                                    memory={memory}
+                                    score={r?.score}
+                                    rank={r?.rank ?? i + 1}
+                                    matchType={r?.match_type}
+                                />
+                            );
+                        })}
+                    </div>
+
+                    {/* §4.5: "Footer summary row under the table: '1–1 of 1',
+                        ... '187 ms avg' — the aggregate stats are echoed once
+                        more at the bottom of the list, not just at the top." */}
+                    <div
+                        data-testid="results-meta"
+                        className="flex items-center justify-between mt-5 pt-4 border-t border-hairline"
+                    >
+                        <span className="font-mono text-[11px] text-content-secondary">
+                            1–{results.length} of {total}
+                        </span>
+                        {latency != null && (
+                            <span className="font-mono text-[11px] text-content-secondary">
+                                {Math.round(latency)} ms
+                            </span>
                         )}
                     </div>
-                    <div className="flex items-center gap-1 pr-2">
-                        {MODES.map((m) => (
-                            <button
-                                key={m}
-                                data-testid={`mode-${m}`}
-                                onClick={() => setMode(m)}
-                                className={`h-8 px-3 rounded-md text-[11.5px] font-mono tracking-wide transition-colors ${
-                                    mode === m
-                                        ? "bg-sm-blue/15 text-sm-blue border border-sm-blue/30"
-                                        : "text-sm-text-secondary hover:text-sm-text border border-transparent hover:bg-white/[0.03]"
-                                }`}
-                            >
-                                {m}
-                            </button>
-                        ))}
-                    </div>
-                </div>
-
-                <div className="flex items-center justify-between">
-                    <p data-testid="results-meta" className="font-mono text-[11.5px] text-sm-text-secondary">
-                        {loading
-                            ? "searching…"
-                            : <>{total} result{total === 1 ? "" : "s"} · <span className="text-sm-text">{latency}ms</span></>
-                        }
-                    </p>
-                </div>
-
-                {/* Results */}
-                {loading ? (
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                        {Array.from({ length: 6 }).map((_, i) => (
-                            <div key={i} className="sm-card p-5 h-[200px] shimmer rounded-xl" />
-                        ))}
-                    </div>
-                ) : results.length === 0 ? (
-                    <EmptyState onIngest={() => setOpen(true)} />
-                ) : (
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                        {results.map((m) => (
-                            <MemoryCard key={m.memory_id} memory={m} />
-                        ))}
-                    </div>
-                )}
-            </div>
+                </>
+            )}
 
             <IngestPanel open={open} onOpenChange={setOpen} />
         </>
-    );
-}
-
-function EmptyState({ onIngest }) {
-    return (
-        <div className="sm-card py-24 flex flex-col items-center text-center" data-testid="memories-empty">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-sm-blue/20 to-sm-purple/20 border border-sm-border flex items-center justify-center mb-5">
-                <Search className="w-7 h-7 text-sm-blue" strokeWidth={1.8} />
-            </div>
-            <h3 className="text-[16px] font-semibold text-sm-text mb-2">No matches yet</h3>
-            <p className="text-[13px] text-sm-text-secondary max-w-sm mb-6">
-                Try a different query, broaden your search mode, or ingest a document to seed the knowledge base.
-            </p>
-            <Button onClick={onIngest} className="bg-sm-blue hover:bg-sm-blue/90 text-white h-9">
-                <Plus className="w-4 h-4" /> Ingest first document
-            </Button>
-        </div>
     );
 }
 
@@ -176,13 +281,58 @@ function IngestPanel({ open, onOpenChange }) {
         }
     };
 
+    // The key is bound to the submission, not to the panel. An unchanged retry
+    // reuses it; changing the content, tags, category, workspace or user earns
+    // a new one. The earlier version held a key on the panel alone, so editing
+    // the text after a failure resent the NEW text under the OLD key — which
+    // the backend can read as a replay, returning the first job while the edit
+    // is silently discarded.
+    const keyHolder = useRef(null);
+    if (keyHolder.current === null) keyHolder.current = createSubmissionKeyHolder();
+    // Duplicate-submit protection: a second click while one is in flight would
+    // otherwise issue a second request.
+    const inFlight = useRef(false);
+
     const submit = async () => {
-        if (!content.trim()) return;
-        const r = await api.createMemory({ content, tags, category });
-        setJobId(r.job_id);
+        if (!content.trim() || inFlight.current) return;
+        inFlight.current = true;
+        try {
+            // Resolved ONCE, then used for both the key identity and the
+            // request. Letting the adapter resolve separately could key
+            // against one workspace and send to another.
+            const workspaceId = await resolveCurrentWorkspace();
+            const payload = { content, tags, category };
+            const key = keyHolder.current.keyFor(
+                submissionIdentity({
+                    payload,
+                    workspaceId,
+                    userId: getCurrentUserId(),
+                })
+            );
+            const r = await api.createMemory({
+                ...payload,
+                workspace_id: workspaceId,
+                idempotencyKey: key,
+            });
+            keyHolder.current.clear();
+            setJobId(r.job_id);
+        } catch (e) {
+            // Without this the rejected promise escapes the click handler as
+            // an unhandled rejection and the panel gives no sign of failure —
+            // so the user cannot even know to retry, which is the situation
+            // the key binding above exists to handle. The key is deliberately
+            // NOT cleared: the next attempt at the same content is a retry.
+            const classified = classifyApiError(e);
+            toast.error(classified.title, {
+                description: e?.body?.error?.message || classified.detail,
+            });
+        } finally {
+            inFlight.current = false;
+        }
     };
 
     const reset = () => {
+        keyHolder.current?.clear();
         setContent(""); setTagsRaw(""); setTags([]); setCategory("general"); setJobId(null); setJob(null);
     };
 
@@ -190,61 +340,64 @@ function IngestPanel({ open, onOpenChange }) {
         <Sheet open={open} onOpenChange={(v) => { onOpenChange(v); if (!v) reset(); }}>
             <SheetContent
                 side="right"
-                className="sm:max-w-[480px] w-[480px] bg-sm-surface border-l border-sm-border text-sm-text p-0 overflow-y-auto"
+                className="sm:max-w-[480px] w-[480px] bg-surface border-l border-hairline text-content p-0 overflow-y-auto"
                 data-testid="ingest-panel"
             >
-                <SheetHeader className="p-6 border-b border-sm-border">
-                    <SheetTitle className="text-sm-text text-[17px] font-semibold">Ingest Knowledge</SheetTitle>
-                    <SheetDescription className="text-sm-text-secondary text-[12.5px]">
-                        Paste a document, meeting notes, or decision record. We'll extract, chunk, embed, and attribute.
+                <SheetHeader className="p-6 border-b border-hairline">
+                    <SheetTitle className="text-content text-title">Ingest knowledge</SheetTitle>
+                    <SheetDescription className="text-content-secondary text-body">
+                        Paste a document, meeting notes, or decision record. SourceMind will
+                        extract, chunk, embed, and attribute it.
                     </SheetDescription>
                 </SheetHeader>
 
                 {!jobId ? (
                     <div className="p-6 space-y-5">
                         <div>
-                            <label className="block text-[12px] text-sm-text-secondary mb-2 font-medium">Content</label>
+                            <label htmlFor="ingest-content" className="sm-micro-label block mb-2">Content</label>
                             <Textarea
+                                id="ingest-content"
                                 data-testid="ingest-content"
                                 value={content}
                                 onChange={(e) => setContent(e.target.value)}
-                                placeholder="Paste document content, meeting notes, decision records..."
+                                placeholder="Paste document content, meeting notes, decision records…"
                                 rows={10}
-                                className="bg-sm-bg/60 border-sm-border text-sm-text placeholder:text-sm-text-muted resize-none font-mono text-[12.5px]"
+                                className="bg-surface-page border-hairline text-content placeholder:text-content-muted resize-none font-mono text-[12.5px]"
                             />
                         </div>
 
                         <div>
-                            <label className="block text-[12px] text-sm-text-secondary mb-2 font-medium">Tags</label>
-                            <div className="min-h-[44px] flex flex-wrap gap-1.5 p-2 rounded-lg bg-sm-bg/60 border border-sm-border">
+                            <label htmlFor="ingest-tags" className="sm-micro-label block mb-2">Tags</label>
+                            <div className="min-h-[44px] flex flex-wrap gap-1.5 p-2 rounded-md bg-surface-page border border-hairline">
                                 {tags.map((t, i) => (
-                                    <span key={i} className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-sm-blue/15 border border-sm-blue/30 text-sm-blue text-[11px] font-mono">
+                                    <span key={i} className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-hairline text-content-secondary text-[11px] font-mono">
                                         {t}
-                                        <button onClick={() => setTags(tags.filter((_, j) => j !== i))}>
+                                        <button onClick={() => setTags(tags.filter((_, j) => j !== i))} aria-label={`Remove tag ${t}`}>
                                             <X className="w-3 h-3" />
                                         </button>
                                     </span>
                                 ))}
                                 <input
+                                    id="ingest-tags"
                                     data-testid="ingest-tags"
                                     value={tagsRaw}
                                     onChange={(e) => setTagsRaw(e.target.value)}
                                     onKeyDown={addTag}
                                     placeholder={tags.length ? "" : "type and press enter"}
-                                    className="flex-1 min-w-[120px] bg-transparent outline-none text-[12.5px] text-sm-text font-mono placeholder:text-sm-text-muted"
+                                    className="flex-1 min-w-[120px] bg-transparent outline-none text-[12.5px] text-content font-mono placeholder:text-content-muted"
                                 />
                             </div>
                         </div>
 
                         <div>
-                            <label className="block text-[12px] text-sm-text-secondary mb-2 font-medium">Category</label>
+                            <label className="sm-micro-label block mb-2">Category</label>
                             <Select value={category} onValueChange={setCategory}>
-                                <SelectTrigger data-testid="ingest-category" className="bg-sm-bg/60 border-sm-border text-sm-text">
+                                <SelectTrigger data-testid="ingest-category" className="bg-surface-page border-hairline text-content">
                                     <SelectValue />
                                 </SelectTrigger>
-                                <SelectContent className="bg-sm-surface border-sm-border text-sm-text">
+                                <SelectContent className="bg-surface border-hairline text-content">
                                     {CATEGORIES.map((c) => (
-                                        <SelectItem key={c} value={c} className="text-sm-text focus:bg-white/5 focus:text-sm-text">{c}</SelectItem>
+                                        <SelectItem key={c} value={c} className="text-content">{c}</SelectItem>
                                     ))}
                                 </SelectContent>
                             </Select>
@@ -254,26 +407,30 @@ function IngestPanel({ open, onOpenChange }) {
                             data-testid="ingest-submit"
                             onClick={submit}
                             disabled={!content.trim()}
-                            className="w-full h-10 bg-sm-blue hover:bg-sm-blue/90 text-white disabled:opacity-40"
+                            className="w-full h-10 bg-brand-fill hover:bg-brand-fill-hover text-white disabled:opacity-40"
                         >
-                            Ingest & Process
+                            Ingest &amp; process
                         </Button>
                     </div>
                 ) : (
                     <div className="p-6 space-y-4">
-                        <div className="flex items-center gap-2 text-[12.5px] text-sm-text-secondary">
+                        {/* §6 forbids spinners as the loading indicator. This is
+                            a determinate multi-stage pipeline with its own
+                            tracker, so progress is shown by stage rather than
+                            by a spinning icon. */}
+                        <div className="flex items-center gap-2 text-body text-content-secondary">
                             {job?.status === "done" ? (
-                                <span className="text-sm-green flex items-center gap-1.5">● Pipeline complete · {job.elapsed_ms}ms total</span>
+                                <span className="text-success">Pipeline complete · {job.elapsed_ms}ms total</span>
                             ) : (
                                 <>
-                                    <Loader2 className="w-3.5 h-3.5 animate-spin text-sm-blue" />
-                                    Processing · stage: <span className="font-mono text-sm-blue">{job?.stage}</span>
+                                    Processing · stage
+                                    <span className="font-mono text-brand">{job?.stage ?? "queued"}</span>
                                 </>
                             )}
                         </div>
                         <PipelineTracker stages={job?.stages ?? []} currentStage={job?.stage} />
                         {job?.status === "done" && (
-                            <Button onClick={reset} variant="outline" className="w-full mt-4 bg-white/[0.03] border-sm-border text-sm-text hover:bg-white/[0.06]">
+                            <Button onClick={reset} variant="outline" className="w-full mt-4 bg-white/[0.03] border-hairline text-content">
                                 Ingest another
                             </Button>
                         )}

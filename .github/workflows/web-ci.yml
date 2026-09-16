@@ -1,0 +1,419 @@
+# CI for the frontend.
+#
+# Nothing in apps/web has ever run automatically — api-ci.yml is backend-only,
+# and every frontend check in this repository has been a command someone typed.
+#
+# Two jobs, deliberately not one:
+#
+#   unit         every test that needs nothing but Node, plus the production
+#                build. Runs on every push and PR. Fast, and its green tick
+#                means "the code compiles and the pure logic holds".
+#   integration  the conflict-resolution suite against a real API, a real
+#                PostgreSQL with RLS in force, and a real Redis. Its green tick
+#                means something much stronger, and costs a provisioning cycle
+#                to earn.
+#
+# Keeping them apart is the point. Folding the integration suite into the unit
+# job would make a fast check depend on a database, and — worse — would hide
+# which of the two actually covered a given change.
+
+name: Web CI
+
+on:
+  push:
+    branches: [main, dev, frontend-ci-claude, security-foundation-codex]
+  pull_request:
+    paths:
+      - "apps/web/**"
+      - "apps/api/**"
+      - ".github/workflows/web-ci.yml"
+      - ".github/scripts/check_web_e2e_contract.py"
+      - ".github/scripts/check_web_integration_report.py"
+      - ".github/scripts/expected_web_integration_tests.txt"
+      - ".github/scripts/expected_ingest_tests.txt"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The lockfile was produced with npm 10 under Node 22. Pinning the major
+  # keeps `npm ci` reading the same tree CI installs and a developer installs.
+  NODE_VERSION: "22"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ── Unit ────────────────────────────────────────────────────────────────
+  unit:
+    name: Unit tests and production build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      # `ci`, not `install`: it installs exactly the committed lockfile and
+      # fails if package.json and the lock have drifted, rather than quietly
+      # resolving something newer. apps/web/.npmrc supplies legacy-peer-deps,
+      # which is how the lockfile was produced.
+      - name: Install from the lockfile
+        run: npm ci --no-audit --no-fund
+
+      # The integration suite lives in the same src tree and would otherwise be
+      # collected here, where it can only skip. Excluding it by path means the
+      # unit job's count is honest: everything it collects, it runs.
+      - name: Unit tests
+        env:
+          CI: "true"
+        run: |
+          npx craco test --watchAll=false \
+            --testPathIgnorePatterns "/node_modules/" ".*\.e2e\.test\.js$" \
+            --json --outputFile=unit-results.json
+
+      # A silent collection failure would otherwise read as success: jest exits
+      # 0 for an empty run, and "0 tests" is what a bad ignore pattern produces.
+      - name: Assert the unit run collected and passed real tests
+        if: always()
+        run: |
+          node -e '
+            const fs = require("fs");
+            if (!fs.existsSync("unit-results.json")) {
+              console.log("::error::no jest report — the unit step did not run");
+              process.exit(1);
+            }
+            const r = JSON.parse(fs.readFileSync("unit-results.json", "utf8"));
+            const all = r.testResults.flatMap(s => s.assertionResults);
+            const bad = all.filter(a => a.status !== "passed");
+            const e2e = r.testResults.filter(s => /\.e2e\.test\.js$/.test(s.name));
+            console.log(`collected ${all.length} test(s) in ${r.testResults.length} suite(s)`);
+            if (all.length === 0) {
+              console.log("::error::no tests were collected");
+              process.exit(1);
+            }
+            for (const s of e2e) {
+              console.log(`::error::integration suite leaked into the unit job: ${s.name}`);
+            }
+            for (const a of bad) {
+              console.log(`::error::${a.status}: ${a.fullName}`);
+            }
+            process.exit(bad.length || e2e.length ? 1 : 0);
+          '
+
+      # The build is a real check, not a formality: Tailwind only emits classes
+      # it can see as literal strings, and CRA fails the build on things the
+      # test runner never evaluates.
+      - name: Production build
+        env:
+          CI: "false"   # CRA treats warnings as errors when CI=true
+        run: npm run build
+
+      - name: Assert the build produced assets
+        run: |
+          test -f build/index.html || { echo "::error::build/index.html missing"; exit 1; }
+          js=$(find build/static/js -name '*.js' | head -1)
+          test -n "$js" || { echo "::error::no JS bundle emitted"; exit 1; }
+          echo "index.html and $(basename "$js") present"
+
+      - name: Upload unit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-unit-results
+          path: apps/web/unit-results.json
+          if-no-files-found: ignore
+
+  # ── Integration ─────────────────────────────────────────────────────────
+  integration:
+    name: Conflict resolution against a real stack
+    runs-on: ubuntu-latest
+    needs: unit
+
+    services:
+      # Same image pins as infra/docker-compose.security-test.yml, so the two
+      # gates cannot silently diverge on PostgreSQL or pgvector versions.
+      postgres:
+        image: pgvector/pgvector:0.8.1-pg16
+        env:
+          POSTGRES_USER: sourcemind_bootstrap
+          POSTGRES_PASSWORD: ${{ secrets.E2E_DB_BOOTSTRAP_PASSWORD }}
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sourcemind_bootstrap -d postgres"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+
+      redis:
+        image: redis:7.0.15-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      E2E_DB_BOOTSTRAP_PASSWORD: ${{ secrets.E2E_DB_BOOTSTRAP_PASSWORD }}
+      E2E_DB_OWNER_PASSWORD: ${{ secrets.E2E_DB_OWNER_PASSWORD }}
+      E2E_DB_RUNTIME_PASSWORD: ${{ secrets.E2E_DB_RUNTIME_PASSWORD }}
+
+      # Read by apps/web/e2e/psqlClient.js. "direct" because the runner has
+      # psql on PATH and no WSL — the variable exists precisely so this is a
+      # stated choice rather than a platform guess.
+      E2E_PSQL_MODE: direct
+      E2E_ALLOW_DISPOSABLE: "1"
+      E2E_PG_HOST: 127.0.0.1
+      E2E_PG_PORT: "5432"
+      E2E_PG_USER: sourcemind_bootstrap
+      E2E_PG_DATABASE: sourcemind_e2e
+      # The suite reads rows back through psqlClient.js, which takes its
+      # password from HERE, not from the PGPASSWORD set on the provisioning
+      # steps. Without it every sql() call hit a scram-authenticated server
+      # with no password and the assertions failed. psqlClient puts this in
+      # the child's environment, never in argv.
+      E2E_PG_PASSWORD: ${{ secrets.E2E_DB_BOOTSTRAP_PASSWORD }}
+
+      E2E_API_URL: http://127.0.0.1:8010
+      REACT_APP_USE_MOCKS: "false"
+      REACT_APP_BACKEND_URL: http://127.0.0.1:8010
+
+      STUB_PORT: "8402"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      # Masked before any step can echo them. Secret values are never
+      # interpolated into shell source below: they arrive as environment
+      # variables and every use is a quoted "$VAR" passed as an argument, so a
+      # password containing quotes, $ or backticks cannot be re-parsed.
+      - name: Mask credentials
+        run: |
+          printf '::add-mask::%s\n' "$E2E_DB_BOOTSTRAP_PASSWORD"
+          printf '::add-mask::%s\n' "$E2E_DB_OWNER_PASSWORD"
+          printf '::add-mask::%s\n' "$E2E_DB_RUNTIME_PASSWORD"
+
+      # Fails before provisioning anything if a secret, an environment
+      # variable, a support file or an expected test is missing. Prints names
+      # and lengths only.
+      - name: Preflight — validate configuration
+        run: python .github/scripts/check_web_e2e_contract.py
+
+      # The guard that stops the destructive seed pointing at real data. Run
+      # here as the very code the suite will use, rather than re-implemented in
+      # the preflight, so the two cannot drift.
+      - name: Preflight — disposable-target guard accepts this target
+        working-directory: apps/web
+        run: |
+          node -e '
+            const { _internals } = require("./e2e/psqlClient");
+            const cfg = _internals.config(process.env);
+            console.log(`guard ok: mode=${cfg.mode} database=${cfg.database} user=${cfg.user}`);
+          '
+
+      # ── Provision ─────────────────────────────────────────────────────────
+      - name: Create roles, database and extensions
+        env:
+          PGPASSWORD: ${{ secrets.E2E_DB_BOOTSTRAP_PASSWORD }}
+        run: |
+          psql -h 127.0.0.1 -p 5432 -U sourcemind_bootstrap -d postgres \
+               -v ON_ERROR_STOP=1 \
+               -v owner_password="$E2E_DB_OWNER_PASSWORD" \
+               -v runtime_password="$E2E_DB_RUNTIME_PASSWORD" \
+               -f apps/web/e2e/init_roles.sql
+
+      # An RLS assertion made through a superuser or BYPASSRLS connection is
+      # vacuously true. Prove the roles are constrained rather than assume it.
+      - name: Assert neither role can bypass RLS
+        env:
+          PGPASSWORD: ${{ secrets.E2E_DB_BOOTSTRAP_PASSWORD }}
+        run: |
+          psql -h 127.0.0.1 -p 5432 -U sourcemind_bootstrap -d postgres -At \
+               -v ON_ERROR_STOP=1 -c "
+            SELECT CASE
+              WHEN count(*) = 2 AND bool_and(NOT rolsuper AND NOT rolbypassrls)
+                THEN 'ok'
+              ELSE 'FAIL: expected two non-superuser, non-BYPASSRLS roles'
+            END
+            FROM pg_roles WHERE rolname IN ('sourcemind_owner','sourcemind_test');
+          " | grep -qx ok
+
+      - name: Install API dependencies
+        working-directory: apps/api
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # As the OWNER role. sourcemind_test holds only DML through ALTER DEFAULT
+      # PRIVILEGES and has no DDL rights, matching production role separation.
+      - name: Migrate as the owner role
+        working-directory: apps/api
+        env:
+          ENVIRONMENT: development
+          DEBUG: "false"
+          # Migrations do not authenticate anything, but alembic/env.py calls
+          # get_settings(), and Settings rejects bypass=false unless CLERK_SECRET_KEY,
+          # CLERK_PUBLISHABLE_KEY and CLERK_AUTHORIZED_PARTIES are all present. With
+          # "false" here and no Clerk values, alembic died on a ValidationError before
+          # reaching the database. The explicit development bypass is the honest fix:
+          # this step needs a valid configuration, not an authenticated one.
+          #
+          # Scoped to THIS step deliberately. It must not reach the acceptance step,
+          # which runs with the bypass disabled on purpose.
+          AUTH_DEV_BYPASS_ENABLED: "true"
+        run: |
+          DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/sourcemind_e2e" \
+            alembic upgrade head
+
+      - name: Seed fixtures
+        env:
+          PGPASSWORD: ${{ secrets.E2E_DB_BOOTSTRAP_PASSWORD }}
+        run: |
+          psql -h 127.0.0.1 -p 5432 -U sourcemind_bootstrap -d sourcemind_e2e \
+               -v ON_ERROR_STOP=1 -q -f apps/web/e2e/seed_base.sql
+          psql -h 127.0.0.1 -p 5432 -U sourcemind_bootstrap -d sourcemind_e2e \
+               -v ON_ERROR_STOP=1 -q -f apps/web/e2e/seed_conflicts.sql
+          psql -h 127.0.0.1 -p 5432 -U sourcemind_bootstrap -d sourcemind_e2e -At \
+               -c "SELECT 'seeded ' || count(*) || ' conflict(s)' FROM memory_conflicts"
+
+      # ── Stubs ─────────────────────────────────────────────────────────────
+      # PROVIDER STUB. The `merged` resolution is the one path in this suite
+      # that calls an external model: it embeds the merged memory. This serves
+      # a deterministic vector so the success branch is what runs, and so no
+      # request leaves the runner. It proves the call is made and its result
+      # stored; it proves nothing about embedding quality, and conflict
+      # DETECTION — which needs real embeddings — is not covered by this job.
+      - name: Start the embedding stub
+        run: |
+          python apps/web/e2e/openai_stub.py "$STUB_PORT" > /tmp/openai-stub.log 2>&1 &
+          for i in $(seq 1 20); do
+            if curl -sf -o /dev/null -X POST "http://127.0.0.1:${STUB_PORT}/v1/embeddings" \
+                 -H 'Content-Type: application/json' \
+                 -d '{"input":["warmup"],"dimensions":3072}'; then
+              echo "embedding stub ready"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::embedding stub did not become ready"; cat /tmp/openai-stub.log; exit 1
+
+      # AUTH STUB. AUTH_DEV_BYPASS_ENABLED is the backend's own validated
+      # development-only flag — config.py refuses it outside ENVIRONMENT=
+      # development — and it pins the identity seeded by seed_base.sql. It is
+      # used because the suite cannot mint Clerk tokens in CI. The consequence
+      # is explicit: this job covers conflict resolution end to end and covers
+      # NOTHING about token verification, which api-ci.yml's unit tests own.
+      - name: Start the API
+        env:
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "true"
+          REDIS_URL: redis://127.0.0.1:6379/0
+          OPENAI_API_KEY: stub-key-not-a-real-credential
+          ANTHROPIC_API_KEY: stub-key-not-a-real-credential
+        working-directory: apps/api
+        run: |
+          OPENAI_BASE_URL="http://127.0.0.1:${STUB_PORT}/v1" \
+          DATABASE_URL="postgresql+asyncpg://sourcemind_test:${E2E_DB_RUNTIME_PASSWORD}@127.0.0.1:5432/sourcemind_e2e" \
+            python -m uvicorn sourcemind.main:app \
+              --host 127.0.0.1 --port 8010 --log-level warning \
+              > /tmp/api.log 2>&1 &
+          for i in $(seq 1 40); do
+            if curl -sf -o /dev/null "${E2E_API_URL}/health"; then
+              echo "API ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::API did not become healthy"; cat /tmp/api.log; exit 1
+
+      - name: Install web dependencies from the lockfile
+        working-directory: apps/web
+        run: npm ci --no-audit --no-fund
+
+      # ── Integration ───────────────────────────────────────────────────────
+      # The budget covers execution only. Provisioning, pip and npm installs
+      # sit outside it, so a slow dependency resolve is never reported as an
+      # integration timeout.
+      #
+      # `continue-on-error` so the assertion below always gets to speak: jest's
+      # exit status is NOT the gate here, because it exits 0 when every test
+      # skips — which is exactly what a lost E2E_API_URL would produce.
+      - name: Integration tests
+        id: integration
+        continue-on-error: true
+        timeout-minutes: 6
+        working-directory: apps/web
+        env:
+          CI: "true"
+        run: |
+          npx craco test --watchAll=false --runInBand \
+            --testPathPattern "conflictResolution\.e2e" \
+            --json --outputFile=integration-results.json
+
+      - name: Assert all 16 integration tests executed and passed
+        if: always()
+        run: |
+          python .github/scripts/check_web_integration_report.py \
+            apps/web/integration-results.json
+
+      # ── Ingestion submission-acceptance checks ────────────────────────
+      # Runs AFTER the conflict suite so it cannot perturb those fixtures. Its
+      # own gate is separate, so the existing 16-test conflict gate keeps
+      # meaning exactly what it meant before.
+      #
+      # These assert a submission is ACCEPTED and returns a job id. They do NOT
+      # assert completed ingestion: no Celery worker runs in this job, so the
+      # jobs stay queued and nothing here may be reported as finished work.
+      - name: Ingestion submission-acceptance tests
+        id: ingest
+        continue-on-error: true
+        timeout-minutes: 5
+        working-directory: apps/web
+        env:
+          CI: "true"
+          INGEST_API_URL: http://127.0.0.1:8010
+        run: |
+          npx craco test --watchAll=false --runInBand             --testPathPattern "ingestContract\.e2e"             --json --outputFile=ingest-results.json
+
+      - name: Assert all 4 ingestion submission tests executed and passed
+        if: always()
+        run: |
+          python .github/scripts/check_web_integration_report.py             apps/web/ingest-results.json             .github/scripts/expected_ingest_tests.txt
+
+      - name: API log
+        if: failure()
+        run: tail -100 /tmp/api.log || true
+
+      - name: Upload integration report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-integration-results
+          path: |
+            apps/web/integration-results.json
+            apps/web/ingest-results.json
+          if-no-files-found: ignore

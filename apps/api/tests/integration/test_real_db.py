@@ -184,34 +184,24 @@ async def test_attribution_append_only_trigger(
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_rls_workspace_isolation_policy(db_session: AsyncSession):
-    """
-    Verify the `memories_workspace_isolation` RLS policy is defined.
-
-    The Supabase pooler role bypasses RLS enforcement, so we verify the
-    POLICY EXISTS at the schema level. Actual enforcement is layered:
-    every application query already filters on `workspace_id`.
-    """
+    """Verify the hardened memories RLS policy and FORCE RLS setting."""
     result = await db_session.execute(
         text(
-            "SELECT policyname, cmd FROM pg_policies "
-            "WHERE tablename = 'memories' ORDER BY policyname"
+            "SELECT p.policyname, p.cmd, c.relrowsecurity, c.relforcerowsecurity "
+            "FROM pg_policies AS p "
+            "JOIN pg_class AS c ON c.relname = p.tablename "
+            "JOIN pg_namespace AS n ON n.oid = c.relnamespace "
+            "WHERE p.schemaname = 'public' AND p.tablename = 'memories' "
+            "AND n.nspname = 'public' ORDER BY p.policyname"
         )
     )
     policies = result.fetchall()
 
-    assert len(policies) > 0, "No RLS policies found on memories table"
+    assert [p.policyname for p in policies] == ["sm_tenant_isolation"]
+    assert policies[0].cmd == "ALL"
+    assert policies[0].relrowsecurity is True
+    assert policies[0].relforcerowsecurity is True
 
-    policy_names = [p.policyname for p in policies]
-    assert "memories_workspace_isolation" in policy_names, (
-        f"Expected memories_workspace_isolation policy. Found: {policy_names}"
-    )
-
-    # The policy in migration 0001 has no `cmd` restriction → applies to ALL.
-    has_all_or_select = any(p.cmd in ("ALL", "SELECT") for p in policies)
-    assert has_all_or_select, (
-        f"No ALL/SELECT policy on memories. Found cmds: "
-        f"{[p.cmd for p in policies]}"
-    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

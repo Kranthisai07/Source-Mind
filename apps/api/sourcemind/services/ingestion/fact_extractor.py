@@ -123,8 +123,8 @@ async def _attempt_extraction(
             messages=[{"role": "user", "content": user_prompt}],
         )
     except Exception as exc:
-        log.error("fact_extract_api_error", error=str(exc))
-        return ChunkExtraction([], "failed", f"api_error: {exc}")
+        log.error("fact_extract_api_error", error_type=type(exc).__name__)
+        return ChunkExtraction([], "failed", f"api_error:{type(exc).__name__}")
 
     raw = response.content[0].text.strip()
 
@@ -132,12 +132,18 @@ async def _attempt_extraction(
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         log.warning(
-            "fact_extract_json_error", error=str(exc), raw_preview=raw[:200]
+            "fact_extract_json_error",
+            error_type=type(exc).__name__,
+            response_length=len(raw),
         )
-        return ChunkExtraction([], "failed", f"json_error: {exc}")
+        return ChunkExtraction([], "failed", "json_error")
 
     if not isinstance(parsed, list):
-        log.warning("fact_extract_invalid_type", raw_preview=raw[:200])
+        log.warning(
+            "fact_extract_invalid_type",
+            response_type=type(parsed).__name__,
+            response_length=len(raw),
+        )
         return ChunkExtraction(
             [], "failed", f"expected a list, got {type(parsed).__name__}"
         )

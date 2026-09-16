@@ -371,7 +371,8 @@ async def resolve_conflict(
         await session.execute(
             text(
                 "UPDATE memory_conflicts "
-                "SET status = 'deferred', revisit_at = :rat "
+                "SET status = 'deferred', revisit_at = :rat, "
+                "resolver_id = CAST(:rid AS uuid), resolution_note = :note "
                 "WHERE id = CAST(:cid AS uuid) "
                 "RETURNING id"
             ),
@@ -380,7 +381,12 @@ async def resolve_conflict(
             # raised DataError and every 'deferred' resolution returned 500.
             # Same defect as create_handoff_record; both were invisible because
             # neither path had ever been exercised end to end.
-            {"rat": revisit_at, "cid": str(conflict_id)},
+            {
+                "rat": revisit_at,
+                "rid": str(resolver_id),
+                "note": resolution_note,
+                "cid": str(conflict_id),
+            },
         )
         log.info("conflict_deferred", conflict_id=str(conflict_id), revisit_at=str(revisit_at))
         return True

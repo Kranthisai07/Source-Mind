@@ -25,7 +25,12 @@ from sourcemind.models.memory_conflict import ConflictStatus, ConflictType, Memo
 from sourcemind.models.memory_relation import MemoryRelation, RelationType
 from sourcemind.models.organization import Organization, OrganizationPlan
 from sourcemind.models.user import User
-from sourcemind.models.workspace import Workspace, WorkspaceMember, WorkspaceRole
+from sourcemind.models.workspace import (
+    Workspace,
+    WorkspaceMember,
+    WorkspaceMembershipStatus,
+    WorkspaceRole,
+)
 
 __all__ = [
     "Base",
@@ -34,6 +39,7 @@ __all__ = [
     "Organization",
     "OrganizationPlan",
     "Workspace",
+    "WorkspaceMembershipStatus",
     "WorkspaceRole",
     "WorkspaceMember",
     "User",

@@ -9,7 +9,7 @@ Required env vars (add to apps/api/.env):
     SLACK_BOT_TOKEN          xoxb-...   (Bot User OAuth Token)
     SLACK_APP_TOKEN          xapp-...   (App-Level Token with connections:write scope)
     SLACK_SIGNING_SECRET     ...        (from App credentials page)
-    SLACK_DEFAULT_WORKSPACE_ID  <uuid>  (SourceMind workspace to search against)
+    SLACK_INSTALLATIONS        JSON map of Slack team/channel/user IDs to SourceMind UUIDs
 
 Optional:
     SOURCEMIND_APP_URL  https://app.sourcemind.ai  (for View buttons)

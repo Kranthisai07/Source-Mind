@@ -1,0 +1,275 @@
+/* ============================================================================
+   SourceMind design tokens — Supermemory console reference
+   ============================================================================
+
+   Three layers, in dependency order. Components may only read layer 3 (or
+   layer 2 where no component token exists); nothing outside this file should
+   contain a raw hex value or a magic pixel number.
+
+     1. PRIMITIVE  — raw values. No meaning attached. Never used directly.
+     2. SEMANTIC   — role names. "What is this colour FOR."
+     3. COMPONENT  — the exact measurements the reference specifies.
+
+   PROVENANCE. The audit gives exact numbers for dimensions and type, and only
+   qualitative descriptions for colour and typeface. That difference is
+   recorded per token below:
+
+     [SPEC]    the reference states this value literally (e.g. ~260px sidebar)
+     [DERIVED] the reference describes it qualitatively; the value is the
+               pre-existing committed SourceMind palette, which already
+               satisfies the description. Not invented for this redesign, and
+               deliberately not regenerated - see the skill README, which
+               states the committed system must not be overwritten.
+   ========================================================================= */
+
+/* ---------------------------------------------------------------------------
+   LAYER 1 — PRIMITIVE
+   Raw values only. If you are reaching for one of these in a component, the
+   semantic layer is missing a role; add it there instead.
+   ------------------------------------------------------------------------ */
+:root {
+    /* Neutrals. [DERIVED] §2 "near-black (not pure black)", cards "a very
+       slightly lighter dark tone", "1px low-contrast borders". */
+    --p-neutral-950: #0A0A0F;   /* page ground   */
+    --p-neutral-900: #12121A;   /* raised surface */
+    --p-neutral-850: #16161F;   /* hover surface  */
+    --p-neutral-800: #1E1E2E;   /* hairline border */
+    --p-neutral-700: #2A2A3E;   /* border, hover  */
+    --p-neutral-500: #4A4A6A;   /* muted / placeholder */
+    --p-neutral-300: #8888A8;   /* secondary text */
+    --p-neutral-50:  #E8E8F0;   /* primary text   */
+    --p-white:       #FFFFFF;
+
+    /* The single accent. [DERIVED] §2 "a single saturated blue ... used
+       exclusively for primary buttons, active nav states, links, checked
+       toggles, the active tab underline, and progress bars. Nothing else
+       competes with it - no secondary accent hue." */
+    --p-blue-500: #4F7EFF;      /* accent: links, active nav, bars      */
+    --p-blue-600: #3D6BEE;      /* solid button fill, and pressed state */
+    --p-blue-400: #7C9DFF;      /* link hover                           */
+
+    /* Status. [DERIVED] §2 green = success/active, red = destructive only,
+       "used sparingly and only where semantically meaningful". */
+    --p-green-500: #34D399;
+    --p-red-500:   #EF4444;
+
+    /* DEVIATION, stated openly. The reference names only green and red. Amber
+       is kept as exactly one semantic role - warning - because SourceMind
+       encodes three conflict severities and collapsing medium into either grey
+       or red destroys a real distinction the data carries. It is used nowhere
+       decoratively. Delete this one token and --c-status-warning* to remove
+       the deviation entirely. */
+    --p-amber-500: #F59E0B;
+
+    /* Type families. [DERIVED] §3 "clean geometric/grotesque sans-serif"
+       throughout chrome; monospace for "technical/copyable" content. */
+    --p-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --p-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+    /* Type scale. [SPEC] §3 states each of these literally. */
+    --p-text-h1:    28px;   /* "page H1 (~28px bold)"            */
+    --p-text-title: 15px;   /* "section card title (~15-16px)"   */
+    --p-text-body:  13px;   /* "body/label text (~13-14px)"      */
+    --p-text-body-lg: 14px;
+    --p-text-micro: 11px;   /* "micro-labels (~11px, uppercase)" */
+
+    --p-weight-regular:  400;
+    --p-weight-medium:   500;
+    --p-weight-semibold: 600;
+    --p-weight-bold:     700;
+
+    /* [SPEC] §3 "comfortable line-height in body copy". */
+    --p-leading-tight: 1.25;
+    --p-leading-body:  1.55;
+
+    /* Spacing. [SPEC] §3 density is "low-to-medium: generous vertical padding
+       inside cards and table rows". */
+    --p-space-1:  4px;
+    --p-space-2:  8px;
+    --p-space-3:  12px;
+    --p-space-4:  16px;
+    --p-space-5:  20px;
+    --p-space-6:  24px;
+    --p-space-8:  32px;
+    --p-space-10: 40px;
+    --p-space-12: 48px;
+
+    --p-radius-sm: 6px;
+    --p-radius-md: 8px;
+    --p-radius-lg: 12px;
+    --p-radius-pill: 999px;
+
+    --p-duration-fast: 120ms;
+    --p-duration-base: 200ms;
+    --p-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ---------------------------------------------------------------------------
+   LAYER 2 — SEMANTIC
+   Role names. A component asks for "the danger colour", never "red".
+   ------------------------------------------------------------------------ */
+:root {
+    /* Surfaces. §2: delineation comes from 1px low-contrast borders, NOT from
+       shadows. There is deliberately no elevation/shadow token here. */
+    --c-bg-page:      var(--p-neutral-950);
+    --c-bg-surface:   var(--p-neutral-900);
+    --c-bg-hover:     var(--p-neutral-850);
+    --c-bg-sunken:    var(--p-neutral-950);
+
+    --c-border:       var(--p-neutral-800);
+    --c-border-hover: var(--p-neutral-700);
+
+    /* Text. §2 "a tight gray scale (white -> light gray -> mid gray ->
+       near-invisible gray for placeholders/hints)". */
+    --c-text-primary:   var(--p-neutral-50);
+    --c-text-secondary: var(--p-neutral-300);
+
+    /* ACCESSIBILITY FIX. --p-neutral-500 measures 2.20:1 on the card surface,
+       failing even the 3.0 non-text threshold. §2 does describe a
+       "near-invisible gray for placeholders/hints", so the token is kept for
+       exactly that - decorative and disabled affordances - but anything a
+       reader must actually READ (micro-labels, table column headers, sidebar
+       section dividers) uses --c-text-label instead at 5.44:1. That still sits
+       far below primary text's 15.29:1, so the quiet hierarchy §1 and §3
+       describe is intact. */
+    --c-text-label:     var(--p-neutral-300);
+    --c-text-muted:     var(--p-neutral-500);
+    --c-text-on-accent: var(--p-white);
+
+    /* The accent, and the exclusive list of things allowed to use it. */
+    --c-accent:         var(--p-blue-500);
+    --c-accent-hover:   var(--p-blue-400);
+    --c-accent-pressed: var(--p-blue-600);
+
+    /* ACCESSIBILITY FIX, measured not assumed. White on --p-blue-500 is
+       3.65:1, which fails WCAG AA for normal-size text - and primary button
+       labels are ~13px, i.e. normal size. --p-blue-600 carries white at
+       4.63:1 and is perceptually the same blue, so solid accent FILLS use it
+       while everything else (links, active nav, progress bars) keeps
+       --p-blue-500, which scores 5.42:1 against the page ground. §2's "one
+       saturated blue" is preserved; only the fill step changes. */
+    --c-accent-fill:       var(--p-blue-600);
+    --c-accent-fill-hover: var(--p-blue-500);
+    --c-accent-subtle:  rgba(79, 126, 255, 0.10);  /* active nav fill */
+    --c-accent-ring:    rgba(79, 126, 255, 0.50);  /* focus ring      */
+    --c-link:           var(--p-blue-500);
+
+    --c-status-success:        var(--p-green-500);
+    --c-status-success-subtle: rgba(52, 211, 153, 0.12);
+    --c-status-danger:         var(--p-red-500);
+    --c-status-danger-subtle:  rgba(239, 68, 68, 0.10);
+    --c-status-danger-border:  rgba(239, 68, 68, 0.30);
+    --c-status-warning:        var(--p-amber-500);
+    --c-status-warning-subtle: rgba(245, 158, 11, 0.12);
+
+    /* Data-visualisation ramp. §2 forbids a second accent hue, so quantitative
+       bars are ONE hue stepped by opacity rather than four competing colours.
+       This is what replaces the old blue/purple/green/amber health bars. */
+    --c-data-1: rgba(79, 126, 255, 1.00);
+    --c-data-2: rgba(79, 126, 255, 0.72);
+    --c-data-3: rgba(79, 126, 255, 0.48);
+    --c-data-4: rgba(79, 126, 255, 0.30);
+    --c-data-track: rgba(30, 30, 46, 0.80);
+
+    --c-focus-ring: var(--c-accent-ring);
+}
+
+/* ---------------------------------------------------------------------------
+   LAYER 3 — COMPONENT
+   The reference's literal measurements. These are the [SPEC] values.
+   ------------------------------------------------------------------------ */
+:root {
+    /* §1 "Fixed left sidebar (~260px) + fluid main content area." */
+    --sidebar-width: 260px;
+
+    /* §1 "a slim top strip (~48px) sits above the content column only (not
+       full-width)". The "not full-width" part is why this lives inside the
+       main column, not across the shell. */
+    --topstrip-height: 48px;
+
+    /* §1 page header formula: H1 + one line of gray subtext, on every screen. */
+    --page-h1-size:      var(--p-text-h1);
+    --page-h1-weight:    var(--p-weight-bold);
+    --page-subtext-size: var(--p-text-body-lg);
+    --page-padding-x:    var(--p-space-8);
+    --page-padding-y:    var(--p-space-8);
+    --page-max-width:    1280px;
+
+    /* §3 "chunk information into individually-bordered stat cards". */
+    --card-padding:      var(--p-space-6);
+    --card-radius:       var(--p-radius-lg);
+    --card-title-size:   var(--p-text-title);
+    --card-title-weight: var(--p-weight-semibold);
+
+    /* §1 nav rows; §4.x table rows. "generous vertical padding in table rows" */
+    --nav-item-height:   34px;
+    --nav-item-radius:   var(--p-radius-md);
+    --nav-group-label-size: var(--p-text-micro);
+    --table-header-size: var(--p-text-micro);
+    --table-row-height:  52px;
+
+    /* §3 "Numbers get outsized visual weight where they're the point ...
+       rendered much larger than their labels, in a semi-bold/mono-ish numeral
+       style - a common hero metric treatment." */
+    --hero-metric-size:   34px;
+    --hero-metric-weight: var(--p-weight-semibold);
+
+    /* §4.5 "Duration renders as both a number and an inline horizontal
+       progress-bar-style visualization next to it in the same cell." */
+    --inline-bar-width:  64px;
+    --inline-bar-height: 4px;
+    --inline-bar-radius: var(--p-radius-pill);
+
+    /* §5 empty state; §6 skeletons. */
+    --empty-icon-size:     40px;
+    --empty-headline-size: 16px;
+    --skeleton-radius:     var(--p-radius-sm);
+
+    /* §7 toast: "small dark rounded card, bottom-right corner". */
+    --toast-radius: var(--p-radius-lg);
+    --toast-inset:  var(--p-space-6);
+}
+
+/* ---------------------------------------------------------------------------
+   Primitives built on the tokens above.
+   ------------------------------------------------------------------------ */
+
+/* §6 "pulsing flat-gray rectangles ... No spinners or progress bars were seen
+   as the primary loading indicator anywhere in the console - skeletons are the
+   house style." Flat, not shimmering: the reference says pulsing. */
+@keyframes sm-skeleton-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.45; }
+}
+
+.sm-skeleton {
+    background: var(--p-neutral-800);
+    border-radius: var(--skeleton-radius);
+    animation: sm-skeleton-pulse 1.6s var(--p-ease) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sm-skeleton { animation: none; opacity: 0.7; }
+}
+
+/* §2 cards are delineated by a 1px border, never a shadow. */
+.sm-card {
+    background: var(--c-bg-surface);
+    border: 1px solid var(--c-border);
+    border-radius: var(--card-radius);
+}
+
+/* §3 micro-labels: table column headers and sidebar section dividers. */
+.sm-micro-label {
+    font-size: var(--p-text-micro);
+    font-weight: var(--p-weight-semibold);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--c-text-label);
+}
+
+/* Keyboard focus must stay visible - priority 1 in the skill's rule table. */
+.sm-focusable:focus-visible {
+    outline: 2px solid var(--c-focus-ring);
+    outline-offset: 2px;
+}

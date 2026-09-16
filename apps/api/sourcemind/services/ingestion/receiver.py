@@ -16,17 +16,18 @@ import json
 import uuid
 from typing import Any
 
-import httpx
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sourcemind.core.config import get_settings
 from sourcemind.core.exceptions import (
     ContentTooLargeError,
     ValidationError,
     WorkspaceNotFoundError,
 )
 from sourcemind.core.redis_client import get_redis
+from sourcemind.core.url_security import validate_public_url, validate_url_syntax
 from sourcemind.models.document import Document, DocumentSourceType, IngestionStatus
 from sourcemind.models.workspace import Workspace
 
@@ -65,6 +66,9 @@ async def receive(
         )
 
     if url:
+        validate_url_syntax(url)
+        if not get_settings().url_ingestion_enabled:
+            raise ValidationError("URL ingestion is disabled.")
         await _validate_url(url)
         source_type = DocumentSourceType.URL
 
@@ -198,21 +202,5 @@ async def receive(
 
 
 async def _validate_url(url: str) -> None:
-    """Validate URL format and basic reachability (HEAD request, 5s timeout)."""
-    if not url.startswith(("http://", "https://")):
-        raise ValidationError("URL must start with http:// or https://")
-
-    try:
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
-            response = await client.head(url)
-            if response.status_code >= 400:
-                raise ValidationError(
-                    f"URL returned HTTP {response.status_code}. "
-                    "Ensure the URL is publicly accessible."
-                )
-    except httpx.TimeoutException as exc:
-        raise ValidationError("URL did not respond within 5 seconds.") from exc
-    except ValidationError:
-        raise
-    except Exception as exc:
-        raise ValidationError(f"URL validation failed: {exc}") from exc
+    """Validate URL syntax and DNS targets without issuing an HTTP request."""
+    await validate_public_url(url)

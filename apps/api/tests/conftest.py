@@ -1,30 +1,35 @@
 """
 Shared pytest fixtures and configuration.
 
-Two real-DB strategies are supported:
-
-  1. **Supabase-backed integration tests** (the active path).
-     Fixtures: `supabase_url`, `supabase_engine`, `db_session`,
-     plus convenience factories `test_org`, `test_workspace`, `test_user`.
-     Each `db_session` runs inside an outer transaction with
-     `join_transaction_mode="create_savepoint"`, so any commit inside the
-     code-under-test releases a SAVEPOINT and the outer transaction is
-     rolled back at teardown — no test data leaks into Supabase.
-
-  2. **Local pytest-postgresql** (legacy, kept as a fallback guard).
-     The `pg_available` mark skips tests when `pg_ctl` is missing from PATH.
+Real-DB tests require an explicit disposable local database URL plus an opt-in
+flag. The legacy fixture names remain for compatibility, but no application
+setting or shared database can be selected implicitly.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import uuid
 from collections.abc import AsyncIterator
+from urllib.parse import urlsplit
 
 import pytest
 import pytest_asyncio
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+os.environ["ENVIRONMENT"] = "development"
+os.environ["DEBUG"] = "false"
+os.environ["AUTH_DEV_BYPASS_ENABLED"] = "true"
+
+_DISPOSABLE_HOSTS = {"127.0.0.1", "localhost"}
+_DISPOSABLE_DATABASE_PORT = 55432
+_DISPOSABLE_DATABASE_USER = "sourcemind_test"
+_DISPOSABLE_DATABASE_NAME = "sourcemind_security_test"
+_DISPOSABLE_REDIS_PORT = 56379
+_DISPOSABLE_REDIS_DATABASE = "/15"
 
 
 # ─── pg_ctl availability (legacy guard) ──────────────────────────────────────
@@ -34,9 +39,42 @@ def _pg_ctl_available() -> bool:
     return shutil.which("pg_ctl") is not None
 
 
+def _is_disposable_database_url(url: str) -> bool:
+    try:
+        parsed = make_url(url)
+    except Exception:
+        return False
+    return (
+        parsed.host in _DISPOSABLE_HOSTS
+        and parsed.port == _DISPOSABLE_DATABASE_PORT
+        and parsed.username == _DISPOSABLE_DATABASE_USER
+        and parsed.database == _DISPOSABLE_DATABASE_NAME
+    )
+
+
+def _is_disposable_redis_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+        return (
+            parsed.scheme == "redis"
+            and parsed.hostname in _DISPOSABLE_HOSTS
+            and parsed.port == _DISPOSABLE_REDIS_PORT
+            and parsed.path == _DISPOSABLE_REDIS_DATABASE
+        )
+    except ValueError:
+        return False
+
+
+def _disposable_database_configured() -> bool:
+    return (
+        os.getenv("SECURITY_TEST_ALLOW_DISPOSABLE") == "1"
+        and _is_disposable_database_url(os.getenv("TEST_DATABASE_URL", ""))
+    )
+
+
 pg_available = pytest.mark.skipif(
-    not _pg_ctl_available(),
-    reason="pg_ctl not found on PATH. Install PostgreSQL or add it to PATH to run real-DB tests.",
+    not (_pg_ctl_available() or _disposable_database_configured()),
+    reason="requires pg_ctl or the explicitly opted-in disposable PostgreSQL",
 )
 
 
@@ -47,31 +85,46 @@ def anyio_backend():
     return "asyncio"
 
 
-# ─── Supabase real-DB fixtures ───────────────────────────────────────────────
+# ─── Disposable real-DB fixtures ─────────────────────────────────────────────
 
 @pytest.fixture(scope="session")
 def supabase_url() -> str:
-    """
-    Return the async DATABASE_URL from app settings.
-
-    Skips the entire test if DATABASE_URL is unset or points at localhost
-    (real-DB tests are designed against the cloud Supabase instance, not
-    a local Postgres — local Postgres lacks pgvector here).
-    """
-    from sourcemind.core.config import get_settings
-    settings = get_settings()
-    url = settings.database_url
-    if not url or "localhost" in url or "127.0.0.1" in url:
-        pytest.skip("Supabase DATABASE_URL not configured (got localhost or empty)")
+    """Return an explicitly approved disposable local database URL."""
+    if os.getenv("SECURITY_TEST_ALLOW_DISPOSABLE") != "1":
+        pytest.skip("Set SECURITY_TEST_ALLOW_DISPOSABLE=1 to use the disposable test DB")
+    url = os.getenv("TEST_DATABASE_URL", "")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL is not configured")
     if not url.startswith("postgresql+asyncpg"):
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if not _is_disposable_database_url(url):
+        raise RuntimeError(
+            "Refusing non-disposable TEST_DATABASE_URL; expected "
+            "sourcemind_test@127.0.0.1:55432/sourcemind_security_test"
+        )
+    return url
+
+
+@pytest.fixture(scope="session")
+def security_test_redis_url() -> str:
+    """Return an explicitly approved disposable local Redis URL."""
+    if os.getenv("SECURITY_TEST_ALLOW_DISPOSABLE") != "1":
+        pytest.skip("Set SECURITY_TEST_ALLOW_DISPOSABLE=1 to use disposable Redis")
+    url = os.getenv("TEST_REDIS_URL", "")
+    if not url:
+        pytest.skip("TEST_REDIS_URL is not configured")
+    if not _is_disposable_redis_url(url):
+        raise RuntimeError(
+            "Refusing non-disposable TEST_REDIS_URL; expected "
+            "redis://127.0.0.1:56379/15"
+        )
     return url
 
 
 @pytest_asyncio.fixture
 async def supabase_engine(supabase_url):
     """
-    Async SQLAlchemy engine pointing at Supabase.
+    Async SQLAlchemy engine pointing at disposable local Postgres.
 
     Function-scoped so each test gets a fresh asyncpg pool bound to the
     current test's event loop. Avoids "Event loop is closed" errors that
@@ -139,15 +192,33 @@ async def test_org(db_session: AsyncSession):
 
 
 @pytest_asyncio.fixture
-async def test_workspace(db_session: AsyncSession, test_org):
+async def test_workspace(db_session: AsyncSession, test_org, test_user):
     """Insert and return a real Workspace row attached to test_org."""
-    from sourcemind.models.workspace import Workspace
+    from sourcemind.core.database import (
+        set_rls_user_context,
+        set_rls_workspace_context,
+    )
+    from sourcemind.models.workspace import Workspace, WorkspaceMember
+
+    workspace_id = uuid.uuid4()
+    await set_rls_user_context(db_session, test_user.id)
+    await set_rls_workspace_context(db_session, workspace_id)
     ws = Workspace(
+        id=workspace_id,
         organization_id=test_org.id,
+        created_by_user_id=test_user.id,
         name="Test Workspace",
         slug=_slug("test-ws"),
     )
     db_session.add(ws)
+    await db_session.flush()
+    db_session.add(
+        WorkspaceMember(
+            workspace_id=ws.id,
+            user_id=test_user.id,
+            role="owner",
+        )
+    )
     await db_session.flush()
     return ws
 
@@ -165,7 +236,7 @@ async def test_user(db_session: AsyncSession):
     suffix = uuid.uuid4().hex[:12]
     user = User(
         clerk_id=f"clerk-test-{suffix}",
-        email=f"test-{suffix}@test.local",
+        email=f"test-{suffix}@example.com",
         display_name="Test User",
     )
     db_session.add(user)

@@ -170,7 +170,7 @@ async def _classify_relation(
             messages=[{"role": "user", "content": prompt}],
         )
     except Exception as exc:
-        log.error("relation_classify_api_error", error=str(exc))
+        log.error("relation_classify_api_error", error_type=type(exc).__name__)
         return Classification(relation="unrelated", confidence=0.0)
 
     raw_text = response.content[0].text
@@ -179,8 +179,8 @@ async def _classify_relation(
     except (json.JSONDecodeError, ValueError) as exc:
         log.warning(
             "relation_classify_unparseable",
-            error=str(exc),
-            raw_preview=raw_text[:200],
+            error_type=type(exc).__name__,
+            response_length=len(raw_text),
         )
         return Classification(relation="unrelated", confidence=0.0)
 

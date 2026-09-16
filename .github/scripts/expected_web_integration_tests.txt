@@ -1,0 +1,28 @@
+# The integration tests that MUST execute and pass.
+#
+# Generated from jest itself, not typed by hand. One full name per line:
+# describe path joined with the test title, exactly as jest reports
+# assertionResults[].fullName.
+#
+# Its purpose is the same as the node-ID diff in security-acceptance.yml:
+# without it, deleting or renaming a test silently shrinks the gate and the
+# job still goes green. Regenerate deliberately when adding a test, never to
+# make a red build pass.
+#
+# Lines starting with # and blank lines are ignored.
+conflict resolution against the real API merged stores the merged content, the note, and resolves the conflict
+conflict resolution against the real API merged the merged memory exists, carries the typed content, and is embedded
+conflict resolution against the real API merged both source memories are retired, not deleted
+conflict resolution against the real API split ADDS a tag to each memory, preserving the tags already there
+conflict resolution against the real API split both memories stay current — a split keeps both claims
+conflict resolution against the real API split identical tags are accepted, as the resolver allows
+conflict resolution against the real API deferred stores the revisit time as the correct UTC instant
+conflict resolution against the real API deferred the conflict is deferred, not resolved
+conflict resolution against the real API deferred both memories stay current — deferring decides nothing
+conflict resolution against the real API deferred the note and the deferring user are persisted
+conflict resolution against the real API deferred resolved_at stays NULL — a deferral is not a resolution
+conflict resolution against the real API deferred blocks_derivation is unchanged — an open question still blocks
+conflict resolution against the real API deferred revisit_at survives the fix — the new columns did not disturb it
+conflict resolution against the real API deferred psql boolean rendering is t / f / empty-for-null, as assumed
+conflict resolution against the real API errors a missing required field is refused in the form, with no request sent
+conflict resolution against the real API errors a conflict that does not exist renders the neutral missing state

@@ -44,6 +44,19 @@ jobs:
 
       # An empty wheel still exits 0, so assert the package has real contents.
       - name: Installed package contains real modules
+        # This check ends by importing sourcemind.main:app, which constructs
+        # Settings — and Settings rejects bypass=false unless CLERK_SECRET_KEY,
+        # CLERK_PUBLISHABLE_KEY and CLERK_AUTHORIZED_PARTIES are all set. The
+        # step declared no environment at all, so the import failed on a
+        # ValidationError and the package check never got to report on the
+        # package. The validator was added after this workflow was written, and
+        # this is the workflow's first run, so it had never surfaced.
+        #
+        # Scoped to this step: it asks "does the package import", not "is the
+        # caller authenticated". Nothing else in this workflow is changed.
+        env:
+          ENVIRONMENT: development
+          AUTH_DEV_BYPASS_ENABLED: "true"
         run: python scripts/check_wheel.py
 
       - name: Tests

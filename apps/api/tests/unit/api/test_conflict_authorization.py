@@ -1,9 +1,8 @@
-"""Only owners and admins may resolve a conflict.
+"""Only owners and admins may review or resolve a conflict.
 
 Resolving retires memories and can create a merged one, so it is the only
-conflict action that is gated. Listing, viewing detail and marking a conflict
-under review stay open to any workspace member — a reviewer must be able to
-triage without being able to decide.
+conflict actions that mutate shared review state are gated. Listing and detail
+stay open to any active workspace member.
 
 require_workspace_role is the first role gate in the codebase; there was no
 prior pattern to follow. workspaces.py queries WorkspaceMember.role to FIND
@@ -137,12 +136,8 @@ async def test_a_wrong_role_member_and_a_non_member_are_told_different_things():
 # ─── scope: only resolve is gated ────────────────────────────────────────────
 
 @pytest.mark.unit
-def test_only_the_resolve_endpoint_is_gated():
-    """List, detail and review must remain open to any member.
-
-    Triage and decision are different actions; gating review as well would
-    stop a member from even flagging a conflict for attention.
-    """
+def test_review_and_resolve_endpoints_are_admin_gated():
+    """Both shared-state conflict mutations require ADMINISTER."""
     import ast
     import pathlib
 
@@ -160,10 +155,8 @@ def test_only_the_resolve_endpoint_is_gated():
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and any(
-            isinstance(sub, ast.Name) and sub.id == "require_workspace_role"
+            isinstance(sub, ast.Attribute) and sub.attr == "ADMINISTER"
             for sub in ast.walk(node)
         )
     }
-    assert gated == {"resolve_conflict_endpoint"}, (
-        f"exactly one endpoint should be gated, found: {sorted(gated)}"
-    )
+    assert gated == {"review_conflict", "resolve_conflict_endpoint"}

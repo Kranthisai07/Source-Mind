@@ -1,0 +1,381 @@
+# Migration round-trip on PostgreSQL 18.
+#
+# The gap this closes, stated exactly:
+#
+#   The forward upgrade is evidenced on populated PostgreSQL 18.6 — the
+#   deployed Railway service was verified route by route on 2026-09-07 (D-007).
+#   The DOWNGRADE is not, on any PostgreSQL. And the downgrade was wrong until
+#   417eb6e: DISABLE ROW LEVEL SECURITY clears relrowsecurity but not
+#   relforcerowsecurity, so a rollback left workspace_members carrying forced
+#   RLS — a state the schema had never been in. The fix postdates every piece
+#   of existing evidence, so nothing on record covers it.
+#
+#   The unit regression test for that fix mocks `op` and executes no SQL. It
+#   proves the statement is emitted. It cannot prove PostgreSQL accepts it, or
+#   that the resulting flags match what the schema looked like beforehand.
+#
+# So this runs the real thing against a real PostgreSQL 18, seeded with real
+# rows: upgrade → downgrade → re-upgrade, asserting the flags return to a
+# MEASURED baseline, that rows survive, and that a role which cannot bypass RLS
+# is still correctly constrained afterwards.
+#
+# The baseline is measured, not written down. The job migrates to 20250817_0005
+# and records the flags there; the post-downgrade state is compared against
+# that recording. A hand-written expectation would only ever assert what
+# somebody believed the baseline was, which is the class of mistake this whole
+# effort has been correcting.
+#
+# Cost: none. Public-repo Actions minutes, one service container. No Railway
+# resource is created and no production data is exported or touched.
+
+name: Migration Round-Trip (PostgreSQL 18)
+
+on:
+  push:
+    branches: [main, dev, frontend-ci-claude, security-foundation-codex]
+  pull_request:
+    paths:
+      - "apps/api/alembic/**"
+      - "apps/api/sourcemind/models/**"
+      - "apps/api/tests/fixtures/ownerless_workspace_0005.sql"
+      - "apps/api/tests/integration/test_ownerless_workspace_migration_real_db.py"
+      - ".github/workflows/migration-roundtrip-pg18.yml"
+      - ".github/scripts/check_migration_roundtrip.py"
+      - ".github/scripts/run_ownerless_regression.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migration-roundtrip-pg18-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  roundtrip:
+    name: Upgrade, downgrade and re-upgrade on PostgreSQL 18
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # Pinned BY DIGEST, not by tag. The pg18 tags track the latest patch
+        # release, so a tag alone would silently change the version under test
+        # between runs and make this evidence unreproducible. The digest is
+        # recorded in the job output and in docs/handoff.
+        #
+        # pgvector 0.8.1 — the same pgvector version as the pg16 image pinned in
+        # infra/docker-compose.security-test.yml, so the PostgreSQL major is the
+        # only variable between the two lanes.
+        image: pgvector/pgvector:0.8.1-pg18@sha256:508c5290cda481d4f5f846446a26e9c1b804766828a394a5861de1b348a18b4c
+        env:
+          POSTGRES_USER: sourcemind_bootstrap
+          POSTGRES_PASSWORD: ${{ secrets.E2E_DB_BOOTSTRAP_PASSWORD }}
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sourcemind_bootstrap -d postgres"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      E2E_DB_BOOTSTRAP_PASSWORD: ${{ secrets.E2E_DB_BOOTSTRAP_PASSWORD }}
+      E2E_DB_OWNER_PASSWORD: ${{ secrets.E2E_DB_OWNER_PASSWORD }}
+      E2E_DB_RUNTIME_PASSWORD: ${{ secrets.E2E_DB_RUNTIME_PASSWORD }}
+      PGHOST: 127.0.0.1
+      PGPORT: "5432"
+      DB: sourcemind_e2e
+      BASELINE_REV: "20250817_0005"
+      # The revision that CONTAINS the defect. The regression must fail here,
+      # and pass at head, or 0008 has not demonstrably fixed anything.
+      PREV_REV: "20260909_0007"
+      OWNERLESS_COMPAT_TEST_ALLOW_DISPOSABLE: "1"
+      OWNERLESS_COMPAT_EXPECTED_DATABASE: sourcemind_e2e
+      EVIDENCE: ${{ github.workspace }}/roundtrip-evidence
+      # The identity apps/web/e2e/seed_base.sql inserts, and a UUID that is
+      # deliberately a member of nothing.
+      MEMBER_ID: "00000000-0000-4000-8000-000000000001"
+      OUTSIDER_ID: "00000000-0000-4000-8000-0000000000ff"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Mask credentials
+        run: |
+          printf '::add-mask::%s\n' "$E2E_DB_BOOTSTRAP_PASSWORD"
+          printf '::add-mask::%s\n' "$E2E_DB_OWNER_PASSWORD"
+          printf '::add-mask::%s\n' "$E2E_DB_RUNTIME_PASSWORD"
+
+      - name: Preflight — credentials present
+        run: |
+          set -euo pipefail
+          fail=0
+          for name in E2E_DB_BOOTSTRAP_PASSWORD E2E_DB_OWNER_PASSWORD E2E_DB_RUNTIME_PASSWORD; do
+            value="${!name:-}"
+            if [ -z "$value" ]; then
+              echo "::error::secret $name is unset or empty"; fail=1
+            else
+              echo "  $name: present (${#value} chars)"
+            fi
+          done
+          exit $fail
+
+      - name: Record image digest and PostgreSQL version
+        env:
+          PGPASSWORD: ${{ secrets.E2E_DB_BOOTSTRAP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE"
+          docker images --digests --no-trunc | grep pgvector | tee "$EVIDENCE/image.txt" || true
+          version=$(psql -U sourcemind_bootstrap -d postgres -Atc "SELECT version()")
+          server=$(psql -U sourcemind_bootstrap -d postgres -Atc "SHOW server_version")
+          printf 'version=%s\nserver_version=%s\n' "$version" "$server" | tee "$EVIDENCE/pgversion.txt"
+          # The whole point of this lane is the PostgreSQL major. If the image
+          # ever moves off 18, this must fail rather than quietly prove nothing.
+          case "$server" in
+            18.*) echo "PostgreSQL 18 confirmed: $server" ;;
+            *) echo "::error::expected PostgreSQL 18, got $server"; exit 1 ;;
+          esac
+
+      # Reuses the provisioning the web integration lane already uses, so both
+      # lanes agree on role shape: neither role is a superuser and neither may
+      # bypass RLS, or every assertion below is vacuously true.
+      - name: Provision roles, database and extensions
+        env:
+          PGPASSWORD: ${{ secrets.E2E_DB_BOOTSTRAP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          psql -U sourcemind_bootstrap -d postgres -v ON_ERROR_STOP=1 \
+               -v owner_password="$E2E_DB_OWNER_PASSWORD" \
+               -v runtime_password="$E2E_DB_RUNTIME_PASSWORD" \
+               -f apps/web/e2e/init_roles.sql
+
+      - name: Assert neither role can bypass RLS
+        env:
+          PGPASSWORD: ${{ secrets.E2E_DB_BOOTSTRAP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          psql -U sourcemind_bootstrap -d postgres -At -v ON_ERROR_STOP=1 -c "
+            SELECT CASE
+              WHEN count(*) = 2 AND bool_and(NOT rolsuper AND NOT rolbypassrls)
+                THEN 'ok'
+              ELSE 'FAIL'
+            END
+            FROM pg_roles WHERE rolname IN ('sourcemind_owner','sourcemind_test');
+          " | tee "$EVIDENCE/roles.txt" | grep -qx ok
+
+      - name: Install API dependencies
+        working-directory: apps/api
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # ── Phase 1: baseline ────────────────────────────────────────────────
+      - name: Upgrade to the pre-0006 baseline and MEASURE its RLS flags
+        working-directory: apps/api
+        env:
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "true"
+          PGPASSWORD: ${{ secrets.E2E_DB_BOOTSTRAP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/${DB}" \
+            alembic upgrade "$BASELINE_REV"
+          bash "$GITHUB_WORKSPACE/.github/scripts/capture_rls_state.sh" "$EVIDENCE/flags_baseline.txt"
+          echo "baseline flags:"; cat "$EVIDENCE/flags_baseline.txt"
+
+      # ── Phase 1b: the ownerless fixture, at the baseline ─────────────────
+      # Loaded at 0005 as the migration owner. It predates 0006/0007 exactly as
+      # a legacy row would: an ownerless workspace with an active admin and an
+      # active member, an owner-backed control, a departed member, a deleted
+      # workspace and an outsider.
+      - name: Load the ownerless-workspace fixture at the baseline
+        env:
+          PGPASSWORD: ${{ secrets.E2E_DB_OWNER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          psql -U sourcemind_owner -d "$DB" -v ON_ERROR_STOP=1 -q                -f apps/api/tests/fixtures/ownerless_workspace_0005.sql
+          echo "ownerless fixture loaded at $BASELINE_REV"
+
+      # ── Phase 1c: the defect, demonstrated ───────────────────────────────
+      # Upgrade ONLY to the previous 0007 definition. The regression must fail
+      # here. If it passes, 0008 is fixing something that was not broken and
+      # this lane is proving nothing.
+      - name: Upgrade to the previous 0007 definition
+        working-directory: apps/api
+        env:
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "true"
+        run: |
+          set -euo pipefail
+          DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/${DB}"             alembic upgrade "$PREV_REV"
+          # Recorded so the gate can tell a SUCCESSFUL migration from one that
+          # errored. A migration command failure is never a passing phase, and
+          # must never be mistaken for the regression failing on purpose.
+          DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/${DB}"             alembic current 2>/dev/null             | grep -oE '[0-9]{8}_[0-9]{4}' | tail -1 > "$EVIDENCE/revision_prev.txt"
+          echo "revision now: $(cat "$EVIDENCE/revision_prev.txt")"
+
+      - name: Regression at the previous 0007 — must FAIL
+        working-directory: apps/api
+        env:
+          OWNERLESS_COMPAT_DATABASE_URL: postgresql+asyncpg://sourcemind_test:${{ secrets.E2E_DB_RUNTIME_PASSWORD }}@127.0.0.1:5432/sourcemind_e2e
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/run_ownerless_regression.sh" prev "$EVIDENCE"
+
+      # ── Phase 2: forward, then seed ──────────────────────────────────────
+      - name: Upgrade to head
+        working-directory: apps/api
+        env:
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "true"
+        run: |
+          set -euo pipefail
+          DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/${DB}" \
+            alembic upgrade head
+
+      - name: Record revision at head, and regress — must PASS
+        working-directory: apps/api
+        env:
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "true"
+          OWNERLESS_COMPAT_DATABASE_URL: postgresql+asyncpg://sourcemind_test:${{ secrets.E2E_DB_RUNTIME_PASSWORD }}@127.0.0.1:5432/sourcemind_e2e
+        run: |
+          set -euo pipefail
+          DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/${DB}"             alembic current 2>/dev/null             | grep -oE '[0-9]{8}_[0-9]{4}' | tail -1 > "$EVIDENCE/revision_head.txt"
+          echo "revision now: $(cat "$EVIDENCE/revision_head.txt")"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_ownerless_regression.sh" head "$EVIDENCE"
+
+      - name: Seed real rows
+        env:
+          PGPASSWORD: ${{ secrets.E2E_DB_BOOTSTRAP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          psql -U sourcemind_bootstrap -d "$DB" -v ON_ERROR_STOP=1 -q -f apps/web/e2e/seed_base.sql
+          psql -U sourcemind_bootstrap -d "$DB" -v ON_ERROR_STOP=1 -q -f apps/web/e2e/seed_conflicts.sql
+          bash "$GITHUB_WORKSPACE/.github/scripts/capture_counts.sh" "$EVIDENCE/counts_seeded.txt"
+          echo "seeded:"; cat "$EVIDENCE/counts_seeded.txt"
+          # A round trip over an empty database would prove nothing about data.
+          grep -qx 'memories=8' "$EVIDENCE/counts_seeded.txt" || {
+            echo "::error::seed did not produce the expected rows"; exit 1; }
+
+      # ── Phase 3: downgrade ───────────────────────────────────────────────
+      - name: Downgrade to the baseline revision
+        working-directory: apps/api
+        env:
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "true"
+        run: |
+          set -euo pipefail
+          DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/${DB}" \
+            alembic downgrade "$BASELINE_REV"
+
+      - name: Capture state after downgrade
+        env:
+          PGPASSWORD: ${{ secrets.E2E_DB_BOOTSTRAP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          bash "$GITHUB_WORKSPACE/.github/scripts/capture_rls_state.sh" "$EVIDENCE/flags_after_downgrade.txt"
+          bash "$GITHUB_WORKSPACE/.github/scripts/capture_counts.sh" "$EVIDENCE/counts_after_downgrade.txt"
+          echo "flags after downgrade:"; cat "$EVIDENCE/flags_after_downgrade.txt"
+          echo "counts after downgrade:"; cat "$EVIDENCE/counts_after_downgrade.txt"
+
+      # ── Phase 4: re-upgrade ──────────────────────────────────────────────
+      # A downgrade that cannot be re-upgraded is not a rollback, it is a
+      # one-way door. This is the step that tells them apart.
+      - name: Re-upgrade to head
+        working-directory: apps/api
+        env:
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "true"
+        run: |
+          set -euo pipefail
+          DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/${DB}" \
+            alembic upgrade head
+
+      - name: Capture state after re-upgrade
+        env:
+          PGPASSWORD: ${{ secrets.E2E_DB_BOOTSTRAP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          bash "$GITHUB_WORKSPACE/.github/scripts/capture_rls_state.sh" "$EVIDENCE/flags_after_reupgrade.txt"
+          bash "$GITHUB_WORKSPACE/.github/scripts/capture_counts.sh" "$EVIDENCE/counts_after_reupgrade.txt"
+          echo "flags after re-upgrade:"; cat "$EVIDENCE/flags_after_reupgrade.txt"
+          echo "counts after re-upgrade:"; cat "$EVIDENCE/counts_after_reupgrade.txt"
+
+      - name: Regression after the full round trip — must PASS again
+        working-directory: apps/api
+        env:
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "true"
+          OWNERLESS_COMPAT_DATABASE_URL: postgresql+asyncpg://sourcemind_test:${{ secrets.E2E_DB_RUNTIME_PASSWORD }}@127.0.0.1:5432/sourcemind_e2e
+        run: |
+          set -euo pipefail
+          DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/${DB}"             alembic current 2>/dev/null             | grep -oE '[0-9]{8}_[0-9]{4}' | tail -1 > "$EVIDENCE/revision_reupgrade.txt"
+          echo "revision now: $(cat "$EVIDENCE/revision_reupgrade.txt")"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_ownerless_regression.sh" reupgrade "$EVIDENCE"
+
+      # ── Phase 5: the restricted role ─────────────────────────────────────
+      # Flags being right is not the same as policies working. This connects as
+      # the role the API actually uses — NOSUPERUSER NOBYPASSRLS — and checks
+      # what it can see with the transaction-local context the app sets.
+      - name: Restricted-role visibility after re-upgrade
+        run: |
+          set -euo pipefail
+          # `SET LOCAL` rather than `SELECT set_config(...)`: set_config is a
+          # SELECT and prints its value, which then has to be told apart from
+          # the count. And the count is extracted by matching a bare numeric
+          # line rather than by position — psql also prints the COMMIT command
+          # tag, so `tail -1` returns "COMMIT". That is not hypothetical: it is
+          # what the first run of this lane did, and the gate caught it.
+          visible() {
+            local sql="$1"
+            PGPASSWORD="$E2E_DB_RUNTIME_PASSWORD" psql -U sourcemind_test -d "$DB"               -At -v ON_ERROR_STOP=1 -c "$sql" | grep -E '^[0-9]+$' | tail -1
+          }
+          member=$(visible "BEGIN;
+            SET LOCAL app.current_user_id = '${MEMBER_ID}';
+            SELECT count(*) FROM memories;
+            COMMIT;")
+          outsider=$(visible "BEGIN;
+            SET LOCAL app.current_user_id = '${OUTSIDER_ID}';
+            SELECT count(*) FROM memories;
+            COMMIT;")
+          nocontext=$(visible "SELECT count(*) FROM memories;")
+          for pair in "member=$member" "outsider=$outsider" "nocontext=$nocontext"; do
+            case "${pair#*=}" in
+              ''|*[!0-9]*) echo "::error::${pair%%=*} did not yield a count: '${pair#*=}'"; exit 1 ;;
+            esac
+          done
+          {
+            echo "member=$member"
+            echo "outsider=$outsider"
+            echo "nocontext=$nocontext"
+          } | tee "$EVIDENCE/restricted.txt"
+
+      # ── The gate ─────────────────────────────────────────────────────────
+      # always(), so a phase that was skipped fails here rather than leaving a
+      # green tick on a job that proved nothing. Every assertion is made by
+      # this script against the captured files; no earlier step's exit code is
+      # taken as evidence on its own.
+      - name: Assert the round trip held
+        if: always()
+        run: python .github/scripts/check_migration_roundtrip.py "$EVIDENCE"
+
+      - name: Upload round-trip evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-roundtrip-pg18-evidence
+          path: roundtrip-evidence/
+          if-no-files-found: error
