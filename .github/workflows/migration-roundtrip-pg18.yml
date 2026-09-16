@@ -37,8 +37,11 @@ on:
     paths:
       - "apps/api/alembic/**"
       - "apps/api/sourcemind/models/**"
+      - "apps/api/tests/fixtures/ownerless_workspace_0005.sql"
+      - "apps/api/tests/integration/test_ownerless_workspace_migration_real_db.py"
       - ".github/workflows/migration-roundtrip-pg18.yml"
       - ".github/scripts/check_migration_roundtrip.py"
+      - ".github/scripts/run_ownerless_regression.sh"
   workflow_dispatch:
 
 permissions:
@@ -84,6 +87,11 @@ jobs:
       PGPORT: "5432"
       DB: sourcemind_e2e
       BASELINE_REV: "20250817_0005"
+      # The revision that CONTAINS the defect. The regression must fail here,
+      # and pass at head, or 0008 has not demonstrably fixed anything.
+      PREV_REV: "20260909_0007"
+      OWNERLESS_COMPAT_TEST_ALLOW_DISPOSABLE: "1"
+      OWNERLESS_COMPAT_EXPECTED_DATABASE: sourcemind_e2e
       EVIDENCE: ${{ github.workspace }}/roundtrip-evidence
       # The identity apps/web/e2e/seed_base.sql inserts, and a UUID that is
       # deliberately a member of nothing.
@@ -183,6 +191,44 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/scripts/capture_rls_state.sh" "$EVIDENCE/flags_baseline.txt"
           echo "baseline flags:"; cat "$EVIDENCE/flags_baseline.txt"
 
+      # ── Phase 1b: the ownerless fixture, at the baseline ─────────────────
+      # Loaded at 0005 as the migration owner. It predates 0006/0007 exactly as
+      # a legacy row would: an ownerless workspace with an active admin and an
+      # active member, an owner-backed control, a departed member, a deleted
+      # workspace and an outsider.
+      - name: Load the ownerless-workspace fixture at the baseline
+        env:
+          PGPASSWORD: ${{ secrets.E2E_DB_OWNER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          psql -U sourcemind_owner -d "$DB" -v ON_ERROR_STOP=1 -q                -f apps/api/tests/fixtures/ownerless_workspace_0005.sql
+          echo "ownerless fixture loaded at $BASELINE_REV"
+
+      # ── Phase 1c: the defect, demonstrated ───────────────────────────────
+      # Upgrade ONLY to the previous 0007 definition. The regression must fail
+      # here. If it passes, 0008 is fixing something that was not broken and
+      # this lane is proving nothing.
+      - name: Upgrade to the previous 0007 definition
+        working-directory: apps/api
+        env:
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "true"
+        run: |
+          set -euo pipefail
+          DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/${DB}"             alembic upgrade "$PREV_REV"
+          # Recorded so the gate can tell a SUCCESSFUL migration from one that
+          # errored. A migration command failure is never a passing phase, and
+          # must never be mistaken for the regression failing on purpose.
+          DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/${DB}"             alembic current 2>/dev/null             | grep -oE '[0-9]{8}_[0-9]{4}' | tail -1 > "$EVIDENCE/revision_prev.txt"
+          echo "revision now: $(cat "$EVIDENCE/revision_prev.txt")"
+
+      - name: Regression at the previous 0007 — must FAIL
+        working-directory: apps/api
+        env:
+          OWNERLESS_COMPAT_DATABASE_URL: postgresql+asyncpg://sourcemind_test:${{ secrets.E2E_DB_RUNTIME_PASSWORD }}@127.0.0.1:5432/sourcemind_e2e
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/run_ownerless_regression.sh" prev "$EVIDENCE"
+
       # ── Phase 2: forward, then seed ──────────────────────────────────────
       - name: Upgrade to head
         working-directory: apps/api
@@ -194,6 +240,19 @@ jobs:
           set -euo pipefail
           DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/${DB}" \
             alembic upgrade head
+
+      - name: Record revision at head, and regress — must PASS
+        working-directory: apps/api
+        env:
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "true"
+          OWNERLESS_COMPAT_DATABASE_URL: postgresql+asyncpg://sourcemind_test:${{ secrets.E2E_DB_RUNTIME_PASSWORD }}@127.0.0.1:5432/sourcemind_e2e
+        run: |
+          set -euo pipefail
+          DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/${DB}"             alembic current 2>/dev/null             | grep -oE '[0-9]{8}_[0-9]{4}' | tail -1 > "$EVIDENCE/revision_head.txt"
+          echo "revision now: $(cat "$EVIDENCE/revision_head.txt")"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_ownerless_regression.sh" head "$EVIDENCE"
 
       - name: Seed real rows
         env:
@@ -253,6 +312,19 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/scripts/capture_counts.sh" "$EVIDENCE/counts_after_reupgrade.txt"
           echo "flags after re-upgrade:"; cat "$EVIDENCE/flags_after_reupgrade.txt"
           echo "counts after re-upgrade:"; cat "$EVIDENCE/counts_after_reupgrade.txt"
+
+      - name: Regression after the full round trip — must PASS again
+        working-directory: apps/api
+        env:
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "true"
+          OWNERLESS_COMPAT_DATABASE_URL: postgresql+asyncpg://sourcemind_test:${{ secrets.E2E_DB_RUNTIME_PASSWORD }}@127.0.0.1:5432/sourcemind_e2e
+        run: |
+          set -euo pipefail
+          DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/${DB}"             alembic current 2>/dev/null             | grep -oE '[0-9]{8}_[0-9]{4}' | tail -1 > "$EVIDENCE/revision_reupgrade.txt"
+          echo "revision now: $(cat "$EVIDENCE/revision_reupgrade.txt")"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_ownerless_regression.sh" reupgrade "$EVIDENCE"
 
       # ── Phase 5: the restricted role ─────────────────────────────────────
       # Flags being right is not the same as policies working. This connects as

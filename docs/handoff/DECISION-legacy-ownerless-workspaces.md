@@ -1,9 +1,9 @@
 # Legacy ownerless workspaces — superseded by runtime reproduction
 
-**Status:** the conclusion in every earlier version of this document was wrong.
-Codex's runtime reproduction refutes it, and this version states the reproduced
-result instead. The earlier reasoning is described only to make the error
-traceable, not to defend it.
+**Status:** RESOLVED in code. Migration `20260916_0008` (Codex, `19d43bd`,
+cherry-picked as `a5f7c56`) implements the correction, with a restricted-role
+database regression. The conclusion in every earlier version of this document
+was wrong; the earlier reasoning is kept only to make the error traceable.
 
 **Scope:** a migration compatibility defect and its correction. Organization
 features remain deferred. No production change is proposed or approved.
@@ -65,10 +65,12 @@ the same error I had been correcting in other people's reasoning throughout this
 branch — concluding about a system from one layer's state — and a static read
 could not have caught it. Only running the migrations did.
 
-## 3. The correction, and what it does not do
+## 3. The correction, as implemented
 
-Codex's smallest correction keeps the access function and role checks intact and
-makes the lifecycle row independent of creator provenance:
+`20260916_0008` — "Preserve active-member access for legacy ownerless
+workspaces" — is a **forward migration for databases already at the previous
+0007 definition**. It keeps the access function and role checks intact and makes
+the lifecycle row independent of creator provenance:
 
 1. `sm_workspace_bootstraps.created_by_user_id` becomes nullable.
 2. One lifecycle row for **every** workspace, preserving `NULL` where no
@@ -80,9 +82,29 @@ makes the lifecycle row independent of creator provenance:
    **nobody gains an ownership-claim path**.
 
 This restores access **without assigning ownership**, without promoting any
-member, and without inventing a creator. The simulation confirmed it: the
-legitimate admin regained `1 / 1 / 1` while cross-workspace visibility stayed
-`0`.
+member, and without inventing a creator.
+
+Verified twice over. Codex's transcript on PostgreSQL 16.15 shows the regression
+failing at the previous 0007, passing after 0008, failing again after
+downgrading to 0007, and passing after a full downgrade to 0005 and re-upgrade —
+with row counts `1/6/3/5/3` unchanged throughout. The PostgreSQL 18 lane now
+runs the same sequence on PostgreSQL 18 per run.
+
+### One phrase worth stating precisely
+
+The transcript's "0008 → 0007 downgrade: regression failed again" is easy to
+misread. **The downgrade did not fail.** Alembic reported
+`Running downgrade 20260916_0008 -> 20260909_0007` followed by
+`migrations complete`, the revision was confirmed at `20260909_0007`, and row
+counts were preserved. What failed was the *regression test*, deliberately —
+that failure is the old defect being reproduced, which is what proves the
+downgrade is exact.
+
+A downgrade whose alembic command actually errored would be a **failing**
+rollback and must never be recorded as a passing one. The CI gate enforces the
+distinction: it requires the recorded post-migration revision to match the
+expected target, independently of the test result, and it refuses to accept an
+`error` or a `skipped` node as a reproduction of the defect.
 
 ## 4. The inventory — no production lookup needed
 

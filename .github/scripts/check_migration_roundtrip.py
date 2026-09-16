@@ -28,6 +28,7 @@ Usage: check_migration_roundtrip.py <evidence-dir>
 from __future__ import annotations
 
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 # Columns the 0007 downgrade drops by design, so their data is expected to be
@@ -35,8 +36,39 @@ from pathlib import Path
 # checked. Listed here so the distinction is explicit rather than assumed.
 DROPPED_BY_DESIGN = ("workspaces.created_by_user_id", "workspace_members.status")
 
+# Per-phase expectations for the ownerless regression.
+#
+# The critical distinction, and why this is a table and not a boolean: at the
+# previous 0007 the node is SUPPOSED to fail, because that failure IS the
+# compatibility defect. But a node that could not run (`error`) or was never
+# executed (`skipped`) also produces "not passed", and neither is evidence of
+# anything.  Only an executed assertion failure counts as a reproduction.
+#
+# The same reasoning guards the rollback. A downgrade that SUCCEEDS and then
+# reproduces the defect is a passing rollback. A downgrade whose alembic
+# command failed is a failing one — and that is caught by the recorded
+# revision, not by the test result, because a crashed migration leaves the test
+# failing for reasons that have nothing to do with the defect.
+REGRESSION_PHASES = {
+    "prev": ("failure", "the defect must reproduce at the previous 0007"),
+    "head": ("passed", "0008 must fix it at head"),
+    "reupgrade": ("passed", "and it must survive the full round trip"),
+}
+
+EXPECTED_REVISIONS = {
+    "prev": "20260909_0007",
+    "head": "20260916_0008",
+    "reupgrade": "20260916_0008",
+}
+
 REQUIRED = {
     "pgversion.txt": "PostgreSQL version record",
+    "revision_prev.txt": "revision after upgrading to the previous 0007",
+    "revision_head.txt": "revision at head",
+    "revision_reupgrade.txt": "revision after the round trip",
+    "regression_prev.xml": "regression result at the previous 0007",
+    "regression_head.xml": "regression result at head",
+    "regression_reupgrade.xml": "regression result after the round trip",
     "roles.txt": "role restriction check",
     "flags_baseline.txt": "RLS flags measured at the baseline revision",
     "counts_seeded.txt": "row counts after seeding",
@@ -164,6 +196,66 @@ def main() -> int:
             f"a connection with no RLS context saw {nocontext} memories — the "
             "policy is failing open"
         )
+
+    # ── 5. the ownerless regression, phase by phase ───────────────────────
+    print("")
+    print("ownerless-workspace regression:")
+    for phase, (expected, why) in REGRESSION_PHASES.items():
+        report = ev / ("regression_%s.xml" % phase)
+        try:
+            suite = ET.parse(report).getroot()
+        except ET.ParseError as exc:
+            failures.append("regression report for %r is unreadable: %s" % (phase, exc))
+            continue
+        cases = list(suite.iter("testcase"))
+        if len(cases) != 1:
+            failures.append(
+                "regression %r: expected exactly 1 test case, report has %d — "
+                "the node was not collected as expected" % (phase, len(cases))
+            )
+            continue
+        state = next(
+            (k.tag for k in cases[0] if k.tag in {"skipped", "failure", "error"}),
+            "passed",
+        )
+        ok = state == expected
+        print("  %-10s %-8s (expected %-8s) %s  — %s"
+              % (phase, state, expected, "ok" if ok else "MISMATCH", why))
+        if ok:
+            continue
+        if state == "skipped":
+            failures.append(
+                "regression %r was SKIPPED, not executed — a skipped node is "
+                "never evidence; check the OWNERLESS_COMPAT_* configuration" % phase
+            )
+        elif state == "error" and expected == "failure":
+            failures.append(
+                "regression %r ERRORED rather than failing its assertions. That "
+                "is a broken harness, not a reproduction of the defect, and must "
+                "not be counted as one" % phase
+            )
+        else:
+            failures.append(
+                "regression %r: expected %s, got %s — %s" % (phase, expected, state, why)
+            )
+
+    # ── 6. the migrations themselves SUCCEEDED ────────────────────────────
+    # Distinct from any test result. A migration command that failed can never
+    # be a passing phase, however the regression behaved afterwards.
+    print("")
+    print("revisions reached (a migration command failure is never a pass):")
+    for phase, expected_rev in EXPECTED_REVISIONS.items():
+        actual = (ev / ("revision_%s.txt" % phase)).read_text(encoding="utf-8").strip()
+        ok = actual == expected_rev
+        print("  %-10s %-16s (expected %s) %s"
+              % (phase, actual or "<none>", expected_rev, "ok" if ok else "MISMATCH"))
+        if not ok:
+            failures.append(
+                "after the %r migration the database is at %s, expected %s. The "
+                "migration command did not land where it should have, so this "
+                "phase cannot count as a successful migration however the "
+                "regression behaved" % (phase, actual or "<nothing recorded>", expected_rev)
+            )
 
     print(f"\nnote: {', '.join(DROPPED_BY_DESIGN)} are dropped by the 0007/0006 "
           "downgrades by design, so column data there is not expected to "
