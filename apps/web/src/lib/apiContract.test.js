@@ -12,7 +12,7 @@
 import fs from "fs";
 import path from "path";
 
-import { realApi } from "./realApi";
+import { realApi, resetIdentityScopedCaches } from "./realApi";
 import { setTokenGetter } from "./authToken";
 
 const SRC = path.resolve(__dirname, "..");
@@ -40,6 +40,7 @@ beforeEach(() => {
 
 afterEach(() => {
     delete global.fetch;
+    resetIdentityScopedCaches();
     jest.restoreAllMocks();
 });
 
@@ -130,6 +131,104 @@ describe("memory version history", () => {
             status: 429,
             retryAfterSeconds: 30,
         });
+    });
+});
+
+/**
+ * Route by URL, because creating a memory makes TWO requests: the workspace
+ * lookup and then the create. A single canned body would hand the lookup a job
+ * payload and it would fail before the request under test was ever made.
+ */
+function captureRouted({ workspaces, created }) {
+    const calls = [];
+    global.fetch = jest.fn(async (url, init) => {
+        const u = String(url);
+        calls.push({ url: u, init });
+        const isLookup = /\/v1\/workspaces$/.test(u.split("?")[0]);
+        const body = isLookup ? workspaces : created;
+        return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            headers: { get: () => null },
+            text: async () => JSON.stringify(body),
+        };
+    });
+    return calls;
+}
+
+const WORKSPACES = { data: [{ id: "11111111-1111-4111-8111-111111111111", name: "W" }] };
+const CREATED = { data: { job_id: "j-1", status: "queued" } };
+
+describe("creating a memory matches the route's actual signature", () => {
+    /**
+     * POST /v1/memories declares, in memories.py:
+     *
+     *     workspace_id: UUID = Query(...)          <- REQUIRED query parameter
+     *     idempotency_key: IdempotencyKey          <- REQUIRED header, UUID v4
+     *
+     * The adapter sent workspace_id in the BODY and no header at all, so every
+     * ingestion attempt was rejected before the handler ran: FastAPI answers
+     * 422 for the missing query parameter, and require_idempotency_key raises
+     * for the missing header. Neither failure is visible from reading the
+     * adapter, which looks perfectly reasonable on its own — the only way to
+     * catch it is to pin the request against the route's real signature.
+     */
+    test("workspace_id goes in the QUERY STRING, not the body", async () => {
+        resetIdentityScopedCaches();
+        const calls = captureRouted({ workspaces: WORKSPACES, created: CREATED });
+        await realApi.createMemory({ content: "hello" });
+
+        expect(calls).toHaveLength(2); // workspace lookup, then the create
+        const create = calls[calls.length - 1];
+        const url = new URL(create.url, "http://localhost");
+
+        expect(url.searchParams.get("workspace_id")).toMatch(
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+        );
+        const sent = JSON.parse(create.init.body);
+        expect(sent).not.toHaveProperty("workspace_id");
+        expect(sent.content).toBe("hello");
+    });
+
+    test("an Idempotency-Key header is sent, and it is a UUID v4", async () => {
+        resetIdentityScopedCaches();
+        const calls = captureRouted({ workspaces: WORKSPACES, created: CREATED });
+        await realApi.createMemory({ content: "hello" });
+
+        const create = calls[calls.length - 1];
+        const key = create.init.headers["Idempotency-Key"];
+        // require_idempotency_key parses with uuid.UUID(key, version=4), and
+        // rejects the request outright when the header is absent.
+        expect(key).toMatch(
+            /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+        );
+    });
+
+    test("each call carries a DIFFERENT key", async () => {
+        // A fixed key would make the second ingestion a replay of the first.
+        resetIdentityScopedCaches();
+        const calls = captureRouted({ workspaces: WORKSPACES, created: CREATED });
+        await realApi.createMemory({ content: "one" });
+        await realApi.createMemory({ content: "two" });
+
+        const keys = calls
+            .filter((c) => c.init?.method === "POST")
+            .map((c) => c.init.headers["Idempotency-Key"]);
+        expect(keys).toHaveLength(2);
+        expect(keys[0]).not.toBe(keys[1]);
+    });
+
+    test("an explicit workspace_id is honoured and still not sent in the body", async () => {
+        resetIdentityScopedCaches();
+        const calls = captureRouted({ workspaces: WORKSPACES, created: CREATED });
+        const explicit = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        await realApi.createMemory({ content: "x", workspace_id: explicit });
+
+        const create = calls[calls.length - 1];
+        expect(new URL(create.url, "http://localhost").searchParams.get("workspace_id"))
+            .toBe(explicit);
+        expect(JSON.parse(create.init.body)).not.toHaveProperty("workspace_id");
     });
 });
 
