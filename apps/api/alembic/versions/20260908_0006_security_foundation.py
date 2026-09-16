@@ -241,6 +241,7 @@ def downgrade() -> None:
     _restore_legacy_memory_policy("attribution_edits", "memory_id")
     _restore_legacy_memory_policy("memory_relations", "source_memory_id")
 
+    op.execute("ALTER TABLE workspace_members NO FORCE ROW LEVEL SECURITY")
     for table in _NEW_RLS_TABLES:
         op.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
 
