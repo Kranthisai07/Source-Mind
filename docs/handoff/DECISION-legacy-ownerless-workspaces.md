@@ -1,226 +1,157 @@
-# The eight legacy ownerless workspaces — corrected
+# Legacy ownerless workspaces — superseded by runtime reproduction
 
-**Status:** an earlier version of this document was wrong on two substantive
-points and used one misleading word. Those are corrected below rather than
-quietly edited out, because the wrong version argued for a production write
-that the code does not justify.
+**Status:** the conclusion in every earlier version of this document was wrong.
+Codex's runtime reproduction refutes it, and this version states the reproduced
+result instead. The earlier reasoning is described only to make the error
+traceable, not to defend it.
 
-**Scope:** a one-time data question. Not a tenancy redesign, not an
-authorization change, not a SaaS feature. Organization-level features remain
-deferred and no production ownership change is approved or proposed for
-execution.
+**Scope:** a migration compatibility defect and its correction. Organization
+features remain deferred. No production change is proposed or approved.
 
-## 1. Corrections
+## 1. The reproduced finding
 
-### 1.1 "Reachable by nobody" — WRONG
+An ownerless workspace with an **active admin** becomes **inaccessible** under
+the restricted runtime role after `20260909_0007`.
 
-I claimed an ownerless workspace becomes inaccessible to everyone. It does not.
-Access is gated on **active membership of any role**, never on ownership.
+Codex's reproduction (`D:\SourceMind-Operations\migration-0007-ownerless-repro-result.txt`),
+PostgreSQL 16.15, synthetic fixture, restricted role `compat_runtime` reporting
+`NOSUPERUSER`, `NOBYPASSRLS`, and ownership of zero protected tables:
 
-`sm_workspace_isolation`, created in `20260908_0006`:
+| Stage | Ownerless workspace, active admin | Owner-backed control |
+|---|---|---|
+| At `20250817_0005` | workspace/membership/document **1 / 1 / 1** | — |
+| After `0005 → 0006 → 0007` | **0 / 0 / 0** | 1 / 1 / 1 |
+| Cross-workspace, both | 0 | 0 |
+| After the disposable correction | **1 / 1 / 1** | unchanged |
 
-```sql
-CREATE POLICY sm_workspace_isolation ON workspaces
-USING (
-    deleted_at IS NULL
-    AND ( id = <app.current_workspace_id>
-          OR EXISTS (SELECT 1 FROM workspace_members AS own_membership
-                     WHERE own_membership.workspace_id = workspaces.id
-                       AND own_membership.user_id = <app.current_user_id>
-                       AND own_membership.status = 'active'
-                       AND own_membership.departed_at IS NULL) ) )
-```
+Isolation held throughout — cross-workspace visibility was `0` at every stage,
+including after the correction.
 
-The same shape governs the data tables via `_active_access(...)`: it tests
-`status = 'active'` and `departed_at IS NULL`. **Neither predicate mentions
-`role`.**
+## 2. Why I got it wrong
 
-The API layer agrees. Every workspace-scoped route calls
-`require_workspace_member` — `analytics.py:43,61,84,108`, `conflicts.py:57`,
-`workspaces.py:212,252` — which asserts membership, not rank.
-
-**So: an existing active admin or member of an ownerless workspace retains
-full access to it after 0007, including its memories and analytics.** Role
-matters only for operations gated on `require_workspace_permission`, such as
-`DELETE /v1/workspaces/{id}/members/{user_id}` requiring `ADMINISTER` — and an
-active admin satisfies that without an owner existing.
-
-### 1.2 "Setting `created_by_user_id` lets them claim ownership through the product" — WRONG
-
-I claimed the one-row repair "re-arms the existing bootstrap path". It does
-not, because there is no route on the other end of that path.
-
-`sm_can_bootstrap_workspace_owner` is an **RLS policy predicate**. It permits
-an `INSERT` into `workspace_members`. It does not perform one.
-
-The only route in the codebase that inserts a membership row is
-`POST /v1/workspaces` (`workspaces.py:97`), which adds the *creator* as owner
-at creation time:
+I claimed access required only active membership, citing `sm_workspace_isolation`
+from `20260908_0006`. **`20260909_0007` drops that policy** — line 408:
 
 ```python
-membership = WorkspaceMember(
-    workspace_id=workspace.id, user_id=current_user.user_id,
-    role=WorkspaceRole.OWNER,
-)
+op.execute("DROP POLICY IF EXISTS sm_workspace_isolation ON workspaces")
 ```
 
-There is **no route that adds a member to an existing workspace**, and
-therefore none that claims ownership of one. `DELETE .../members/{user_id}`
-revokes; nothing grants.
-
-**So: setting `created_by_user_id` would grant a database permission that no
-API caller can exercise.** As a repair it accomplishes nothing on its own. The
-only ways to create that membership today are a direct database write or a new
-route — and a new route is deferred SaaS work.
-
-### 1.3 Is an owner technically required? — NO. It is a proposed operational rule.
-
-Nothing in the schema, the policies, or the API requires a workspace to have an
-owner. There is no constraint enforcing it, and `20260909_0007`'s backfill
-tolerates its absence by leaving `created_by_user_id` NULL.
-
-A workspace with an active admin and no owner is fully functional for read,
-write and member administration. Wanting a named accountable owner per
-workspace is a **governance preference**, and I presented it as a technical
-necessity. It was not one.
-
-### 1.4 "Retire to archival" — WRONG WORD, dropped
-
-Leaving a workspace untouched archives nothing. `deleted_at` stays NULL, the
-row stays live, it continues to appear to its active members and its data
-continues to be served. "Archival" implied a state transition that no code
-performs. The accurate phrase is **"leave unchanged"**, and I have stopped
-calling it anything else.
-
-## 2. The recorded identifier, and the Run 4 reconciliation
-
-**Correction to my own correction.** I first wrote that no production workspace
-UUID exists anywhere in this repository. That was wrong — I had searched only
-`*.md`. A wider search found one:
-
-`evaluation/data/sourcemind_id_map.json`
-
-```
-workspace_id               451e69b4-ed93-4615-9f32-7f747853fce6
-memory_to_ground_truth     1156 memory UUIDs
-ground_truth_artifact_type 300 entries
-```
-
-This is a **real production workspace UUID** — the evaluation workspace — and it
-is the only one recorded. The remaining seven of the eight have no identifier
-anywhere in the repository.
-
-### Reconciling the two Run 4 entries
-
-They are two different kinds of object that share a label, and they do **not**
-agree numerically:
-
-| Entry | Source | Figure |
-|---|---|---|
-| Evaluation **run 4** | `evaluation/data/report_run4.md`, generated 2026-09-03 | 300 ground-truth items; recall@5 0.703 |
-| Workspace **`Eval Run 4`** | `DECISIONS.md:859,863` (D-007, 2026-09-07) | 1167 current memories, 2 contributors |
-| Memory→ground-truth map | `sourcemind_id_map.json` | **1156** memory UUIDs, workspace `451e69b4-…` |
-
-So one is a benchmark execution and its report; the other is the tenant row the
-benchmark's data lives in. The map ties the workspace UUID to 1156 memories,
-while D-007 counted 1167 current memories in the workspace named `Eval Run 4`
-four days later — **a difference of 11**.
-
-`451e69b4-ed93-4615-9f32-7f747853fce6` is therefore the **strong candidate** for
-the `Eval Run 4` workspace, on three grounds: it is the evaluation workspace, it
-holds the evaluation corpus, and 1156 is within 1% of 1167. It is **not
-confirmed**, because the counts differ and nothing in the repository maps a
-workspace UUID to a workspace *name*. Confirming it requires one read-only
-lookup of that id against production, which I have not run.
-
-I am not asserting the identification, and I have not invented an id for any of
-the other seven, because none is recorded.
-
-## 3. The decision, correctly narrowed
-
-Given §1.1, membership is what determines access, so the question is not about
-ownership at all:
-
-> **Does any of the eight workspaces have zero active members?**
-
-- **Workspaces with at least one active member:** nothing is wrong with them.
-  No repair, no decision, no production write. They work.
-- **Workspaces with zero active members:** unreachable through the API, and —
-  per §1.2 — with no in-product remedy, because no route can add a member.
-  For these, and only these, there is a real choice:
-  1. leave unchanged, and read the data by direct database access if it is
-     ever wanted; or
-  2. a one-time direct database write creating a membership.
-
-The read-only query that settles it, which I have not run because I have no
-production access:
+and replaces it with `sm_workspace_select`, which calls
+`sm_has_active_workspace_access`:
 
 ```sql
-SELECT w.id, w.name,
-       count(m.id) FILTER (WHERE m.status = 'active'
-                             AND m.departed_at IS NULL) AS active_members,
-       count(m.id) FILTER (WHERE m.role = 'owner' AND m.status = 'active'
-                             AND m.departed_at IS NULL) AS active_owners
-FROM workspaces AS w
-LEFT JOIN workspace_members AS m ON m.workspace_id = w.id
-WHERE w.deleted_at IS NULL
-GROUP BY w.id, w.name
-ORDER BY w.name;
+SELECT EXISTS (
+    SELECT 1
+    FROM public.sm_workspace_access_grants AS access_grant
+    JOIN public.sm_workspace_bootstraps AS bootstrap          -- INNER JOIN
+      ON bootstrap.workspace_id = access_grant.workspace_id
+    WHERE access_grant.workspace_id = target_workspace_id
+      AND access_grant.user_id = <app.current_user_id>
+      AND access_grant.role = ANY(allowed_roles)
+      AND access_grant.status = 'active'
+      AND access_grant.departed_at IS NULL
+      AND bootstrap.deleted_at IS NULL )
 ```
 
-`active_members` is the column that matters. `active_owners` is informational.
+`sm_workspace_access_grants` is populated from **every** membership.
+`sm_workspace_bootstraps` is populated only
+`WHERE created_by_user_id IS NOT NULL`. The join between them is an **inner**
+join, so a workspace with no creator has no bootstrap row, and a perfectly
+valid active grant authorizes nothing.
 
-For the one workspace that does have a recorded id, the narrower lookup is:
+**I analysed the policy `0006` installs and never checked what `0007` replaced
+it with.** I quoted, as evidence, a policy that does not exist at head. That is
+the same error I had been correcting in other people's reasoning throughout this
+branch — concluding about a system from one layer's state — and a static read
+could not have caught it. Only running the migrations did.
 
-```sql
-SELECT w.id, w.name, w.deleted_at,
-       count(m.id) FILTER (WHERE m.status = 'active'
-                             AND m.departed_at IS NULL) AS active_members
-FROM workspaces AS w
-LEFT JOIN workspace_members AS m ON m.workspace_id = w.id
-WHERE w.id = '451e69b4-ed93-4615-9f32-7f747853fce6'
-GROUP BY w.id, w.name, w.deleted_at;
-```
+## 3. The correction, and what it does not do
 
-That single query also settles whether this id is the workspace D-007 saw as `Eval Run 4`, by returning its name.
+Codex's smallest correction keeps the access function and role checks intact and
+makes the lifecycle row independent of creator provenance:
 
-**On the evaluation data specifically:** D-007 recorded that a member still
-received `Eval Run 4`'s full contents through the deployed API *after* the
-isolation fix. If that membership is still active, that workspace already has a
-reader and needs nothing. No data is at risk in any case — these rows are
-untouched by migration, and direct database access reads them regardless.
+1. `sm_workspace_bootstraps.created_by_user_id` becomes nullable.
+2. One lifecycle row for **every** workspace, preserving `NULL` where no
+   creator is known.
+3. `sm_sync_workspace_bootstrap()` upserts unconditionally, including
+   creator-null rows.
+4. Owner-bootstrap authorization is **unchanged**:
+   `bootstrap.created_by_user_id = target_user_id` stays false for `NULL`, so
+   **nobody gains an ownership-claim path**.
 
-## 4. For Codex — one reconciled technical conclusion
+This restores access **without assigning ownership**, without promoting any
+member, and without inventing a creator. The simulation confirmed it: the
+legitimate admin regained `1 / 1 / 1` while cross-workspace visibility stayed
+`0`.
 
-The questions I could answer from code are answered above. Two remain, and both
-are yours:
+## 4. The inventory — no production lookup needed
 
-1. **Confirm or refute §1.1 and §1.2** against your reading. My conclusion is
-   that active membership alone grants access, and that no route can create a
-   membership on an existing workspace. If either is wrong, the narrowing in §3
-   collapses and should be redone.
-2. **The inventory.** One production workspace UUID is recorded —
-   `451e69b4-ed93-4615-9f32-7f747853fce6`, in
-   `evaluation/data/sourcemind_id_map.json`. The other seven are not recorded
-   anywhere in this repository; they exist in the record only as D-007's
-   aggregate "8 live workspaces". If an inventory exists outside the repo, it
-   belongs in the reconciliation. Confirming that the recorded id is the
-   workspace named `Eval Run 4` needs one read-only lookup.
+`D:\SourceMind-Operations\railway-rehearsal\restored-0005-inventory.txt`, taken
+from the verified restore at `20250817_0005`. Columns are workspace id, members,
+owners, documents, memories:
 
-## 5. Deferred — recorded, not implemented
+| Workspace | Members | Owners | Docs | Memories |
+|---|---|---|---|---|
+| `00000000-0000-4000-8000-000000000010` | 1 | 0 | 399 | 1233 |
+| `1f83a7aa-3cb2-48c5-b444-a4d6719b7e55` | **0** | 0 | 2 | 5 |
+| `451e69b4-ed93-4615-9f32-7f747853fce6` | 2 | 0 | 300 | 1211 |
+| `4820b5df-f746-4b7a-93ef-ec07224222d7` | 1 | 0 | 6 | 33 |
+| `56507884-4646-4d20-99a8-16a03dc2315e` | 1 | 0 | 3 | 7 |
+| `63102ed1-4f6d-4776-8c03-9aaa39ccfafe` | 2 | 0 | 1 | 13 |
+| `6b5e6184-1295-439d-bddb-d80979f45a7f` | 1 | 0 | 300 | 1158 |
+| `a054135d-89f2-4059-8f3e-ca2eeb892040` | 1 | 0 | 300 | 1107 |
 
-Unchanged and still out of scope: **organization-level administration** (an
-`organizations` table exists; every authorization decision is workspace-scoped),
-**invitation workflow** (no route creates a pending membership), and
-**ownership transfer** (nothing reassigns ownership).
+Totals `8 | 9 | 1311 | 4767`. **All eight have zero owners**, confirming the
+premise I had listed as unverified. Seven have at least one member; exactly one,
+`1f83a7aa-…`, has **none**.
 
-§1.2 sharpens why these matter: the absence of any membership-granting route is
-not only a gap in future features, it is the reason an
-active-member-less workspace has no in-product remedy today.
+This supersedes the production queries earlier versions of this document asked
+for. They are not needed and should not be run.
 
-## 6. Unchanged by this document
+### The evaluation workspace
 
-Workspace-scoped authorization, isolation, and the CI evidence. This is
-documentation only — no code changed, so nothing is re-run and the seven green
-workflows on `c2937b3` stand. PR #5 remains unmerged; production changes and
-deployment remain pending approval.
+`451e69b4-ed93-4615-9f32-7f747853fce6` is the workspace id recorded in
+`evaluation/data/sourcemind_id_map.json`, which maps 1156 memory UUIDs to 300
+ground-truth artifacts. The inventory shows it holding 300 documents and 1211
+memories with 2 members.
+
+Worth flagging rather than glossing: **three workspaces hold 300 documents**
+(`451e69b4`, `6b5e6184`, `a054135d`), so document count alone does not identify
+the evaluation corpus. The id map is what ties `451e69b4` to the evaluation
+specifically. Nothing available maps any id to the *name* `Eval Run 4`, so I
+still do not assert that identification — and nothing now depends on it.
+
+## 5. What actually needs deciding
+
+The migration correction handles seven of the eight. It is not a data decision
+at all; it is a code fix, and it restores the access those workspaces' existing
+members already legitimately had.
+
+That leaves **one** genuine residual: `1f83a7aa-3cb2-48c5-b444-a4d6719b7e55`,
+with **zero members** — 2 documents, 5 memories. No migration fix reaches it,
+because there is no member whose access could be restored. Its options are
+unchanged and small: leave it as it is, or read its 2 documents by direct
+database access if anyone ever wants them. Given the volume, this is close to a
+non-question, and it needs no production write.
+
+**No owner assignment is required for any of the eight.** The rehearsal's
+owner mapping to `cf9ddf79-…` applied to the **restored copy only** and is not
+proposed for production.
+
+## 6. Corroboration worth recording
+
+The rehearsal independently found the same `0006` downgrade defect that
+`417eb6e` fixed — `workspace_members` left with `FORCE ROW LEVEL SECURITY`
+after downgrade, every other table receiving `NO FORCE`. Two separate routes to
+the same finding, and the PostgreSQL 18 CI lane now guards it.
+
+The rehearsal also confirms production runs **PostgreSQL 18.6** — the dump was
+streamed directly from it. The CI lane runs 18.2 (see the round-trip workflow);
+that delta is stated in the release notes and unchanged by this document.
+
+## 7. Deferred, unchanged
+
+Organization-level administration, invitation workflow, and ownership transfer
+remain out of scope and unimplemented. §2 sharpens why the third matters: the
+absence of any membership-granting route is why a zero-member workspace has no
+in-product remedy.
