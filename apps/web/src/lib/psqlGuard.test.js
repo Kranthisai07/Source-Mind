@@ -188,19 +188,41 @@ describe("how psql is actually invoked", () => {
         expect(calls[0].file).toBe("/usr/lib/postgresql/16/bin/psql");
     });
 
-    test("wsl mode assigns the password via env, not inside a shell string", () => {
+    test("wsl mode keeps the password out of BOTH processes' argv", () => {
         const { calls, exec } = recorder();
         createPsql({ ...BASE, E2E_PSQL_MODE: "wsl" }, exec)("SELECT 1");
 
         expect(calls[0].file).toBe("wsl.exe");
-        // `wsl -e env NAME=value psql …` — no `bash -lc`, so the password is
-        // never part of a string a shell will re-parse. The old harness
-        // interpolated a command substitution into exactly such a string.
-        expect(calls[0].argv.slice(0, 3)).toEqual([
-            "-e", "env", `PGPASSWORD=${BASE.E2E_PG_PASSWORD}`,
-        ]);
+        // The earlier version passed `wsl -e env PGPASSWORD=<value> psql …`,
+        // which put the secret in wsl.exe's own argument array — readable by
+        // Windows-side process inspection — while a comment claimed it was
+        // not in any command line. This asserts the absence instead.
+        expect(calls[0].argv.join(" ")).not.toContain(BASE.E2E_PG_PASSWORD);
+        expect(calls[0].argv).not.toContain("env");
         expect(calls[0].argv).not.toContain("bash");
         expect(calls[0].argv).toContain("SELECT 1");
+    });
+
+    test("wsl mode hands the password over through WSLENV", () => {
+        const { calls, exec } = recorder();
+        createPsql({ ...BASE, E2E_PSQL_MODE: "wsl" }, exec)("SELECT 1");
+
+        // In the child's environment, and marked for import into the guest.
+        expect(calls[0].env.PGPASSWORD).toBe(BASE.E2E_PG_PASSWORD);
+        expect(calls[0].env.WSLENV).toContain("PGPASSWORD/u");
+    });
+
+    test("an existing WSLENV is appended to, not overwritten", () => {
+        const { calls, exec } = recorder();
+        const previous = process.env.WSLENV;
+        process.env.WSLENV = "EXISTING/p";
+        try {
+            createPsql({ ...BASE, E2E_PSQL_MODE: "wsl" }, exec)("SELECT 1");
+        } finally {
+            if (previous === undefined) delete process.env.WSLENV;
+            else process.env.WSLENV = previous;
+        }
+        expect(calls[0].env.WSLENV).toBe("EXISTING/p:PGPASSWORD/u");
     });
 
     test("output is trimmed and CR-stripped, so Windows line endings do not leak", () => {

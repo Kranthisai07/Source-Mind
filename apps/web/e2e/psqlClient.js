@@ -15,9 +15,9 @@
  *      database name that looks disposable, and it refuses anything that looks
  *      like production regardless of the flag.
  *
- *   2. **Secret redaction.** The password never appears in argv — it is passed
- *      to the child through PGPASSWORD in its environment, so it cannot show up
- *      in a process listing. Anything thrown from here is scrubbed, because a
+ *   2. **Secret redaction.** The password never appears in argv — in EITHER
+ *      mode, and in neither process when WSL is involved — so it cannot show
+ *      up in a process listing. It travels through the environment only. Anything thrown from here is scrubbed, because a
  *      psql failure otherwise echoes the connection it attempted.
  *
  * Configuration, all via environment:
@@ -136,15 +136,25 @@ function createPsql(env = process.env, exec = execFileSync) {
             // PGPASSWORD in the child's environment, never in argv.
             childEnv = { ...process.env, PGPASSWORD: cfg.password };
         } else {
-            // WSL: the password crosses as an environment variable too. It is
-            // assigned inside the guest shell from an exported name rather
-            // than interpolated into the command string, so it never becomes
-            // part of a command line on either side of the boundary.
+            // WSL. The password goes through the Windows environment and is
+            // imported into the guest by WSLENV, so it is in NEITHER process's
+            // argv.
+            //
+            // An earlier version put `PGPASSWORD=<value>` directly into
+            // wsl.exe's argument array and claimed here that it "never becomes
+            // part of a command line on either side of the boundary". That was
+            // plainly wrong — argv is exactly where it was, readable by any
+            // Windows-side process inspection. Codex Review caught the claim,
+            // and the test below now asserts the absence rather than trusting
+            // a comment.
             file = "wsl.exe";
-            argv = [
-                "-e", "env", `PGPASSWORD=${cfg.password}`, cfg.psql, ...args,
-            ];
-            childEnv = { ...process.env };
+            argv = ["-e", cfg.psql, ...args];
+            // `/u` passes the variable from Win32 into WSL. Append rather than
+            // overwrite: WSLENV may already carry entries this process needs.
+            const wslenv = process.env.WSLENV
+                ? `${process.env.WSLENV}:PGPASSWORD/u`
+                : "PGPASSWORD/u";
+            childEnv = { ...process.env, PGPASSWORD: cfg.password, WSLENV: wslenv };
         }
 
         try {
