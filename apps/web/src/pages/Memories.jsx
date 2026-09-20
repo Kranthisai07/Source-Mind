@@ -254,22 +254,70 @@ function IngestPanel({ open, onOpenChange }) {
     const [category, setCategory] = useState("general");
     const [jobId, setJobId]       = useState(null);
     const [job, setJob]           = useState(null);
+    const [jobError, setJobError] = useState(null);
+    // Bumped by "Check again". It re-runs the status effect for the SAME
+    // jobId — it never re-submits, which is the distinction that matters:
+    // resubmitting on a failed poll would ingest the content twice.
+    const [retryNonce, setRetryNonce] = useState(0);
 
+    // Polling stopped on exactly one status:
+    //
+    //     if (r.status === "done") return;
+    //
+    // so a job ending in `failed` was polled for ever, and the panel kept
+    // rendering "Processing · stage …" — a failure shown as progress, with no
+    // way out, because the reset button was gated on `done` too. That became
+    // reachable on demand once revocation started terminalising queued
+    // documents as `failed`.
+    //
+    // There was also no catch. Losing access mid-poll rejected the request,
+    // the rejection escaped as an unhandled rejection, and the panel was left
+    // displaying the details of a resource the caller may no longer be
+    // allowed to see.
     useEffect(() => {
         if (!jobId) return;
         let cancelled = false;
+        let timer = null;
+        // The job belongs to whoever submitted it. If the signed-in user
+        // changes mid-flight it is not ours to poll any more.
+        const owner = getCurrentUserId();
+
+        const stop = () => {
+            cancelled = true;
+            if (timer) { clearTimeout(timer); timer = null; }
+        };
+
         const poll = async () => {
             while (!cancelled) {
-                const r = await api.getJobStatus(jobId);
+                if (getCurrentUserId() !== owner) { stop(); return; }
+                let r;
+                try {
+                    r = await api.getJobStatus(jobId);
+                } catch (e) {
+                    if (cancelled) return;
+                    // Drop the rendered job before showing the error: on a 403
+                    // the stage detail already on screen describes a resource
+                    // this caller may no longer be permitted to see.
+                    setJob(null);
+                    setJobError(
+                        e?.body?.error?.message || classifyApiError(e).title
+                    );
+                    stop();
+                    return;
+                }
                 if (cancelled) return;
                 setJob(r);
-                if (r.status === "done") return;
-                await new Promise(res => setTimeout(res, 180));
+                // BOTH terminal states end the loop.
+                if (r.status === "done" || r.status === "failed") { stop(); return; }
+                await new Promise((res) => { timer = setTimeout(res, 180); });
             }
         };
         poll();
-        return () => { cancelled = true; };
-    }, [jobId]);
+        // Covers unmount, a reset that clears jobId, and a retry that bumps
+        // the nonce — each cancels the in-flight wait rather than leaving a
+        // timer to fire into a dead closure.
+        return stop;
+    }, [jobId, retryNonce]);
 
     const addTag = (e) => {
         if (e.key === "Enter" && tagsRaw.trim()) {
@@ -331,9 +379,14 @@ function IngestPanel({ open, onOpenChange }) {
         }
     };
 
+    // Either the job itself ended badly, or we can no longer read its status.
+    // Both are terminal for this panel and both must offer a way out.
+    const failed = job?.status === "failed" || jobError != null;
+
     const reset = () => {
         keyHolder.current?.clear();
         setContent(""); setTagsRaw(""); setTags([]); setCategory("general"); setJobId(null); setJob(null);
+        setJobError(null); setRetryNonce(0);
     };
 
     return (
@@ -419,7 +472,13 @@ function IngestPanel({ open, onOpenChange }) {
                             tracker, so progress is shown by stage rather than
                             by a spinning icon. */}
                         <div className="flex items-center gap-2 text-body text-content-secondary">
-                            {job?.status === "done" ? (
+                            {failed ? (
+                                <span className="text-danger" data-testid="ingest-failed">
+                                    {jobError
+                                        ? `Could not read ingestion status · ${jobError}`
+                                        : `Ingestion failed${job?.error ? ` · ${job.error}` : ""}`}
+                                </span>
+                            ) : job?.status === "done" ? (
                                 <span className="text-success">Pipeline complete · {job.elapsed_ms}ms total</span>
                             ) : (
                                 <>
@@ -429,9 +488,22 @@ function IngestPanel({ open, onOpenChange }) {
                             )}
                         </div>
                         <PipelineTracker stages={job?.stages ?? []} currentStage={job?.stage} />
-                        {job?.status === "done" && (
-                            <Button onClick={reset} variant="outline" className="w-full mt-4 bg-white/[0.03] border-hairline text-content">
-                                Ingest another
+                        {/* Retries the STATUS request only. The submission is
+                            not repeated — the job already exists, and sending
+                            it again would ingest the same content twice. */}
+                        {jobError && (
+                            <Button
+                                onClick={() => { setJobError(null); setRetryNonce((n) => n + 1); }}
+                                variant="outline"
+                                data-testid="ingest-status-retry"
+                                className="w-full mt-4 bg-white/[0.03] border-hairline text-content"
+                            >
+                                Check again
+                            </Button>
+                        )}
+                        {(job?.status === "done" || failed) && (
+                            <Button onClick={reset} variant="outline" data-testid="ingest-reset" className="w-full mt-4 bg-white/[0.03] border-hairline text-content">
+                                {failed ? "Start over" : "Ingest another"}
                             </Button>
                         )}
                     </div>
