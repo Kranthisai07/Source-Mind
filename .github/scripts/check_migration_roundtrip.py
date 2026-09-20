@@ -74,6 +74,30 @@ EXPECTED_REVISIONS = {
 # EXECUTED assertion failure demonstrates it — an error means the strict
 # OWNER_RACE_* fixture guard rejected the target or the harness broke,
 # and a skip means nothing ran at all.
+# The rollback-compatibility contract, as exact evidence values.
+#
+# 0006 widened connector_type; its downgrade restored the narrow CHECK
+# without transforming rows, so one Slack row aborted the rollback PART
+# WAY THROUGH. The correction does not make that rollback succeed — it
+# makes it refuse before anything destructive runs. So a nonzero exit is
+# necessary but nowhere near sufficient: any crash produces one. The guard
+# message proves it was the guard, the revision proves nothing in between
+# ran, and the surviving rows prove no data was deleted or relabelled to
+# make the rollback possible.
+CONNECTOR_ROLLBACK = {
+    "fixture_rows_inserted": "1|1",
+    "guard_message": "present",
+    "revision_after_guard": "20260916_0009",
+    "rows_after_guard": "1|1",
+    "downgrade_0008_exit": "0",
+    "revision_after_0008": "20260916_0008",
+    "rows_after_0008": "1|1",
+    "reupgrade_exit": "0",
+    "revision_after_reupgrade": "20260916_0009",
+    "rows_after_reupgrade": "1|1",
+    "rows_after_cleanup": "0|0",
+}
+
 OWNER_RACE_PHASES = {
     "head": ("passed", "0009 must hold after the full round trip"),
     "prefix": ("failure", "removing 0009 must bring the write skew back"),
@@ -96,6 +120,7 @@ REQUIRED = {
     "flags_after_reupgrade.txt": "RLS flags after re-upgrade",
     "counts_after_reupgrade.txt": "row counts after re-upgrade",
     "restricted.txt": "restricted-role visibility",
+    "connector_rollback.txt": "connector rollback compatibility",
     "revision_race_head.txt": "revision for the owner-race check at head",
     "revision_race_prefix.txt": "revision after downgrading to 0008",
     "revision_race_restored.txt": "revision after re-applying 0009",
@@ -276,6 +301,35 @@ def main() -> int:
                  "ownerless-workspace regression", "OWNERLESS_COMPAT_*")
     check_phases(ev, OWNER_RACE_PHASES, "owner_race",
                  "concurrent owner-revocation regression", "OWNER_RACE_*")
+
+    # ── 5b. rollback with an incompatible connector ───────────────────────
+    print("")
+    print("connector rollback compatibility:")
+    cr = parse_kv(ev / "connector_rollback.txt")
+
+    # Checked separately because "not zero" is the assertion, not a value.
+    guard_exit = cr.get("guard_exit", "")
+    guard_refused = guard_exit not in ("", "0")
+    print("  %-26s %-16s (expected nonzero) %s"
+          % ("guard_exit", guard_exit or "<none>",
+             "ok" if guard_refused else "MISMATCH"))
+    if not guard_refused:
+        failures.append(
+            "the rollback to 0005 did NOT fail with an incompatible connector "
+            "present (guard_exit=%s). The guard did not fire, so either the "
+            "fixture did not land or the refusal is gone" % (guard_exit or "<none>")
+        )
+
+    for key, expected in CONNECTOR_ROLLBACK.items():
+        actual = cr.get(key, "<missing>")
+        ok = actual == expected
+        print("  %-26s %-16s (expected %-16s) %s"
+              % (key, actual, expected, "ok" if ok else "MISMATCH"))
+        if not ok:
+            failures.append(
+                "connector rollback: %s is %s, expected %s"
+                % (key, actual, expected)
+            )
 
     # ── 6. the migrations themselves SUCCEEDED ────────────────────────────
     # Distinct from any test result. A migration command that failed can never

@@ -44,6 +44,7 @@ on:
       - "apps/api/tests/integration/test_security_foundation_real_db.py"
       - ".github/scripts/run_ownerless_regression.sh"
       - ".github/scripts/run_owner_race_regression.sh"
+      - ".github/scripts/check_connector_rollback.sh"
   workflow_dispatch:
 
 permissions:
@@ -371,6 +372,19 @@ jobs:
             echo "outsider=$outsider"
             echo "nocontext=$nocontext"
           } | tee "$EVIDENCE/restricted.txt"
+
+      # ── Phase 5b: rollback with an incompatible connector ────────────────
+      # Placed after the full round trip and before the owner-race phase. It
+      # inserts two synthetic rows with fixed ids and deletes exactly those
+      # two afterwards, so it runs after every count and digest snapshot and
+      # leaves the database as it found it.
+      #
+      # The correction does not make a rollback to 0005 succeed — it makes it
+      # REFUSE before anything destructive runs. So the script records the
+      # guard message, the revision and the surviving rows, and the gate
+      # judges all three. A nonzero exit on its own proves nothing.
+      - name: Connector rollback compatibility
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/check_connector_rollback.sh" "$EVIDENCE"
 
       # ── Phase 6: the concurrent owner-revocation race ────────────────────
       # Deliberately LAST: after every count and digest snapshot, and after

@@ -59,6 +59,74 @@ jobs:
           AUTH_DEV_BYPASS_ENABLED: "true"
         run: python scripts/check_wheel.py
 
+      # ── Rollback + revocation contract ─────────────────────────────────
+      # These five nodes carry the 15fe_0001 and 12f6_0002 corrections. The
+      # general `Tests` step below would run them too, but it asserts only
+      # "pytest exited 0" — which a rename, a relocation or a collection
+      # error would also satisfy while quietly dropping the coverage. So the
+      # exact node IDs are pinned first, then the JUnit report is required to
+      # show all five EXECUTED and passed. A skip counts as not-passed.
+      - name: Verify exact rollback/revocation selection (5 nodes)
+        run: |
+          set -euo pipefail
+          expected=$(mktemp); actual=$(mktemp)
+          cat > "$expected" <<'NODES'
+          tests/unit/api/test_workspace_revocation.py::test_revocation_fails_pending_ingestion_in_same_transaction
+          tests/unit/test_migration_regressions.py::test_0006_downgrade_rejects_connector_types_unsupported_by_0005
+          tests/unit/test_migration_regressions.py::test_0006_downgrade_restores_workspace_members_rls_flags
+          tests/unit/test_migration_regressions.py::test_0009_allows_downgrade_that_keeps_expanded_connector_schema
+          tests/unit/test_migration_regressions.py::test_0009_blocks_incompatible_rollback_before_changing_schema
+          NODES
+          python -m pytest -o addopts='' -q --collect-only \
+            tests/unit/test_migration_regressions.py \
+            tests/unit/api/test_workspace_revocation.py \
+            | grep '::' | sort > "$actual"
+          echo "collected $(wc -l < "$actual") node(s)"
+          diff -u "$expected" "$actual" || {
+            echo "::error::collected node IDs differ from the expected five"
+            exit 1
+          }
+
+      - name: Rollback and revocation tests
+        id: rollback_revocation
+        run: |
+          python -m pytest -o addopts='' -q -p no:cacheprovider \
+            --junitxml=rollback-revocation-results.xml \
+            tests/unit/test_migration_regressions.py \
+            tests/unit/api/test_workspace_revocation.py
+
+      - name: Assert all five rollback/revocation tests executed and passed
+        if: always() && steps.rollback_revocation.outcome != 'skipped'
+        run: |
+          python - <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          from pathlib import Path
+          report = Path("rollback-revocation-results.xml")
+          if not report.exists():
+              print("::error::no JUnit report — the step did not run")
+              sys.exit(1)
+          suite = ET.parse(report).getroot()
+          total = passed = 0
+          bad = []
+          for c in suite.iter("testcase"):
+              total += 1
+              node = f"{c.get('classname')}::{c.get('name')}"
+              state = next(
+                  (k.tag for k in c if k.tag in {"skipped", "failure", "error"}),
+                  "passed",
+              )
+              if state == "passed":
+                  passed += 1
+              else:
+                  bad.append(f"{node} -> {state}")
+          print(f"executed {total}, passed {passed}")
+          if total != 5:
+              print(f"::error::expected 5 test cases, report contains {total}")
+          for b in bad:
+              print(f"::error::{b}")
+          sys.exit(0 if (total == 5 and passed == 5) else 1)
+          PY
+
       - name: Tests
         # The end-to-end test needs a live database and a running Celery
         # worker, so it is excluded here and run manually against a deployed
