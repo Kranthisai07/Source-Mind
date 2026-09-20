@@ -384,6 +384,17 @@ jobs:
       # guard message, the revision and the surviving rows, and the gate
       # judges all three. A nonzero exit on its own proves nothing.
       - name: Connector rollback compatibility
+        # The script shells out to alembic three times. alembic/env.py calls
+        # get_settings() at import, and Settings rejects bypass=false unless
+        # the Clerk values are present — so without this block every call dies
+        # on a ValidationError before reaching PostgreSQL. That is not
+        # hypothetical: the first run of this phase did exactly that, and the
+        # gate caught it by refusing to accept a nonzero exit with no guard
+        # message as evidence of the guard.
+        env:
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "true"
         run: bash "$GITHUB_WORKSPACE/.github/scripts/check_connector_rollback.sh" "$EVIDENCE"
 
       # ── Phase 6: the concurrent owner-revocation race ────────────────────
