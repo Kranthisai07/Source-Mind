@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 
 import Landing       from "@/pages/Landing";
+import Develop       from "@/pages/Develop";
 import AuthPage      from "@/pages/AuthPage";
 import AppLayout     from "@/components/layout/AppLayout";
 import Dashboard     from "@/pages/Dashboard";
@@ -24,6 +25,9 @@ export default function App() {
                 <ClerkTokenBridge />
                 <Routes>
                     <Route path="/" element={<Landing />} />
+                    {/* Public marketing page. Deliberately outside RequireAuth,
+                        alongside Landing — it is documentation, not console. */}
+                    <Route path="/develop" element={<Develop />} />
                     <Route path="/sign-in" element={<AuthPage mode="sign-in" />} />
                     <Route path="/sign-up" element={<AuthPage mode="sign-up" />} />
 
