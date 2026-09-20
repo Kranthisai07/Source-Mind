@@ -104,7 +104,9 @@ async def test_successor_suggestion_finds_semantic_neighbor():
     async def execute_side_effect(stmt, params=None, **kwargs):
         stmt_str = str(stmt)
         r = MagicMock()
-        if "SELECT contribution_weight" in stmt_str:
+        if "UPDATE handoff_assignments AS assignment" in stmt_str:
+            r.fetchone = MagicMock(return_value=(uuid.uuid4(),))
+        elif "SELECT contribution_weight" in stmt_str:
             r.fetchone = MagicMock(return_value=(0.8,))
         elif "SELECT a.user_id" in stmt_str:
             r.fetchall = MagicMock(return_value=[
@@ -141,15 +143,17 @@ async def test_successor_suggestion_finds_semantic_neighbor():
 @pytest.mark.asyncio
 async def test_assignment_creates_attribution_record():
     """assign_memory must INSERT a new Attribution row for the new owner."""
-    from sourcemind.services.attribution.handoff import assign_memory
     from sourcemind.models.attribution import Attribution
+    from sourcemind.services.attribution.handoff import assign_memory
 
     added_objects = []
 
     async def execute_side_effect(stmt, params=None, **kwargs):
         r = MagicMock()
         stmt_str = str(stmt)
-        if "inbound_count" in stmt_str or "importance_score" in stmt_str:
+        if "UPDATE handoff_assignments AS assignment" in stmt_str:
+            r.fetchone = MagicMock(return_value=(uuid.uuid4(),))
+        elif "inbound_count" in stmt_str or "importance_score" in stmt_str:
             # recompute_importance query — return None to bail out early
             r.fetchone = MagicMock(return_value=None)
         else:
@@ -189,7 +193,9 @@ async def test_original_attribution_records_unchanged_after_assignment():
         if "UPDATE attributions" in stmt_str.upper():
             update_calls.append(stmt_str)
         r = MagicMock()
-        if "inbound_count" in stmt_str or "importance_score" in stmt_str:
+        if "UPDATE handoff_assignments AS assignment" in stmt_str:
+            r.fetchone = MagicMock(return_value=(uuid.uuid4(),))
+        elif "inbound_count" in stmt_str or "importance_score" in stmt_str:
             r.fetchone = MagicMock(return_value=None)
         else:
             r.fetchone = MagicMock(return_value=(0.7,))

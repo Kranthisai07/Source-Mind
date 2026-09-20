@@ -321,28 +321,6 @@ async def assign_handoff_memory(
     if not hr_row:
         raise HandoffNotFoundError("Handoff record not found.")
 
-    eligible_result = await db.execute(
-        text(
-            "SELECT EXISTS ("
-            "SELECT 1 FROM memories m "
-            "WHERE m.id = CAST(:memory AS uuid) "
-            "AND m.workspace_id = CAST(:ws AS uuid) AND m.deleted_at IS NULL"
-            ") AND EXISTS ("
-            "SELECT 1 FROM workspace_members wm "
-            "WHERE wm.user_id = CAST(:owner AS uuid) "
-            "AND wm.workspace_id = CAST(:ws AS uuid) "
-            "AND wm.status = 'active' AND wm.departed_at IS NULL"
-            ")"
-        ),
-        {
-            "memory": str(body.memory_id),
-            "owner": str(body.new_owner_id),
-            "ws": str(workspace_id),
-        },
-    )
-    if not eligible_result.scalar():
-        raise HandoffNotFoundError("Handoff assignment target not found.")
-
     departing_user_id = hr_row[0]
 
     result = await assign_memory(

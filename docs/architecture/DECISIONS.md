@@ -1656,3 +1656,36 @@ stack on 55432/56379, whose lease status was unresolved. Ordinary development
 data on 5432 was never a target. The API ran as `sourcemind_test`
 (`NOSUPERUSER NOBYPASSRLS`) so RLS was genuinely in force rather than bypassed
 by a superuser connection, and everything was destroyed afterwards.
+
+---
+
+## D-012 — A handoff assignment is a one-shot claim of a seeded memory
+
+**Status:** Fixed and locally verified on 2026-09-20; not deployed.
+
+`POST /v1/workspaces/{workspace_id}/handoff/assign` previously checked only
+that the requested memory belonged to the workspace and that the recipient was
+an active member. A valid workspace memory that was not seeded into the named
+handoff therefore received a new append-only attribution record and incremented
+`assigned_count`, even though no `handoff_assignments` row matched the request.
+
+The assignment operation now begins with one conditional PostgreSQL `UPDATE
+... RETURNING`. It claims only an unassigned row matching the handoff, memory,
+departing user, live memory, and active recipient. If no row is returned, the
+operation raises the existing non-disclosing handoff not-found response before
+adding attribution or changing progress. The route's existing transaction then
+commits the assignment, attribution, and counter together or rolls all of them
+back together.
+
+Because `assigned_count` is assignment progress rather than a request counter,
+the same assignment row can be claimed only once. A repeated request receives
+the same 404 assignment-target response and leaves the original owner, note,
+attribution history, and counter unchanged. This endpoint has no idempotency-key
+contract, so a retry is not reported as a second successful transfer.
+
+The regression drives the real FastAPI route against a disposable PostgreSQL
+database as `sourcemind_test` (`NOSUPERUSER NOBYPASSRLS`). Before the fix, an
+unrelated memory returned 200, appended one attribution, and changed progress
+from zero to one. After the fix, unrelated and repeated requests both leave all
+three state categories unchanged, while the legitimate seeded assignment still
+succeeds once.
