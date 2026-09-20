@@ -57,8 +57,27 @@ REGRESSION_PHASES = {
 
 EXPECTED_REVISIONS = {
     "prev": "20260909_0007",
-    "head": "20260916_0008",
-    "reupgrade": "20260916_0008",
+    "head": "20260916_0009",
+    "reupgrade": "20260916_0009",
+    # The owner-race track, which runs after every snapshot.
+    "race_head": "20260916_0009",
+    "race_prefix": "20260916_0008",
+    "race_restored": "20260916_0009",
+}
+
+# Per-phase expectations for the concurrent owner-revocation regression.
+#
+# Same discipline as REGRESSION_PHASES, independent defect. 0009 adds a
+# FOR UPDATE lock on the workspace row before the last-owner check, so at
+# 0008 two concurrent revocations both commit and the workspace is left
+# with zero active owners. That failure is the write skew, and only an
+# EXECUTED assertion failure demonstrates it — an error means the strict
+# OWNER_RACE_* fixture guard rejected the target or the harness broke,
+# and a skip means nothing ran at all.
+OWNER_RACE_PHASES = {
+    "head": ("passed", "0009 must hold after the full round trip"),
+    "prefix": ("failure", "removing 0009 must bring the write skew back"),
+    "restored": ("passed", "re-applying 0009 must restore serialization"),
 }
 
 REQUIRED = {
@@ -77,6 +96,12 @@ REQUIRED = {
     "flags_after_reupgrade.txt": "RLS flags after re-upgrade",
     "counts_after_reupgrade.txt": "row counts after re-upgrade",
     "restricted.txt": "restricted-role visibility",
+    "revision_race_head.txt": "revision for the owner-race check at head",
+    "revision_race_prefix.txt": "revision after downgrading to 0008",
+    "revision_race_restored.txt": "revision after re-applying 0009",
+    "owner_race_head.xml": "owner-race result at head",
+    "owner_race_prefix.xml": "owner-race result at 0008",
+    "owner_race_restored.xml": "owner-race result after re-applying 0009",
 }
 
 failures: list[str] = []
@@ -93,6 +118,55 @@ def parse_kv(path: Path) -> dict[str, str]:
             k, _, v = line.partition("=")
             out[k.strip()] = v.strip()
     return out
+
+
+def check_phases(ev, phases, report_prefix, label, config_hint):
+    """Judge one regression track, phase by phase, from its JUnit reports.
+
+    Shared by both tracks because the discipline is identical: the state is
+    read from the report rather than from any step exit code, and `error`
+    and `skipped` are never accepted as a reproduction of a defect.
+    """
+    print("")
+    print("%s:" % label)
+    for phase, (expected, why) in phases.items():
+        report = ev / ("%s_%s.xml" % (report_prefix, phase))
+        try:
+            suite = ET.parse(report).getroot()
+        except ET.ParseError as exc:
+            failures.append("%s report for %r is unreadable: %s" % (label, phase, exc))
+            continue
+        cases = list(suite.iter("testcase"))
+        if len(cases) != 1:
+            failures.append(
+                "%s %r: expected exactly 1 test case, report has %d — "
+                "the node was not collected as expected" % (label, phase, len(cases))
+            )
+            continue
+        state = next(
+            (k.tag for k in cases[0] if k.tag in {"skipped", "failure", "error"}),
+            "passed",
+        )
+        ok = state == expected
+        print("  %-10s %-8s (expected %-8s) %s  — %s"
+              % (phase, state, expected, "ok" if ok else "MISMATCH", why))
+        if ok:
+            continue
+        if state == "skipped":
+            failures.append(
+                "%s %r was SKIPPED, not executed — a skipped node is never "
+                "evidence; check the %s configuration" % (label, phase, config_hint)
+            )
+        elif state == "error" and expected == "failure":
+            failures.append(
+                "%s %r ERRORED rather than failing its assertions. That is a "
+                "broken harness, not a reproduction of the defect, and must "
+                "not be counted as one" % (label, phase)
+            )
+        else:
+            failures.append(
+                "%s %r: expected %s, got %s — %s" % (label, phase, expected, state, why)
+            )
 
 
 def main() -> int:
@@ -197,47 +271,11 @@ def main() -> int:
             "policy is failing open"
         )
 
-    # ── 5. the ownerless regression, phase by phase ───────────────────────
-    print("")
-    print("ownerless-workspace regression:")
-    for phase, (expected, why) in REGRESSION_PHASES.items():
-        report = ev / ("regression_%s.xml" % phase)
-        try:
-            suite = ET.parse(report).getroot()
-        except ET.ParseError as exc:
-            failures.append("regression report for %r is unreadable: %s" % (phase, exc))
-            continue
-        cases = list(suite.iter("testcase"))
-        if len(cases) != 1:
-            failures.append(
-                "regression %r: expected exactly 1 test case, report has %d — "
-                "the node was not collected as expected" % (phase, len(cases))
-            )
-            continue
-        state = next(
-            (k.tag for k in cases[0] if k.tag in {"skipped", "failure", "error"}),
-            "passed",
-        )
-        ok = state == expected
-        print("  %-10s %-8s (expected %-8s) %s  — %s"
-              % (phase, state, expected, "ok" if ok else "MISMATCH", why))
-        if ok:
-            continue
-        if state == "skipped":
-            failures.append(
-                "regression %r was SKIPPED, not executed — a skipped node is "
-                "never evidence; check the OWNERLESS_COMPAT_* configuration" % phase
-            )
-        elif state == "error" and expected == "failure":
-            failures.append(
-                "regression %r ERRORED rather than failing its assertions. That "
-                "is a broken harness, not a reproduction of the defect, and must "
-                "not be counted as one" % phase
-            )
-        else:
-            failures.append(
-                "regression %r: expected %s, got %s — %s" % (phase, expected, state, why)
-            )
+    # ── 5. both regression tracks, phase by phase ─────────────────────────
+    check_phases(ev, REGRESSION_PHASES, "regression",
+                 "ownerless-workspace regression", "OWNERLESS_COMPAT_*")
+    check_phases(ev, OWNER_RACE_PHASES, "owner_race",
+                 "concurrent owner-revocation regression", "OWNER_RACE_*")
 
     # ── 6. the migrations themselves SUCCEEDED ────────────────────────────
     # Distinct from any test result. A migration command that failed can never

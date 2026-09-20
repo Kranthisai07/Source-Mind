@@ -41,7 +41,9 @@ on:
       - "apps/api/tests/integration/test_ownerless_workspace_migration_real_db.py"
       - ".github/workflows/migration-roundtrip-pg18.yml"
       - ".github/scripts/check_migration_roundtrip.py"
+      - "apps/api/tests/integration/test_security_foundation_real_db.py"
       - ".github/scripts/run_ownerless_regression.sh"
+      - ".github/scripts/run_owner_race_regression.sh"
   workflow_dispatch:
 
 permissions:
@@ -92,6 +94,13 @@ jobs:
       PREV_REV: "20260909_0007"
       OWNERLESS_COMPAT_TEST_ALLOW_DISPOSABLE: "1"
       OWNERLESS_COMPAT_EXPECTED_DATABASE: sourcemind_e2e
+      # Strict opt-in for the concurrent owner-revocation regression. The
+      # normal acceptance lane guards 55432/sourcemind_security_test; this
+      # lane is 5432/sourcemind_e2e, so the fixture takes a SEPARATE
+      # declared identity rather than that guard being weakened.
+      OWNER_RACE_TEST_ALLOW_DISPOSABLE: "1"
+      OWNER_RACE_EXPECTED_DATABASE: sourcemind_e2e
+      OWNER_RACE_EXPECTED_PORT: "5432"
       EVIDENCE: ${{ github.workspace }}/roundtrip-evidence
       # The identity apps/web/e2e/seed_base.sql inserts, and a UUID that is
       # deliberately a member of nothing.
@@ -362,6 +371,70 @@ jobs:
             echo "outsider=$outsider"
             echo "nocontext=$nocontext"
           } | tee "$EVIDENCE/restricted.txt"
+
+      # ── Phase 6: the concurrent owner-revocation race ────────────────────
+      # Deliberately LAST: after every count and digest snapshot, and after
+      # the restricted-role check. This regression seeds its own tenants —
+      # two memories per run — so running it any earlier would inflate
+      # counts_seeded and be indistinguishable from migration data loss in
+      # the round-trip comparison. Placing it here leaves every pre-existing
+      # round-trip assertion, including the exact `memories=8` seed guard,
+      # untouched.
+      #
+      # The database has already completed the full 0005 -> head round trip,
+      # so the first check below proves the fix survives it.
+      - name: Owner-race regression at head — must PASS
+        working-directory: apps/api
+        env:
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "true"
+          OWNER_RACE_DATABASE_URL: postgresql+asyncpg://sourcemind_test:${{ secrets.E2E_DB_RUNTIME_PASSWORD }}@127.0.0.1:5432/sourcemind_e2e
+        run: |
+          set -euo pipefail
+          export DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/${DB}"
+          alembic current 2>/dev/null | grep -oE '[0-9]{8}_[0-9]{4}' | tail -1 \
+            > "$EVIDENCE/revision_race_head.txt"
+          echo "revision now: $(cat "$EVIDENCE/revision_race_head.txt")"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_owner_race_regression.sh" head "$EVIDENCE"
+
+      # Remove ONLY 0009 and the write skew must return. If this PASSES,
+      # 0009 is fixing something that was not broken and this lane proves
+      # nothing. Only an executed assertion failure counts — see
+      # run_owner_race_regression.sh for why error/skipped never do.
+      - name: Downgrade to 0008 and reproduce the race — must FAIL
+        working-directory: apps/api
+        env:
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "true"
+          OWNER_RACE_DATABASE_URL: postgresql+asyncpg://sourcemind_test:${{ secrets.E2E_DB_RUNTIME_PASSWORD }}@127.0.0.1:5432/sourcemind_e2e
+        run: |
+          set -euo pipefail
+          export DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/${DB}"
+          alembic downgrade 20260916_0008
+          alembic current 2>/dev/null | grep -oE '[0-9]{8}_[0-9]{4}' | tail -1 \
+            > "$EVIDENCE/revision_race_prefix.txt"
+          echo "revision now: $(cat "$EVIDENCE/revision_race_prefix.txt")"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_owner_race_regression.sh" prefix "$EVIDENCE"
+
+      # Re-applying 0009 must restore the serialization. Fix -> remove ->
+      # restore is what distinguishes a real correction from a coincidence.
+      - name: Re-apply 0009 and confirm the fix returns — must PASS
+        working-directory: apps/api
+        env:
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "true"
+          OWNER_RACE_DATABASE_URL: postgresql+asyncpg://sourcemind_test:${{ secrets.E2E_DB_RUNTIME_PASSWORD }}@127.0.0.1:5432/sourcemind_e2e
+        run: |
+          set -euo pipefail
+          export DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/${DB}"
+          alembic upgrade head
+          alembic current 2>/dev/null | grep -oE '[0-9]{8}_[0-9]{4}' | tail -1 \
+            > "$EVIDENCE/revision_race_restored.txt"
+          echo "revision now: $(cat "$EVIDENCE/revision_race_restored.txt")"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_owner_race_regression.sh" restored "$EVIDENCE"
 
       # ── The gate ─────────────────────────────────────────────────────────
       # always(), so a phase that was skipped fails here rather than leaving a
