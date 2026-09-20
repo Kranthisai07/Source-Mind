@@ -29,3 +29,17 @@ credential or a startup-command override; neither combination has been
 demonstrated. Restore it only with the recorded pre-release binding,
 credentials, configuration, and startup command after a compatible downgrade
 or an isolated restore of the fresh pre-migration backup.
+
+The only supported in-place rollback command is one explicit
+`alembic downgrade 20250817_0005` invocation starting from verified revision
+`20260916_0009`. `transaction_per_migration=True` means relative or stepwise
+downgrades can commit intermediate revisions before `0006` refuses an
+incompatible connector, so `-1`, `-N`, chained destinations, and starting below
+head are outside the release procedure.
+
+If Slack/Notion rows trigger the guard, the result is a refused rollback at
+`0009`, not a completed rollback. Preserve that database and take an encrypted
+incident backup. Prefer a forward fix on `0009`; restore the verified
+pre-migration `0005` backup to a separate database only when no later writes
+need reconciliation. Never delete/relabel connector rows or weaken the old
+constraint to force the downgrade.

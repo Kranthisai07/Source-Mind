@@ -1710,11 +1710,27 @@ migration owner is deliberately `NOBYPASSRLS` and forced RLS hides connector
 rows when no tenant context is set. An incompatible row raises an actionable
 error and the transaction removes the temporary constraint automatically.
 
+That early refusal is guaranteed only for the supported command: start exactly
+at `20260916_0009` and run one explicit
+`alembic downgrade 20250817_0005`. Alembic is configured with
+`transaction_per_migration=True`, so each successful revision and its version
+stamp commits independently. Relative arguments remain strings such as `-4`
+when `0009` inspects the destination; repeated `-1` commands have the same
+effect. Either form can commit down to `0006` before the `0006` guard refuses
+the legacy constraint. Relative/stepwise rollback is therefore unsupported,
+not an equivalent spelling of the tested procedure.
+
 The rule is preservation, not transformation: no migration deletes connectors,
 relabels providers, or weakens the old constraint. An incompatible database
 stays upgraded for a forward fix. Restoring the old application instead requires
 the verified pre-migration backup and its recorded compatible configuration;
 post-release writes require an explicit reconciliation decision before cutover.
+A refusal is not a completed rollback. If writes never reopened, the verified
+pre-migration `0005` backup may be restored to a separate database for the old
+application while the refused `0009` database is retained. If later writes do
+exist, there is no automatic lossless `0005` cutover because Slack/Notion rows
+cannot satisfy that schema; preserve both the upgraded database and an incident
+backup until an approved reconciliation or forward fix is complete.
 
 On isolated PostgreSQL 16.15, the unfixed downgrade failed at the old CHECK and
 stopped at `0006`. After the fix, a Slack connector plus its sync log caused a

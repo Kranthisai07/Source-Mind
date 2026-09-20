@@ -333,22 +333,47 @@ ORDER BY c.relname;
 
 - Keep autodeploy and public writes disabled. Stop all producers, drain and stop
   workers, and stop the new API before changing schema or database bindings.
-- Downgrade guards at `0009` and `0006` validate the old `0005` connector
-  constraint against all rows. If any connector type other than `github` or
-  `discord` exists, rollback aborts without deleting connectors, relabeling
-  providers, weakening the old constraint, or advancing past the guarded
-  revision. Keep the upgraded database intact and use a forward application fix.
-- If the guard passes, run `alembic downgrade 20250817_0005` as the migration
-  owner and verify revision, row counts, RLS flags, and the supported connector
-  controls before restoring the previous application.
+- The supported in-place procedure has a hard command boundary. From
+  `apps/api`, first require `alembic current` to report exactly
+  `20260916_0009`, then run exactly one
+  `alembic downgrade 20250817_0005` invocation as the migration owner. Do not
+  use `-1`, `-N`, repeated/stepwise downgrade commands, or start this procedure
+  from any revision below `0009`.
+- This boundary is required by the actual Alembic configuration:
+  `transaction_per_migration=True` commits each completed revision and its
+  version-table update separately. A relative destination remains relative when
+  `0009` evaluates it, so `alembic downgrade -4` or repeated `-1` commands can
+  commit `0009 -> 0008 -> 0007 -> 0006` before the `0006` guard refuses the
+  final step. If an operator reaches an intermediate revision, stop; do not
+  continue toward `0005`. Preserve evidence, re-upgrade to `0009`, verify the
+  revision and data, and restart the rollback decision from the supported
+  boundary.
+- Under the supported explicit command, the `0009` guard validates the old
+  `0005` connector constraint before any downgrade revision commits. If Slack,
+  Notion, or another unsupported connector exists, the database remains at
+  `0009` with those rows intact. That outcome is a refused rollback, not a
+  completed rollback; keep services stopped and do not restore the old
+  application.
+- If the guard passes, verify the completed `0005` revision, row counts, RLS
+  flags, and supported connector controls before restoring the previous
+  application.
 - Restore revision `8072e42` only with its recorded pre-release database binding,
   credentials, effective configuration, and startup commands. Do not pair it
   with the new restricted runtime credential or an unverified startup override.
-- If an old-application restore is mandatory after incompatible connectors or
-  post-release writes exist, take a new encrypted incident backup and preserve
-  the upgraded database. Restore the fresh pre-migration `0005` backup to a
-  separate database and reconcile later writes before cutover; this requires an
-  explicit data-recovery decision and is not an in-place downgrade.
+- When incompatible connectors refuse `0005`, the data-preserving recovery is
+  to keep the `0009` database intact, take an encrypted incident backup, and
+  deploy a forward fix compatible with `0009`. Do not delete connectors,
+  relabel providers, weaken the `0005` constraint, or describe this as a schema
+  rollback.
+- If restoring the old application is mandatory and public writes never reopened
+  after the fresh pre-migration backup, restore that verified `0005` backup to a
+  separate database and validate the old application's recorded configuration
+  there before an approved binding switch. Keep the refused `0009` database and
+  incident backup until recovery is accepted.
+- If any post-backup writes exist, there is no automatic data-preserving cutover
+  to `0005`: Slack/Notion connector rows have no valid representation in that
+  schema. Preserve the upgraded database, inventory the write delta, and obtain
+  an explicit reconciliation decision before using a restored `0005` database.
 - Re-run the role/ownership query after either direction. Never leave the
   migration-owner credential in API or worker configuration.
 
