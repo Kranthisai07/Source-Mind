@@ -1689,3 +1689,62 @@ unrelated memory returned 200, appended one attribution, and changed progress
 from zero to one. After the fix, unrelated and repeated requests both leave all
 three state categories unchanged, while the legitimate seeded assignment still
 succeeds once.
+
+---
+
+## D-013 — An incompatible connector blocks rollback without rewriting data
+
+**Status:** Fixed and locally verified on 2026-09-20; not deployed.
+
+Migration `0006` expands connector types from `github`/`discord` to also allow
+`slack`/`notion`. Its old downgrade dropped the expanded constraint and tried to
+restore the `0005` constraint directly. A stored Slack connector made that
+statement fail after Alembic had already committed the `0009`, `0008`, and
+`0007` downgrades, leaving the database at `0006` rather than at either endpoint.
+
+The rollback now validates the legacy constraint before changing the guarded
+revision. `0009` performs the check before a head-to-`0005` rollback can begin;
+`0006` repeats it for databases that start at that revision. Validation uses a
+temporary PostgreSQL CHECK constraint rather than a SELECT because the existing
+migration owner is deliberately `NOBYPASSRLS` and forced RLS hides connector
+rows when no tenant context is set. An incompatible row raises an actionable
+error and the transaction removes the temporary constraint automatically.
+
+The rule is preservation, not transformation: no migration deletes connectors,
+relabels providers, or weakens the old constraint. An incompatible database
+stays upgraded for a forward fix. Restoring the old application instead requires
+the verified pre-migration backup and its recorded compatible configuration;
+post-release writes require an explicit reconciliation decision before cutover.
+
+On isolated PostgreSQL 16.15, the unfixed downgrade failed at the old CHECK and
+stopped at `0006`. After the fix, a Slack connector plus its sync log caused a
+head rollback to stop at `0009`, and a direct `0006` rollback to remain at
+`0006`; both rows survived each attempt. After explicitly removing only those
+synthetic unsupported fixtures, a GitHub connector and sync log survived
+`0006 → 0005 → 0009` with all recorded aggregate counts unchanged.
+
+---
+
+## D-014 — Revocation terminalizes queued ingestion before access is removed
+
+**Status:** Fixed and locally verified on 2026-09-20; not deployed.
+
+The ingestion worker correctly reauthorizes a submitting member at execution
+time, but its revoked-member branch returned `rejected` before it could see the
+RLS-protected document. Celery therefore recorded success while the document and
+polling contract remained `pending`/`queued` forever.
+
+Membership revocation already runs as an authorized workspace administrator and
+owns the transaction that removes access. It now locks that member's live
+pending documents and marks them `failed`, records a non-sensitive revocation
+error, and sets `metadata.current_stage` to `failed` before changing membership
+to `departed`. The document update and membership revocation commit or roll back
+together. The worker still reauthorizes, rejects the revoked task, and performs
+no extraction, embedding, attribution, or memory write; no privileged worker
+bypass was added.
+
+The focused unit regression failed before the change with the document still
+`pending`. The signed real-service acceptance test then passed once against
+isolated PostgreSQL and Redis as `sourcemind_test` (`NOSUPERUSER NOBYPASSRLS`):
+the actual API queued the document and revoked the member, the worker rejected
+execution, the document was `failed`, and its memory count remained zero.

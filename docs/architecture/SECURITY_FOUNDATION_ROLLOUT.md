@@ -260,15 +260,23 @@ row and receive the resource 404; A sees no row after revocation.
 
 ## Production rollout
 
-1. Take and verify a database backup. Drain writes and queued ingestion/sync
-   work.
-2. Preflight membership data for unknown roles/statuses. Do not assign owners as
+1. Keep API and worker autodeploy disabled. Record the currently deployed
+   revisions, startup commands, database bindings, and effective configuration
+   before changing either service.
+2. Block new public API writes and every other producer, including connector
+   schedules. Drain queued ingestion and connector work, then stop the old API
+   before running any migration. A drained worker does not make a still-running
+   API read-only.
+3. After writes stop, create the fresh encrypted logical backup. Preserve the
+   existing restore-verified recovery archive. Label the fresh archive as
+   encrypted/readable only until it has completed an isolated restore.
+4. Preflight membership data for unknown roles/statuses. Do not assign owners as
    a migration-compatibility repair: `0008` preserves legitimate active-member
    access while leaving unknown creator provenance unchanged. Any future owner
    assignment is a separate governance decision.
-3. Run Alembic as a migration/table-owner credential, never as the long-lived
-   API/worker runtime credential.
-4. Confirm the API and worker runtime role is not superuser, cannot bypass RLS,
+5. Run Alembic through `20260916_0009` as the existing migration/table-owner
+   credential, never as the long-lived API/worker runtime credential.
+6. Confirm the API and worker runtime role is not superuser, cannot bypass RLS,
    and does not own protected tables:
 
 ```sql
@@ -288,39 +296,59 @@ WHERE c.relname IN (
 ORDER BY c.relname;
 ```
 
-5. Deploy API and workers with production Clerk settings and both optional
-   ingestion integrations still disabled.
-6. Before sending application traffic, call `/health`. Require
-   `requests_since_start == 0`, record a new `process_instance_id`, and
-   independently confirm every old API/worker instance is gone. With multiple
+7. Deploy the new API while public traffic remains blocked. Reach it through an
+   operator-only service path or isolated canary binding, not by reopening the
+   public route. Verify health and the authorization matrix before starting the
+   new worker.
+8. Deploy the new worker only after the API checks pass, using the same reviewed
+   restricted runtime role and application-table grant allowlist. Keep internal
+   bootstrap/access-grant tables inaccessible.
+9. Before sending application traffic, call `/health`, record a new
+   `process_instance_id` and the observed `requests_since_start`, and
+   independently confirm every old API/worker instance is gone. The counter is
+   an observation, not a requirement to equal zero after startup. With multiple
    replicas, inspect each instance directly; one load-balanced response cannot
    prove all replicas are fresh.
-7. Verify a normal request increments `requests_since_start`; health probes
+10. Verify a normal request increments `requests_since_start`; health probes
    themselves must not increment it.
-8. Against a populated disposable production-validation workspace, run every
+11. Against a populated disposable production-validation workspace, run every
    workspace/resource route as A, B, and C. Include reads and mutations. A must
    receive real populated data; B and C must receive 404 and perform no write.
-9. Revoke A, then repeat direct memory read, search, ingestion, connector sync,
+12. Revoke A, then repeat direct memory read, search, ingestion, connector sync,
    analytics, conflicts, handoffs, and any already queued ingestion/sync work.
    Every path must fail closed.
-10. If Slack is enabled, send one current correctly signed mapped command, one
-    forged signature, and one correctly signed stale replay. Only the first may
-    reach a handler, and its response must be ephemeral.
-11. If URL ingestion is enabled, verify a public text response succeeds and
-    localhost, private IP, mixed public/private DNS, credentialed URL,
-    non-default port, redirect-to-private, oversized, and timeout cases fail.
-12. Monitor 401/403/404/429/503 rates, RLS policy errors, worker revocation
-    rejections, Redis failures, and connector redaction before widening traffic.
+13. If Slack is enabled, send one current correctly signed mapped command, one
+     forged signature, and one correctly signed stale replay. Only the first may
+     reach a handler, and its response must be ephemeral.
+14. If URL ingestion is enabled, verify a public text response succeeds and
+     localhost, private IP, mixed public/private DNS, credentialed URL,
+     non-default port, redirect-to-private, oversized, and timeout cases fail.
+15. Reopen traffic only after API and worker verification succeeds. Leave
+    autodeploy disabled; independent service autodeploy cannot enforce migration
+    order.
+16. Monitor 401/403/404/429/503 rates, RLS policy errors, worker revocation
+     rejections, Redis failures, and connector redaction before widening traffic.
 
 ## Rollback
 
-- First disable `SLACK_MEMORY_COMMANDS_ENABLED` and
-  `URL_INGESTION_ENABLED`, stop new ingestion/sync work, and drain workers.
-- The previous API and worker do not include migrations `0006` through `0008`.
-  Before restoring those application revisions, run
-  `alembic downgrade 20250817_0005` as the migration owner. The downgrade
-  traverses `0008`, `0007`, and `0006`; the corrected 0006 downgrade restores
-  the exact legacy RLS flags and policies.
+- Keep autodeploy and public writes disabled. Stop all producers, drain and stop
+  workers, and stop the new API before changing schema or database bindings.
+- Downgrade guards at `0009` and `0006` validate the old `0005` connector
+  constraint against all rows. If any connector type other than `github` or
+  `discord` exists, rollback aborts without deleting connectors, relabeling
+  providers, weakening the old constraint, or advancing past the guarded
+  revision. Keep the upgraded database intact and use a forward application fix.
+- If the guard passes, run `alembic downgrade 20250817_0005` as the migration
+  owner and verify revision, row counts, RLS flags, and the supported connector
+  controls before restoring the previous application.
+- Restore revision `8072e42` only with its recorded pre-release database binding,
+  credentials, effective configuration, and startup commands. Do not pair it
+  with the new restricted runtime credential or an unverified startup override.
+- If an old-application restore is mandatory after incompatible connectors or
+  post-release writes exist, take a new encrypted incident backup and preserve
+  the upgraded database. Restore the fresh pre-migration `0005` backup to a
+  separate database and reconcile later writes before cutover; this requires an
+  explicit data-recovery decision and is not an in-place downgrade.
 - Re-run the role/ownership query after either direction. Never leave the
   migration-owner credential in API or worker configuration.
 

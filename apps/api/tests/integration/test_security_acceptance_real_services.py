@@ -320,7 +320,9 @@ async def test_signed_api_role_matrix_revocation_and_worker_reauthorization(
         await set_rls_workspace_context(verify, data.target_workspace_id)
         document = await verify.scalar(select(Document).where(Document.id == document_id))
         assert document is not None
-        assert document.ingestion_status == "pending"
+        assert document.ingestion_status == "failed"
+        assert document.error_message == "Workspace access revoked before ingestion."
+        assert (document.pipeline_data or {}).get("current_stage") == "failed"
         memory_count = await verify.scalar(
             select(func.count(Memory.id)).where(Memory.document_id == document_id)
         )

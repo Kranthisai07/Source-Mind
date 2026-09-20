@@ -33,6 +33,7 @@ from sourcemind.core.exceptions import (
     WorkspaceNotFoundError,
 )
 from sourcemind.core.rate_limit import RateLimitedOperation, enforce_rate_limit
+from sourcemind.models.document import Document, IngestionStatus
 from sourcemind.models.organization import Organization
 from sourcemind.models.user import User
 from sourcemind.models.workspace import (
@@ -321,6 +322,23 @@ async def revoke_workspace_member(
             raise WorkspaceAccessDeniedError(
                 "The last active workspace owner cannot be revoked."
             )
+
+    documents_result = await db.execute(
+        select(Document)
+        .where(
+            Document.workspace_id == workspace_id,
+            Document.submitter_id == user_id,
+            Document.ingestion_status == IngestionStatus.PENDING.value,
+            Document.deleted_at.is_(None),
+        )
+        .with_for_update()
+    )
+    for document in documents_result.scalars().all():
+        document.ingestion_status = IngestionStatus.FAILED.value
+        document.error_message = "Workspace access revoked before ingestion."
+        pipeline_data = dict(document.pipeline_data or {})
+        pipeline_data["current_stage"] = "failed"
+        document.pipeline_data = pipeline_data
 
     membership.status = WorkspaceMembershipStatus.DEPARTED.value
     membership.departed_at = datetime.now(UTC)

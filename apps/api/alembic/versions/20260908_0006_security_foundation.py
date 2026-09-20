@@ -8,6 +8,9 @@ Create Date: 2026-09-08
 
 from __future__ import annotations
 
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+
 from alembic import op
 
 revision = "20260908_0006"
@@ -26,6 +29,30 @@ _NEW_RLS_TABLES = (
     "connector_sync_logs",
     "handoff_assignments",
 )
+
+
+def _assert_legacy_connector_compatibility() -> None:
+    bind = op.get_bind()
+    try:
+        bind.execute(
+            text(
+                "ALTER TABLE connector_configs "
+                "ADD CONSTRAINT ck_connector_configs_0005_preflight "
+                "CHECK (connector_type IN ('github', 'discord'))"
+            )
+        )
+    except IntegrityError as exc:
+        raise RuntimeError(
+            "Cannot downgrade to 20250817_0005 while connector_configs contains "
+            "connector types unsupported by 0005. Preserve the upgraded "
+            "database; do not delete or relabel connector data."
+        ) from exc
+    bind.execute(
+        text(
+            "ALTER TABLE connector_configs "
+            "DROP CONSTRAINT ck_connector_configs_0005_preflight"
+        )
+    )
 
 
 def _active_access(workspace_expression: str) -> str:
@@ -219,6 +246,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    _assert_legacy_connector_compatibility()
+
     for table in (
         "handoff_assignments",
         "connector_sync_logs",
