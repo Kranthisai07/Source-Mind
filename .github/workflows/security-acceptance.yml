@@ -165,7 +165,7 @@ jobs:
       # pyproject so the collected count is the raw test count. Asserting the
       # exact node IDs means a rename cannot silently shrink the gate, which a
       # bare count would not catch.
-      - name: Verify exact test selection (14 nodes)
+      - name: Verify exact test selection (19 nodes)
         working-directory: apps/api
         # SECURITY_TEST_ALLOW_DISPOSABLE / TEST_DATABASE_URL / TEST_REDIS_URL
         # are already in the environment via GITHUB_ENV.
@@ -173,6 +173,11 @@ jobs:
           set -euo pipefail
           expected=$(mktemp); actual=$(mktemp)
           cat > "$expected" <<'NODES'
+          tests/integration/test_backend_review_real_services.py::test_failed_request_releases_reservation_for_retry
+          tests/integration/test_backend_review_real_services.py::test_identical_concurrent_submissions_share_one_result
+          tests/integration/test_backend_review_real_services.py::test_in_progress_wait_is_bounded_and_expired_lease_recovers
+          tests/integration/test_backend_review_real_services.py::test_real_redis_429_exposes_positive_retry_after
+          tests/integration/test_backend_review_real_services.py::test_same_key_with_different_payload_conflicts_atomically
           tests/integration/test_handoff_assignment_real_db.py::test_handoff_assignment_is_atomic_and_limited_to_seeded_memories
           tests/integration/test_ingestion_worker_contract.py::test_exhausted_retries_are_terminal_failed
           tests/integration/test_ingestion_worker_contract.py::test_revoked_access_stays_terminal_without_worker_processing
@@ -193,10 +198,11 @@ jobs:
             tests/integration/test_security_acceptance_real_services.py \
             tests/integration/test_handoff_assignment_real_db.py \
             tests/integration/test_ingestion_worker_contract.py \
+            tests/integration/test_backend_review_real_services.py \
             | grep '::' | sort > "$actual"
           echo "collected $(wc -l < "$actual") node(s)"
           diff -u "$expected" "$actual" || {
-            echo "::error::collected node IDs differ from the expected fourteen"
+            echo "::error::collected node IDs differ from the expected nineteen"
             exit 1
           }
 
@@ -206,7 +212,7 @@ jobs:
       # never reported as an acceptance timeout.
       #
       # A JUnit report is emitted so the next step can prove the tests RAN.
-      # `pytest` exits 0 on "14 skipped", and every one of these is guarded by
+      # `pytest` exits 0 on "19 skipped", and every one of these is guarded by
       # the disposable-DB check — so a silent skip is the realistic failure and
       # exit status alone cannot detect it.
       - name: Security acceptance tests
@@ -224,9 +230,10 @@ jobs:
             tests/integration/test_security_foundation_real_db.py \
             tests/integration/test_security_acceptance_real_services.py \
             tests/integration/test_handoff_assignment_real_db.py \
-            tests/integration/test_ingestion_worker_contract.py
+            tests/integration/test_ingestion_worker_contract.py \
+            tests/integration/test_backend_review_real_services.py
 
-      - name: Assert all fourteen tests executed and passed
+      - name: Assert all nineteen tests executed and passed
         if: always() && steps.acceptance.outcome != 'skipped'
         working-directory: apps/api
         run: |
@@ -254,11 +261,11 @@ jobs:
               else:
                   bad.append(f"{node} -> {state}")
           print(f"executed {total}, passed {passed}")
-          if total != 14:
-              print(f"::error::expected 14 test cases, report contains {total}")
+          if total != 19:
+              print(f"::error::expected 19 test cases, report contains {total}")
           for b in bad:
               print(f"::error::{b}")
-          sys.exit(0 if (total == 14 and passed == 14) else 1)
+          sys.exit(0 if (total == 19 and passed == 19) else 1)
           PY
 
       - name: Upload acceptance report
