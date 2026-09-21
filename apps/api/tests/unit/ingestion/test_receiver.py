@@ -13,6 +13,24 @@ def _mock_workspace(ws_id: uuid.UUID) -> MagicMock:
 
 
 @pytest.mark.unit
+def test_idempotency_cache_key_is_scoped_by_workspace_and_user():
+    from sourcemind.services.ingestion.receiver import _idempotency_cache_key
+
+    workspace_a = uuid.uuid4()
+    workspace_b = uuid.uuid4()
+    user_a = uuid.uuid4()
+    user_b = uuid.uuid4()
+    request_key = str(uuid.uuid4())
+
+    keys = {
+        _idempotency_cache_key(workspace_a, user_a, request_key),
+        _idempotency_cache_key(workspace_a, user_b, request_key),
+        _idempotency_cache_key(workspace_b, user_a, request_key),
+    }
+    assert len(keys) == 3
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_missing_content_and_url_raises_validation_error():
     from sourcemind.core.exceptions import ValidationError
@@ -58,8 +76,8 @@ async def test_content_too_large_raises_error():
 @pytest.mark.asyncio
 async def test_duplicate_content_returns_existing():
     """SHA-256 match returns existing document without enqueuing new task."""
-    from sourcemind.services.ingestion.receiver import receive
     from sourcemind.models.document import IngestionStatus
+    from sourcemind.services.ingestion.receiver import receive
 
     existing_doc_id = uuid.uuid4()
     existing_doc = MagicMock()
@@ -95,8 +113,9 @@ async def test_duplicate_content_returns_existing():
     mock_session.execute = AsyncMock(side_effect=smart_execute)
 
     with patch("sourcemind.services.ingestion.receiver.get_redis") as mock_redis:
-        mock_redis.return_value.get = AsyncMock(return_value=None)
-        mock_redis.return_value.setex = AsyncMock()
+        mock_redis.return_value.eval = AsyncMock(
+            side_effect=[["reserved", "", 30_000], 1]
+        )
 
         result = await receive(
             session=mock_session,

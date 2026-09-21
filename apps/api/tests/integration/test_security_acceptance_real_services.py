@@ -407,7 +407,9 @@ async def test_real_redis_counters_scopes_expiry_sharing_and_fail_closed(
         second = await second_instance.eval(
             rate_limit._INCREMENT_WITH_TTL, 1, shared_key, 60
         )
-        assert (first, second) == (1, 2)
+        assert (first[0], second[0]) == (1, 2)
+        assert 0 < first[1] <= 60_000
+        assert 0 < second[1] <= first[1]
     finally:
         await first_instance.delete(shared_key)
         await first_instance.aclose()

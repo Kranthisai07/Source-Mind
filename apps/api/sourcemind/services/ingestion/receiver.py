@@ -11,8 +11,10 @@ Error codes:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import time
 import uuid
 from typing import Any
 
@@ -23,6 +25,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sourcemind.core.config import get_settings
 from sourcemind.core.exceptions import (
     ContentTooLargeError,
+    IdempotencyConflictError,
+    ServiceUnavailableError,
     ValidationError,
     WorkspaceNotFoundError,
 )
@@ -35,6 +39,63 @@ log = structlog.get_logger(__name__)
 
 _MAX_CONTENT_CHARS = 500_000
 _IDEM_TTL = 60 * 60 * 24  # 24 hours
+_IDEM_RESERVATION_TTL_MS = 30_000
+_IDEM_WAIT_SECONDS = 2.0
+_IDEM_POLL_SECONDS = 0.05
+
+_RESERVE_IDEMPOTENCY = """
+local key = KEYS[1]
+local fingerprint = ARGV[1]
+local token = ARGV[2]
+local reservation_ttl_ms = tonumber(ARGV[3])
+
+if redis.call('EXISTS', key) == 0 then
+  redis.call(
+    'HSET', key,
+    'state', 'in_progress',
+    'fingerprint', fingerprint,
+    'token', token
+  )
+  redis.call('PEXPIRE', key, reservation_ttl_ms)
+  return {'reserved', '', reservation_ttl_ms}
+end
+
+local existing_fingerprint = redis.call('HGET', key, 'fingerprint')
+if existing_fingerprint ~= fingerprint then
+  return {'conflict', '', redis.call('PTTL', key)}
+end
+
+local state = redis.call('HGET', key, 'state')
+local remaining_ms = redis.call('PTTL', key)
+if state == 'completed' then
+  return {'completed', redis.call('HGET', key, 'response') or '', remaining_ms}
+end
+if remaining_ms < 0 then
+  redis.call('PEXPIRE', key, reservation_ttl_ms)
+  remaining_ms = reservation_ttl_ms
+end
+return {'in_progress', '', remaining_ms}
+"""
+
+_COMPLETE_IDEMPOTENCY = """
+if redis.call('HGET', KEYS[1], 'state') == 'in_progress'
+  and redis.call('HGET', KEYS[1], 'fingerprint') == ARGV[1]
+  and redis.call('HGET', KEYS[1], 'token') == ARGV[2] then
+  redis.call('HSET', KEYS[1], 'state', 'completed', 'response', ARGV[3])
+  redis.call('HDEL', KEYS[1], 'token')
+  redis.call('EXPIRE', KEYS[1], ARGV[4])
+  return 1
+end
+return 0
+"""
+
+_RELEASE_IDEMPOTENCY = """
+if redis.call('HGET', KEYS[1], 'state') == 'in_progress'
+  and redis.call('HGET', KEYS[1], 'token') == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
 
 
 async def receive(
@@ -83,15 +144,84 @@ async def receive(
     if not ws_result.scalar_one_or_none():
         raise WorkspaceNotFoundError(f"Workspace {workspace_id} not found.")
 
-    # ── Idempotency check ─────────────────────────────────────────
     redis = get_redis()
-    idem_key = f"idem:receive:{idempotency_key}"
-    cached = await redis.get(idem_key)
-    if cached:
+    idem_key = _idempotency_cache_key(workspace_id, user_id, idempotency_key)
+    fingerprint = _request_fingerprint(
+        content=content,
+        url=url,
+        source_type=source_type,
+        title=title,
+        tags=tags,
+        category=category,
+    )
+    reservation_token, cached_response = await _claim_idempotency(
+        redis,
+        idem_key,
+        fingerprint,
+    )
+    if cached_response is not None:
         log.debug("receive_idempotent", idempotency_key=idempotency_key)
-        return json.loads(cached)
+        return cached_response
+    assert reservation_token is not None
 
-    # ── SHA-256 deduplication ─────────────────────────────────────
+    try:
+        response = await _receive_reserved(
+            session=session,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            content=content,
+            url=url,
+            source_type=source_type,
+            title=title,
+            tags=tags,
+            category=category,
+            idempotency_key=idempotency_key,
+        )
+        completed = await redis.eval(
+            _COMPLETE_IDEMPOTENCY,
+            1,
+            idem_key,
+            fingerprint,
+            reservation_token,
+            json.dumps(response, sort_keys=True, separators=(",", ":")),
+            _IDEM_TTL,
+        )
+        if not completed:
+            log.warning(
+                "receive_idempotency_reservation_lost",
+                workspace_id=str(workspace_id),
+                user_id=str(user_id),
+            )
+        return response
+    except BaseException:
+        try:
+            await redis.eval(
+                _RELEASE_IDEMPOTENCY,
+                1,
+                idem_key,
+                reservation_token,
+            )
+        except Exception as release_error:
+            log.warning(
+                "receive_idempotency_release_failed",
+                error_type=type(release_error).__name__,
+            )
+        raise
+
+
+async def _receive_reserved(
+    *,
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    user_id: uuid.UUID,
+    content: str | None,
+    url: str | None,
+    source_type: str,
+    title: str | None,
+    tags: list[str] | None,
+    category: str | None,
+    idempotency_key: str,
+) -> dict[str, Any]:
     raw_for_hash = url if url else content
     assert raw_for_hash is not None
     sha256 = hashlib.sha256(raw_for_hash.encode()).hexdigest()
@@ -111,7 +241,7 @@ async def receive(
             document_id=str(existing_doc.id),
             workspace_id=str(workspace_id),
         )
-        resp: dict[str, Any] = {
+        return {
             "job_id": existing_doc.ingestion_job_id or str(existing_doc.id),
             "document_id": str(existing_doc.id),
             "status": existing_doc.ingestion_status,
@@ -119,10 +249,7 @@ async def receive(
             "memory_count": existing_doc.memory_count,
             "already_exists": True,
         }
-        await redis.setex(idem_key, _IDEM_TTL, json.dumps(resp))
-        return resp
 
-    # ── Create document record ────────────────────────────────────
     doc = Document(
         workspace_id=workspace_id,
         submitter_id=user_id,
@@ -143,29 +270,17 @@ async def receive(
         },
     )
     session.add(doc)
-    await session.flush()  # generate doc.id
+    await session.flush()
 
-    # ── Commit BEFORE dispatching ─────────────────────────────────
-    #
     # The worker is a different process on a different connection, and it
     # picks the task up within milliseconds. Until this transaction commits,
     # the document does not exist as far as that connection is concerned.
-    #
-    # This used to flush and dispatch, leaving the commit to the request
-    # teardown in core/database.py::get_db_session — which runs only after
-    # receive() returns, after the route returns, and after the response is
-    # serialised. The worker therefore raced a transaction that had not been
-    # committed yet, failed its SELECT, logged pipeline_doc_not_found and
-    # returned early WITHOUT touching the row. The document was left at
-    # 'pending'/'queued' with no error recorded, for ever.
-    #
     # A document must be durable before anything is scheduled against it.
     # Committing here also means a failure to enqueue leaves an orphaned
     # document rather than an orphaned task: the document is recoverable and
     # visible, the task was neither.
     await session.commit()
 
-    # ── Enqueue Celery task ───────────────────────────────────────
     from sourcemind.workers.ingestion import process_document
 
     task = process_document.apply_async(
@@ -190,8 +305,7 @@ async def receive(
         workspace_id=str(workspace_id),
         source_type=source_type,
     )
-
-    resp = {
+    return {
         "job_id": task.id,
         "document_id": str(doc.id),
         "status": IngestionStatus.PENDING,
@@ -199,8 +313,81 @@ async def receive(
         "memory_count": None,
         "already_exists": False,
     }
-    await redis.setex(idem_key, _IDEM_TTL, json.dumps(resp))
-    return resp
+
+
+def _idempotency_cache_key(
+    workspace_id: uuid.UUID,
+    user_id: uuid.UUID,
+    idempotency_key: str,
+) -> str:
+    return f"idem:receive:v2:{workspace_id}:{user_id}:{idempotency_key}"
+
+
+def _request_fingerprint(
+    *,
+    content: str | None,
+    url: str | None,
+    source_type: str,
+    title: str | None,
+    tags: list[str] | None,
+    category: str | None,
+) -> str:
+    payload = json.dumps(
+        {
+            "category": category,
+            "content": content,
+            "source_type": source_type,
+            "tags": tags or [],
+            "title": title,
+            "url": url,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+async def _claim_idempotency(
+    redis: Any,
+    key: str,
+    fingerprint: str,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Claim a short lease or briefly await an identical request's result.
+
+    This coordinates live callers but does not guarantee exactly-once delivery.
+    A process that outlives its lease can overlap a retry, so database and
+    downstream idempotency controls remain necessary.
+    """
+    token = uuid.uuid4().hex
+    deadline = time.monotonic() + _IDEM_WAIT_SECONDS
+    while True:
+        state_raw, response_raw, remaining_ms_raw = await redis.eval(
+            _RESERVE_IDEMPOTENCY,
+            1,
+            key,
+            fingerprint,
+            token,
+            _IDEM_RESERVATION_TTL_MS,
+        )
+        state = str(state_raw)
+        if state == "reserved":
+            return token, None
+        if state == "conflict":
+            raise IdempotencyConflictError(
+                "The Idempotency-Key was already used with a different request body."
+            )
+        if state == "completed":
+            return None, json.loads(str(response_raw))
+
+        remaining_wait = deadline - time.monotonic()
+        if remaining_wait <= 0:
+            remaining_ms = max(1, int(remaining_ms_raw))
+            raise ServiceUnavailableError(
+                "An identical ingestion request is still being processed.",
+                details={"retry_after_seconds": max(1, (remaining_ms + 999) // 1000)},
+            )
+        await asyncio.sleep(min(_IDEM_POLL_SECONDS, remaining_wait))
 
 
 async def _validate_url(url: str) -> None:

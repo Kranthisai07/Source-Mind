@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from enum import StrEnum
 from uuid import UUID
 
@@ -18,7 +19,12 @@ local current = redis.call('INCR', KEYS[1])
 if current == 1 then
   redis.call('EXPIRE', KEYS[1], ARGV[1])
 end
-return current
+local remaining_ms = redis.call('PTTL', KEYS[1])
+if remaining_ms < 0 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1] * 1000)
+  remaining_ms = ARGV[1] * 1000
+end
+return {current, remaining_ms}
 """
 
 
@@ -60,14 +66,14 @@ async def enforce_rate_limit(
     scope = str(workspace_id) if workspace_id else "global"
     key = f"rate-limit:{operation.value}:{scope}:{user_id}"
     try:
-        current = int(
-            await get_redis().eval(
-                _INCREMENT_WITH_TTL,
-                1,
-                key,
-                window_seconds,
-            )
+        current_raw, remaining_ms_raw = await get_redis().eval(
+            _INCREMENT_WITH_TTL,
+            1,
+            key,
+            window_seconds,
         )
+        current = int(current_raw)
+        remaining_ms = int(remaining_ms_raw)
     except Exception as exc:
         log.error(
             "rate_limit.backend_unavailable",
@@ -82,5 +88,6 @@ async def enforce_rate_limit(
 
     if current > limit:
         raise RateLimitExceededError(
-            f"Rate limit exceeded for {operation.value}. Try again later."
+            f"Rate limit exceeded for {operation.value}. Try again later.",
+            retry_after_seconds=max(1, math.ceil(remaining_ms / 1000)),
         )

@@ -1795,3 +1795,47 @@ success, exhausted retries, revoked access without content processing, and
 category persistence through stored memory. Exact-node coverage is added to the
 existing disposable PostgreSQL/Redis security-acceptance workflow. The separate
 PostgreSQL 18 migration evidence for the release candidate is unaffected.
+
+---
+
+## D-016 — Concurrent ingestion, connector checkpoints, and 429 retry timing
+
+**Status:** Fixed and locally verified on 2026-09-21; not deployed.
+
+The ingestion receiver previously treated an idempotency key as a late Redis
+cache lookup. Two callers could both miss the key, persist separate documents,
+and dispatch separate jobs. The content hash constraint limited identical
+content to one row by raising an integrity error, but it did not enforce the
+key and did nothing for different payloads.
+
+The receiver now atomically reserves a key scoped by workspace, authenticated
+user, and caller-provided key, together with a canonical request fingerprint.
+An identical concurrent caller waits at most two seconds for the first result;
+a different fingerprint receives the existing `SM033` conflict. A handled
+failure releases only its own token, and an abandoned reservation expires after
+30 seconds so a later retry can recover. Completed responses remain cached for
+24 hours. This Redis lease coordinates live callers but is explicitly not an
+exactly-once delivery guarantee: a process that outlives its lease can overlap a
+retry, and database/downstream idempotency remain separate controls.
+
+GitHub ingestion exceptions were also indistinguishable from duplicate
+artifacts. The connector reported a completed sync and advanced `last_sync_at`,
+which let the next incremental `since` filter permanently exclude the failed
+artifact. Duplicates still return the normal skipped result, but ingestion
+exceptions now fail the sync and preserve the previous checkpoint. A later sync
+re-fetches the window, skips already-linked artifacts, and retries the failed
+one.
+
+The rate-limit Lua operation now returns both the incremented count and the
+remaining fixed-window TTL atomically. A 429 carries a positive whole-second
+`Retry-After`, and CORS exposes that header so the existing browser retry
+contract can consume it.
+
+Before the fixes, the four focused regressions failed with one connector sync
+reported completed, one concurrent identical request raising `IntegrityError`,
+two different payloads both succeeding, and a 429 without `Retry-After`. After
+the fixes, six focused tests passed against isolated PostgreSQL 16.15 and real
+Redis as `sourcemind_test` (`NOSUPERUSER NOBYPASSRLS`), including handled-failure
+release and abandoned-lease recovery. The adjacent focused unit set passed 34
+tests. No migration, authorization policy, workflow, or deployment behavior was
+changed.

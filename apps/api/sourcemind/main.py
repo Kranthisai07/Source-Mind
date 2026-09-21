@@ -167,7 +167,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["X-Request-ID", "X-Process-Time-Ms"],
+        expose_headers=["X-Request-ID", "X-Process-Time-Ms", "Retry-After"],
     )
 
     # ── Exception handlers ────────────────────────────────────────
@@ -216,8 +216,14 @@ async def _sourcemind_exception_handler(
         http_status=exc.http_status,
     )
 
+    headers: dict[str, str] = {}
+    retry_after_seconds = getattr(exc, "retry_after_seconds", None)
+    if retry_after_seconds is not None:
+        headers["Retry-After"] = str(max(1, int(retry_after_seconds)))
+
     return _ORJSONResponse(
         status_code=exc.http_status,
+        headers=headers,
         content={
             "error": {
                 "code": exc.code,

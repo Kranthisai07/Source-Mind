@@ -169,6 +169,10 @@ class RateLimitExceededError(SourceMindError):
     code = ErrorCode.RATE_LIMIT_EXCEEDED
     http_status = HTTPStatus.TOO_MANY_REQUESTS
 
+    def __init__(self, message: str, *, retry_after_seconds: int) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = max(1, retry_after_seconds)
+
 
 # ─── Not found exceptions ─────────────────────────────────────────────────────
 

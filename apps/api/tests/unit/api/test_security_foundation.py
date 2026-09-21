@@ -445,12 +445,13 @@ def _rate_settings(*, fail_closed: bool = True) -> SimpleNamespace:
 @pytest.mark.asyncio
 async def test_atomic_rate_limit_rejects_over_limit() -> None:
     redis = AsyncMock()
-    redis.eval.return_value = 2
+    redis.eval.return_value = [2, 1_500]
     with patch("sourcemind.core.rate_limit.get_redis", return_value=redis), patch(
         "sourcemind.core.rate_limit.get_settings", return_value=_rate_settings()
     ):
-        with pytest.raises(RateLimitExceededError):
+        with pytest.raises(RateLimitExceededError) as raised:
             await enforce_rate_limit(RateLimitedOperation.SEARCH, uuid.uuid4(), uuid.uuid4())
+    assert raised.value.retry_after_seconds == 2
     redis.eval.assert_awaited_once()
 
 

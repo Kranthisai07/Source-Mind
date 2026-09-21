@@ -97,6 +97,7 @@ class GitHubConnector:
                 total_skipped += skipped
 
             sync_log.status = "completed"
+            self._config.last_sync_at = datetime.now(UTC)
         except Exception as exc:
             sync_log.status = "failed"
             sync_log.error_message = "Connector sync failed."
@@ -111,8 +112,6 @@ class GitHubConnector:
             sync_log.artifacts_skipped = total_skipped
             sync_log.completed_at = datetime.now(UTC)
 
-            # Update connector timestamps
-            self._config.last_sync_at = datetime.now(UTC)
             await self._session.flush()
 
         return sync_log
@@ -226,7 +225,7 @@ class GitHubConnector:
                 source_id=doc.source_id,
                 error_type=type(exc).__name__,
             )
-            return False
+            raise
 
         if result.get("already_exists"):
             return False
