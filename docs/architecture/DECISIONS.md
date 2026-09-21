@@ -1764,3 +1764,34 @@ The focused unit regression failed before the change with the document still
 isolated PostgreSQL and Redis as `sourcemind_test` (`NOSUPERUSER NOBYPASSRLS`):
 the actual API queued the document and revoked the member, the worker rejected
 execution, the document was `failed`, and its memory count remained zero.
+
+---
+
+## D-015 — Retrying ingestion is non-terminal and category survives execution
+
+**Status:** Fixed and locally verified on 2026-09-20; not deployed.
+
+The ingestion worker used to persist every raised pipeline exception as
+`failed` before asking Celery to retry. Polling therefore reported a terminal
+failure during recoverable backoff even when the next attempt could complete.
+The worker now records `processing` with `current_stage=retrying` while retries
+remain. It records `failed` only when retries are exhausted or an existing
+terminal authorization path rejects the job. The jobs endpoint exposes
+`retrying` as a non-terminal polling status and a non-sensitive retry message.
+
+The optional ingestion category was also dropped before document persistence:
+the frontend submitted it, but `MemoryCreate` did not validate it and the route
+and receiver did not forward it. Category remains the existing nullable,
+free-form value with the database's 100-character limit; this change does not
+introduce an enum or taxonomy. The validated value is stored in document
+pipeline data, read by the worker, and applied to each stored memory.
+
+The worker-level regression invokes request validation, the actual API handler,
+restricted-role PostgreSQL/Redis persistence, polling, membership revocation,
+and the real worker pipeline while stubbing external model stages. Before the
+fix, the transient case polled as `failed` and category was absent from the
+document. After the fix, all four cases pass: transient failure then retry and
+success, exhausted retries, revoked access without content processing, and
+category persistence through stored memory. Exact-node coverage is added to the
+existing disposable PostgreSQL/Redis security-acceptance workflow. The separate
+PostgreSQL 18 migration evidence for the release candidate is unaffected.

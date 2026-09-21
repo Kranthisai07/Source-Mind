@@ -309,18 +309,25 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
 
             except Exception as exc:
                 log.error(
-                    "pipeline_failed",
+                    "pipeline_attempt_failed",
                     document_id=document_id,
                     error_type=type(exc).__name__,
                 )
+                current_retries = int(getattr(getattr(task, "request", None), "retries", 0))
+                max_retries = getattr(task, "max_retries", 3)
+                will_retry = max_retries is None or current_retries < int(max_retries)
                 try:
                     await session.rollback()
                     await update_document_status(
                         session,
                         doc_uuid,
-                        IngestionStatus.FAILED,
-                        error_message=f"Ingestion failed ({type(exc).__name__}).",
-                        current_stage="failed",
+                        IngestionStatus.PROCESSING if will_retry else IngestionStatus.FAILED,
+                        error_message=(
+                            None
+                            if will_retry
+                            else f"Ingestion failed ({type(exc).__name__})."
+                        ),
+                        current_stage="retrying" if will_retry else "failed",
                     )
                     await session.commit()
                 except Exception as cleanup_exc:
@@ -332,9 +339,18 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                         error_type=type(cleanup_exc).__name__,
                     )
 
+                if not will_retry:
+                    raise RuntimeError("Ingestion pipeline failed.") from None
+
+                log.warning(
+                    "pipeline_retry_scheduled",
+                    document_id=document_id,
+                    retry=current_retries + 1,
+                    max_retries=max_retries,
+                )
                 raise task.retry(  # type: ignore[union-attr]
                     exc=RuntimeError("Ingestion pipeline failed."),
-                    countdown=60 * (2 ** task.request.retries),
+                    countdown=60 * (2**current_retries),
                 ) from None
 
     finally:

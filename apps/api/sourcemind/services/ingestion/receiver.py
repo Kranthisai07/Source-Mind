@@ -47,6 +47,7 @@ async def receive(
     source_type: str = DocumentSourceType.TEXT,
     title: str | None = None,
     tags: list[str] | None = None,
+    category: str | None = None,
     idempotency_key: str,
 ) -> dict[str, Any]:
     """
@@ -138,6 +139,7 @@ async def receive(
             # the ingest request used to be dropped here, so every memory
             # was stored with tags=NULL.
             "tags": tags or [],
+            "category": category,
         },
     )
     session.add(doc)

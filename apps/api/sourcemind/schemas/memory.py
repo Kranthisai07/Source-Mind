@@ -24,7 +24,7 @@ IngestionStatusLiteral = Literal[
     "pending", "processing", "duplicate",
     # pipeline_data.current_stage values written by workers/ingestion.py.
     "queued", "extracting", "chunking", "extracting_facts",
-    "embedding", "attributing", "indexing", "completed", "failed",
+    "embedding", "attributing", "indexing", "retrying", "completed", "failed",
 ]
 MatchTypeLiteral = Literal[
     "semantic", "keyword", "semantic+keyword", "hybrid",
@@ -72,6 +72,11 @@ class MemoryCreate(BaseModel):
         default_factory=list,
         max_length=20,
         description="Tags to apply to all extracted memories",
+    )
+    category: str | None = Field(
+        default=None,
+        max_length=100,
+        description="Optional category to apply to all extracted memories",
     )
 
     model_config = {"str_strip_whitespace": True}

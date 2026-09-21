@@ -104,6 +104,7 @@ async def create_memory(
         # Previously dropped here: MemoryCreate accepted tags and nothing
         # forwarded them, so they never reached the stored memory.
         tags=body.tags,
+        category=body.category,
         idempotency_key=idempotency_key,
     )
 
@@ -400,6 +401,7 @@ def _status_message(ingestion_status: str, current_stage: str) -> str:
         "extracting_facts": "Extracting atomic facts using Claude.",
         "embedding": "Generating embeddings.",
         "indexing": "Writing memories to database.",
+        "retrying": "A temporary ingestion error occurred. Retrying shortly.",
         "completed": "Ingestion complete.",
         "failed": "Ingestion failed. Check the 'error' field for details.",
     }
