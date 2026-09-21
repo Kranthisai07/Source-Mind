@@ -86,6 +86,11 @@ async def test_duplicate_content_returns_existing():
     existing_doc.ingestion_status = IngestionStatus.COMPLETED
     existing_doc.memory_count = 5
     existing_doc.deleted_at = None
+    existing_doc.pipeline_data = {
+        "current_stage": "completed",
+        "dispatch_state": "queued",
+        "dispatch_attempts": 1,
+    }
 
     mock_session = AsyncMock()
     ws_id = uuid.uuid4()
@@ -104,10 +109,12 @@ async def test_duplicate_content_returns_existing():
         call_count["n"] += 1
         if call_count["n"] == 1:
             # Workspace check
-            result.scalar_one_or_none = MagicMock(return_value=_mock_workspace(ws_id))
+            selected = _mock_workspace(ws_id)
         else:
             # Duplicate check
-            result.scalar_one_or_none = MagicMock(return_value=existing_doc)
+            selected = existing_doc
+        result.scalar_one_or_none = MagicMock(return_value=selected)
+        result.scalar_one = MagicMock(return_value=selected)
         return result
 
     mock_session.execute = AsyncMock(side_effect=smart_execute)

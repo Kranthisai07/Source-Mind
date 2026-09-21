@@ -1839,3 +1839,43 @@ Redis as `sourcemind_test` (`NOSUPERUSER NOBYPASSRLS`), including handled-failur
 release and abandoned-lease recovery. The adjacent focused unit set passed 34
 tests. No migration, authorization policy, workflow, or deployment behavior was
 changed.
+---
+
+## D-017 — Failed ingestion publication remains pollable and recoverable
+
+**Status:** Fixed and locally verified on 2026-09-21; not deployed.
+
+The receiver committed a pending document before publishing its Celery task,
+which correctly made the row visible to the worker. If publication then raised,
+however, the document remained pending without an `ingestion_job_id`. A retry
+found that document through content deduplication and returned the document UUID
+as a successful `job_id`; the polling route only searches
+`documents.ingestion_job_id`, so the advertised job returned 404 and no
+recovery publication occurred.
+
+The receiver now creates and commits a stable task ID with the document before
+publication. Dispatch metadata distinguishes an unpublished orphan, an
+in-flight publication transaction, an ambiguous publication exception, and a
+confirmed queued submission. Recovery locks the document row, reuses the same
+task ID, and increments the recorded attempt count before publishing. Two
+simultaneous retries therefore cannot independently publish the same recovery;
+already queued or already started work is returned without another dispatch.
+Legacy pending documents without a job ID receive a persisted polling ID before
+recovery, while completed or active documents without one receive a polling
+handle without being republished.
+
+A publication exception is explicitly not treated as proof that the broker
+rejected the message. The message may have been accepted before the client saw
+the error. A retry can therefore produce duplicate broker delivery, although it
+reuses the same task ID and the document-row lock serializes recovery callers;
+this is at-least-once recovery, not an exactly-once claim.
+
+Three route-level regressions run through signed authentication, the real POST
+route, restricted-role PostgreSQL, real Redis, and the real polling route.
+Before the fix they failed because the job ID was null, concurrent retries
+performed no recovery dispatch, and polling returned 404. After the fix all
+three passed; the complete focused receiver/idempotency/worker set passed 18
+tests in 23.56 seconds. The existing 19-node security-acceptance selection now
+collects exactly 22 nodes when the three recovery regressions are included. No
+migration, authorization policy, workflow, production setting, or deployment
+behavior changed.

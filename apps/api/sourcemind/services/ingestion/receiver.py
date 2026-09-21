@@ -241,15 +241,13 @@ async def _receive_reserved(
             document_id=str(existing_doc.id),
             workspace_id=str(workspace_id),
         )
-        return {
-            "job_id": existing_doc.ingestion_job_id or str(existing_doc.id),
-            "document_id": str(existing_doc.id),
-            "status": existing_doc.ingestion_status,
-            "message": "Document already ingested. Returning existing record.",
-            "memory_count": existing_doc.memory_count,
-            "already_exists": True,
-        }
+        return await _dispatch_or_return_document(
+            session=session,
+            document_id=existing_doc.id,
+            workspace_id=workspace_id,
+        )
 
+    job_id = str(uuid.uuid4())
     doc = Document(
         workspace_id=workspace_id,
         submitter_id=user_id,
@@ -267,7 +265,10 @@ async def _receive_reserved(
             # was stored with tags=NULL.
             "tags": tags or [],
             "category": category,
+            "dispatch_state": "orphaned",
+            "dispatch_attempts": 0,
         },
+        ingestion_job_id=job_id,
     )
     session.add(doc)
     await session.flush()
@@ -276,42 +277,144 @@ async def _receive_reserved(
     # picks the task up within milliseconds. Until this transaction commits,
     # the document does not exist as far as that connection is concerned.
     # A document must be durable before anything is scheduled against it.
-    # Committing here also means a failure to enqueue leaves an orphaned
-    # document rather than an orphaned task: the document is recoverable and
-    # visible, the task was neither.
+    # The preassigned polling id and orphaned dispatch state are durable before
+    # publication. If publication reports an error, recovery can reuse that id;
+    # the later result is still treated as ambiguous rather than as proof that
+    # the broker rejected the task.
     await session.commit()
 
-    from sourcemind.workers.ingestion import process_document
-
-    task = process_document.apply_async(
-        kwargs={
-            "document_id": str(doc.id),
-            "workspace_id": str(workspace_id),
-            "user_id": str(user_id),
-        },
-        priority=5,
+    return await _dispatch_or_return_document(
+        session=session,
+        document_id=doc.id,
+        workspace_id=workspace_id,
     )
 
-    # Second commit: the job id is what the client polls on, so it has to be
-    # durable too. Safe to touch `doc` after the commit above because the
-    # session factory sets expire_on_commit=False.
-    doc.ingestion_job_id = task.id
-    await session.commit()
 
-    log.info(
-        "document_received",
-        document_id=str(doc.id),
-        job_id=task.id,
-        workspace_id=str(workspace_id),
-        source_type=source_type,
-    )
+async def _dispatch_or_return_document(
+    *,
+    session: AsyncSession,
+    document_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+) -> dict[str, Any]:
+    """Return existing work or serialize recovery of an orphaned dispatch.
+
+    The task id is committed before publication so every successful response
+    is pollable. The row lock prevents simultaneous retries from publishing the
+    same recovery independently. A broker exception remains ambiguous: the
+    broker may have accepted the message before the client observed the error,
+    so recovery reuses the same task id but does not claim exactly-once delivery.
+    """
+    while True:
+        locked_result = await session.execute(
+            select(Document)
+            .where(
+                Document.id == document_id,
+                Document.workspace_id == workspace_id,
+                Document.deleted_at.is_(None),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        doc = locked_result.scalar_one()
+        pipeline_data = dict(doc.pipeline_data or {})
+        current_stage = pipeline_data.get("current_stage", doc.ingestion_status)
+        pending_dispatch = (
+            doc.ingestion_status == IngestionStatus.PENDING
+            and current_stage in {"pending", "queued"}
+        )
+
+        if doc.ingestion_job_id is None:
+            doc.ingestion_job_id = str(uuid.uuid4())
+            pipeline_data["dispatch_state"] = (
+                "orphaned" if pending_dispatch else "not_required"
+            )
+            pipeline_data.setdefault("dispatch_attempts", 0)
+            doc.pipeline_data = pipeline_data
+            await session.commit()
+            if pending_dispatch:
+                continue
+            return _document_response(doc, existing=True)
+
+        dispatch_state = pipeline_data.get("dispatch_state")
+        if not pending_dispatch:
+            if dispatch_state in {"orphaned", "publishing", "uncertain"}:
+                pipeline_data["dispatch_state"] = "work_started"
+                doc.pipeline_data = pipeline_data
+            await session.commit()
+            return _document_response(doc, existing=True)
+
+        if dispatch_state is None:
+            pipeline_data["dispatch_state"] = "queued"
+            pipeline_data.setdefault("dispatch_attempts", 1)
+            doc.pipeline_data = pipeline_data
+            await session.commit()
+            return _document_response(doc, existing=True)
+
+        if dispatch_state == "queued":
+            await session.commit()
+            return _document_response(doc, existing=True)
+
+        pipeline_data["dispatch_state"] = "publishing"
+        pipeline_data["dispatch_attempts"] = int(
+            pipeline_data.get("dispatch_attempts", 0)
+        ) + 1
+        doc.pipeline_data = pipeline_data
+        await session.flush()
+
+        from sourcemind.workers.ingestion import process_document
+
+        try:
+            process_document.apply_async(
+                task_id=doc.ingestion_job_id,
+                kwargs={
+                    "document_id": str(doc.id),
+                    "workspace_id": str(workspace_id),
+                    "user_id": str(doc.submitter_id),
+                },
+                priority=5,
+            )
+        except Exception:
+            pipeline_data = {**pipeline_data, "dispatch_state": "uncertain"}
+            doc.pipeline_data = pipeline_data
+            await session.commit()
+            log.warning(
+                "document_dispatch_uncertain",
+                document_id=str(doc.id),
+                job_id=doc.ingestion_job_id,
+                workspace_id=str(workspace_id),
+                attempts=pipeline_data["dispatch_attempts"],
+            )
+            raise
+
+        pipeline_data = {**pipeline_data, "dispatch_state": "queued"}
+        doc.pipeline_data = pipeline_data
+        await session.commit()
+
+        log.info(
+            "document_received",
+            document_id=str(doc.id),
+            job_id=doc.ingestion_job_id,
+            workspace_id=str(workspace_id),
+            source_type=doc.source_type,
+            attempts=pipeline_data["dispatch_attempts"],
+        )
+        return _document_response(doc, existing=False)
+
+
+def _document_response(doc: Document, *, existing: bool) -> dict[str, Any]:
+    assert doc.ingestion_job_id is not None
     return {
-        "job_id": task.id,
+        "job_id": doc.ingestion_job_id,
         "document_id": str(doc.id),
-        "status": IngestionStatus.PENDING,
-        "message": "Document queued for ingestion. Poll /v1/memories/jobs/:job_id for status.",
-        "memory_count": None,
-        "already_exists": False,
+        "status": doc.ingestion_status,
+        "message": (
+            "Document already ingested. Returning existing record."
+            if existing
+            else "Document queued for ingestion. "
+            "Poll /v1/memories/jobs/:job_id for status."
+        ),
+        "memory_count": doc.memory_count,
+        "already_exists": existing,
     }
 
 

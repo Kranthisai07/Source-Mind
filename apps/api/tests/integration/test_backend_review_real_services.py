@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import math
 import os
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -22,7 +24,15 @@ from sourcemind.core.config import get_settings
 from sourcemind.core.database import set_rls_user_context, set_rls_workspace_context
 from sourcemind.core.exceptions import IdempotencyConflictError, ServiceUnavailableError
 from sourcemind.models.document import Document
-from tests.integration.test_security_foundation_real_db import _seed_security_tenants
+from tests.integration.test_security_acceptance_real_services import (
+    _auth,
+    _signing_material,
+    _token,
+)
+from tests.integration.test_security_foundation_real_db import (
+    SecurityTenantData,
+    _seed_security_tenants,
+)
 
 
 class _SecretURL(str):
@@ -107,6 +117,7 @@ def _configure_environment(
         "FF_NEO4J_ATTRIBUTION": "false",
         "FF_KAFKA_EVENTS": "false",
         "RATE_LIMIT_FAIL_CLOSED": "true",
+        "RATE_LIMIT_INGESTION_PER_MINUTE": "100",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -188,6 +199,79 @@ class _DispatchSpy:
         task_id = f"review-job-{len(self.calls) + 1}"
         self.calls.append({"task_id": task_id, **kwargs})
         return SimpleNamespace(id=task_id)
+
+
+class _FailFirstDispatch:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(self, **kwargs: object) -> SimpleNamespace:
+        self.calls.append(kwargs)
+        if len(self.calls) == 1:
+            raise RuntimeError("synthetic publication failure")
+        task_id = str(kwargs.get("task_id") or f"recovery-job-{len(self.calls)}")
+        return SimpleNamespace(id=task_id)
+
+
+@asynccontextmanager
+async def _publication_recovery_client(
+    engine: AsyncEngine,
+    database_url: str,
+    redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[tuple[httpx.AsyncClient, SecurityTenantData, dict[str, str]]]:
+    _configure_environment(monkeypatch, database_url, redis_url)
+    data = await _seed_security_tenants(engine)
+    private_pem, public_jwk = _signing_material()
+    clerk_id = data.clerk_ids[data.member_id]
+
+    async def fetch_profile(_clerk_id: str, _secret: str) -> tuple[str, str]:
+        return f"{clerk_id}@example.com", clerk_id
+
+    from sourcemind.core import dependencies
+    from sourcemind.core.redis_client import get_redis
+    from sourcemind.main import create_app
+
+    dependencies._jwks_cache.clear()
+    dependencies._user_profile_cache.clear()
+    app = create_app()
+    with (
+        patch(
+            "sourcemind.core.dependencies._fetch_jwks",
+            return_value=[public_jwk],
+        ),
+        patch(
+            "sourcemind.core.dependencies._fetch_clerk_user_profile",
+            side_effect=fetch_profile,
+        ),
+    ):
+        async with app.router.lifespan_context(app):
+            await get_redis().flushdb()
+            transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://backend-review.test",
+            ) as client:
+                yield client, data, _auth(_token(private_pem, clerk_id))
+
+
+async def _publication_document(
+    engine: AsyncEngine,
+    data: SecurityTenantData,
+    content: str,
+) -> Document:
+    async with AsyncSession(engine) as session:
+        await set_rls_user_context(session, data.member_id)
+        await set_rls_workspace_context(session, data.target_workspace_id)
+        document = await session.scalar(
+            select(Document).where(
+                Document.workspace_id == data.target_workspace_id,
+                Document.sha256_hash == hashlib.sha256(content.encode()).hexdigest(),
+            )
+        )
+        assert document is not None
+        session.expunge(document)
+        return document
 
 
 async def _run_concurrent_submissions(
@@ -449,6 +533,169 @@ async def test_in_progress_wait_is_bounded_and_expired_lease_recovers(
     finally:
         await redis.delete(cache_key)
         await close_redis()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_publication_failure_retry_recovers_pending_document(
+    backend_review_engine: AsyncEngine,
+    backend_review_database_url: str,
+    backend_review_redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sourcemind.workers.ingestion import process_document
+
+    content = f"publication recovery {uuid.uuid4()}"
+    idempotency_key = str(uuid.uuid4())
+    dispatch = _FailFirstDispatch()
+
+    async with _publication_recovery_client(
+        backend_review_engine,
+        backend_review_database_url,
+        backend_review_redis_url,
+        monkeypatch,
+    ) as (client, data, auth_headers):
+        headers = {**auth_headers, "Idempotency-Key": idempotency_key}
+        with patch.object(process_document, "apply_async", side_effect=dispatch):
+            failed = await client.post(
+                f"/v1/memories?workspace_id={data.target_workspace_id}",
+                headers=headers,
+                json={"content": content, "source_type": "text"},
+            )
+            assert failed.status_code == 500
+
+            ambiguous = await _publication_document(
+                backend_review_engine,
+                data,
+                content,
+            )
+            assert ambiguous.ingestion_status == "pending"
+            assert ambiguous.ingestion_job_id is not None
+            assert ambiguous.pipeline_data["dispatch_state"] == "uncertain"
+            assert ambiguous.pipeline_data["dispatch_attempts"] == 1
+
+            recovered = await client.post(
+                f"/v1/memories?workspace_id={data.target_workspace_id}",
+                headers=headers,
+                json={"content": content, "source_type": "text"},
+            )
+            already_queued = await client.post(
+                f"/v1/memories?workspace_id={data.target_workspace_id}",
+                headers={**auth_headers, "Idempotency-Key": str(uuid.uuid4())},
+                json={"content": content, "source_type": "text"},
+            )
+
+        assert recovered.status_code == 202, recovered.text
+        assert already_queued.status_code == 202, already_queued.text
+        response = recovered.json()["data"]
+        assert response["job_id"] == ambiguous.ingestion_job_id
+        assert response["document_id"] == str(ambiguous.id)
+        assert already_queued.json()["data"]["job_id"] == response["job_id"]
+        assert len(dispatch.calls) == 2
+        assert dispatch.calls[0]["task_id"] == dispatch.calls[1]["task_id"]
+
+        queued = await _publication_document(backend_review_engine, data, content)
+        assert queued.pipeline_data["dispatch_state"] == "queued"
+        assert queued.pipeline_data["dispatch_attempts"] == 2
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_recovery_attempts_publish_once(
+    backend_review_engine: AsyncEngine,
+    backend_review_database_url: str,
+    backend_review_redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sourcemind.workers.ingestion import process_document
+
+    content = f"concurrent publication recovery {uuid.uuid4()}"
+    original_key = str(uuid.uuid4())
+    dispatch = _FailFirstDispatch()
+
+    async with _publication_recovery_client(
+        backend_review_engine,
+        backend_review_database_url,
+        backend_review_redis_url,
+        monkeypatch,
+    ) as (client, data, auth_headers):
+        with patch.object(process_document, "apply_async", side_effect=dispatch):
+            failed = await client.post(
+                f"/v1/memories?workspace_id={data.target_workspace_id}",
+                headers={**auth_headers, "Idempotency-Key": original_key},
+                json={"content": content, "source_type": "text"},
+            )
+            assert failed.status_code == 500
+
+            async def retry(idempotency_key: str) -> httpx.Response:
+                return await client.post(
+                    f"/v1/memories?workspace_id={data.target_workspace_id}",
+                    headers={**auth_headers, "Idempotency-Key": idempotency_key},
+                    json={"content": content, "source_type": "text"},
+                )
+
+            responses = await asyncio.gather(
+                retry(original_key),
+                retry(str(uuid.uuid4())),
+            )
+
+        assert [response.status_code for response in responses] == [202, 202]
+        returned = [response.json()["data"] for response in responses]
+        assert len({item["document_id"] for item in returned}) == 1
+        assert len({item["job_id"] for item in returned}) == 1
+        assert len(dispatch.calls) == 2
+
+        queued = await _publication_document(backend_review_engine, data, content)
+        assert queued.pipeline_data["dispatch_state"] == "queued"
+        assert queued.pipeline_data["dispatch_attempts"] == 2
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_recovered_job_id_is_pollable_through_real_route(
+    backend_review_engine: AsyncEngine,
+    backend_review_database_url: str,
+    backend_review_redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sourcemind.workers.ingestion import process_document
+
+    content = f"pollable publication recovery {uuid.uuid4()}"
+    idempotency_key = str(uuid.uuid4())
+    dispatch = _FailFirstDispatch()
+
+    async with _publication_recovery_client(
+        backend_review_engine,
+        backend_review_database_url,
+        backend_review_redis_url,
+        monkeypatch,
+    ) as (client, data, auth_headers):
+        headers = {**auth_headers, "Idempotency-Key": idempotency_key}
+        with patch.object(process_document, "apply_async", side_effect=dispatch):
+            failed = await client.post(
+                f"/v1/memories?workspace_id={data.target_workspace_id}",
+                headers=headers,
+                json={"content": content, "source_type": "text"},
+            )
+            assert failed.status_code == 500
+            recovered = await client.post(
+                f"/v1/memories?workspace_id={data.target_workspace_id}",
+                headers=headers,
+                json={"content": content, "source_type": "text"},
+            )
+
+        assert recovered.status_code == 202, recovered.text
+        recovered_data = recovered.json()["data"]
+        polled = await client.get(
+            f"/v1/memories/jobs/{recovered_data['job_id']}",
+            headers=auth_headers,
+        )
+
+        assert polled.status_code == 200, polled.text
+        polled_data = polled.json()["data"]
+        assert polled_data["job_id"] == recovered_data["job_id"]
+        assert polled_data["document_id"] == recovered_data["document_id"]
+        assert polled_data["status"] == "queued"
 
 
 @pytest.mark.integration
