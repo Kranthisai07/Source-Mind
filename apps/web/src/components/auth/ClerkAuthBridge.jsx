@@ -40,17 +40,30 @@ export function ClerkTokenBridge() {
     // handing user B user A's workspace id.
     useEffect(() => {
         if (!isLoaded) return;
-        if (previousUserId.current === undefined) {
-            previousUserId.current = userId ?? null;
-            return;
-        }
+        const settled = userId ?? null;
+
         // Published on every settled render, not only on change: a plain
         // module cannot read Clerk's context, and a submission key minted
         // before this ran would otherwise carry a null user for the life of
         // the panel.
-        setCurrentUserId(userId ?? null);
-        if (previousUserId.current !== (userId ?? null)) {
-            previousUserId.current = userId ?? null;
+        //
+        // This has to happen BEFORE the first-render bookkeeping below. It
+        // used to sit after an early return taken on the very first settled
+        // render, so the ordinary case — sign in, never switch account —
+        // never published at all and every submission key carried a null
+        // user. Only a later identity change reached it, which is the one
+        // case the comment above was not written for.
+        setCurrentUserId(settled);
+
+        // First settled render: record the baseline, but do NOT treat it as a
+        // change. Resetting here would throw away the workspace cache on every
+        // mount.
+        if (previousUserId.current === undefined) {
+            previousUserId.current = settled;
+            return;
+        }
+        if (previousUserId.current !== settled) {
+            previousUserId.current = settled;
             resetApiCaches();
         }
     }, [isLoaded, userId]);

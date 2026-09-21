@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, RefreshCw, Settings2, Github, MessageSquare, Upload, FileText } from "lucide-react";
 import TopBar from "../components/layout/TopBar";
+import ErrorState from "../components/ui-kit/ErrorState";
 import StatusBadge from "../components/widgets/StatusBadge";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "../components/ui/sheet";
 import { Button } from "../components/ui/button";
@@ -10,6 +11,7 @@ import { Checkbox } from "../components/ui/checkbox";
 import { toast } from "sonner";
 import api from "../lib/api";
 import { relativeTime } from "../lib/format";
+import { classifyApiError } from "../lib/apiError";
 
 const SOURCE_ICON = {
     github: Github,
@@ -22,8 +24,42 @@ export default function Connectors() {
     const [logsOpen, setLogsOpen] = useState(false);
     const [selectedConn, setSelectedConn] = useState(null);
 
-    const load = () => api.listConnectors().then(r => setList(r.connectors));
-    useEffect(() => { load(); }, []);
+    const [error, setError] = useState(null);
+
+    // A failed load used to reject into nothing: no catch, no error state, no
+    // retry. `list` stayed at [] and the page reported "0 connected sources",
+    // which is exactly what a user with no integrations sees — so an outage
+    // was indistinguishable from their connectors having disappeared.
+    //
+    // The generation counter exists because retry makes concurrent loads
+    // possible. Without it the response that happens to arrive last wins, so
+    // an abandoned request could overwrite fresher data, or a late rejection
+    // could replace good rows with an error screen. Neither produces a React
+    // warning; both are silent.
+    const generation = useRef(0);
+    const alive = useRef(true);
+    useEffect(() => () => { alive.current = false; }, []);
+
+    const load = useCallback(() => {
+        const mine = ++generation.current;
+        const current = () => alive.current && mine === generation.current;
+        return api.listConnectors().then(
+            (r) => {
+                if (!current()) return;
+                setList(r.connectors);
+                setError(null);
+            },
+            (err) => {
+                if (!current()) return;
+                // ErrorState reads `retryable` and the classified copy, the
+                // same shape useApiResource stores — a raw rejection would
+                // render without the retry control.
+                setError(classifyApiError(err));
+            }
+        );
+    }, []);
+
+    useEffect(() => { load(); }, [load]);
 
     const syncNow = async (id) => {
         toast.info("Sync triggered");
@@ -35,7 +71,13 @@ export default function Connectors() {
         <>
             <TopBar
                 title="Connectors"
-                subtitle={`${list.length} connected sources · ${list.reduce((a, c) => a + c.total_artifacts_synced, 0).toLocaleString()} artifacts synced`}
+                // Counting from an unloaded list would state "0 connected
+                // sources" as fact while the request was failing.
+                subtitle={
+                    error
+                        ? "Connector list unavailable"
+                        : `${list.length} connected sources · ${list.reduce((a, c) => a + c.total_artifacts_synced, 0).toLocaleString()} artifacts synced`
+                }
                 actions={
                     <Button
                         data-testid="add-connector-btn"
@@ -47,8 +89,11 @@ export default function Connectors() {
                 }
             />
             <div className="flex-1 px-8 py-6">
+                {error && (
+                    <ErrorState error={error} onRetry={load} testId="connectors-error" />
+                )}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                    {list.map((c) => {
+                    {!error && list.map((c) => {
                         const Icon = SOURCE_ICON[c.source_tool] || FileText;
                         const iconColor = c.source_tool === "github" ? "#E8E8F0" : "#5865F2";
                         return (

@@ -154,14 +154,46 @@ export default function MemoryDetail() {
                         >
                             <ArrowLeft className="w-4 h-4" /> Back
                         </Button>
-                        <Button variant="outline" size="sm" className="bg-white/[0.04] border-hairline text-content">
+                        {/* Disabled, not removed — the treatment Handoff's
+                            Assign/Complete buttons already use. These three had
+                            no onClick at all: they took hover styling, took the
+                            click, and did nothing. Delete was the worst of the
+                            three, because `text-danger` advertises a
+                            destructive action, so a user who believed it had
+                            worked would believe the memory was gone.
+
+                            Wiring them is a data-layer change and stays out of
+                            scope. What changes here is that the screen stops
+                            claiming they exist. */}
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            disabled
+                            data-testid="mem-edit"
+                            title="Editing a memory isn't available on this screen yet"
+                            className="bg-white/[0.04] border-hairline text-content disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
                             <Edit3 className="w-3.5 h-3.5" /> Edit
                         </Button>
-                        <Button variant="outline" size="sm" className="bg-white/[0.04] border-hairline text-content">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            disabled
+                            data-testid="mem-share"
+                            title="Sharing a memory isn't available on this screen yet"
+                            className="bg-white/[0.04] border-hairline text-content disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
                             <Share2 className="w-3.5 h-3.5" /> Share
                         </Button>
                         {/* §2: red is reserved for destructive. */}
-                        <Button variant="outline" size="sm" className="bg-white/[0.04] border-hairline text-danger hover:text-danger">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            disabled
+                            data-testid="mem-delete"
+                            title="Deleting a memory isn't available on this screen yet"
+                            className="bg-white/[0.04] border-hairline text-danger hover:text-danger disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
                             <Trash2 className="w-3.5 h-3.5" /> Delete
                         </Button>
                     </>
