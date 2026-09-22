@@ -242,8 +242,18 @@ async def initiate_handoff(
         classify_memories,
         create_handoff_record,
     )
+    from sourcemind.services.ingestion.lifecycle import (
+        DEPARTURE_INGESTION_ERROR,
+        terminalize_member_ingestion_documents,
+    )
 
     summary = await classify_memories(db, workspace_id, body.departing_user_id)
+    await terminalize_member_ingestion_documents(
+        db,
+        workspace_id,
+        body.departing_user_id,
+        error_message=DEPARTURE_INGESTION_ERROR,
+    )
     handoff_id = await create_handoff_record(
         session=db,
         workspace_id=workspace_id,

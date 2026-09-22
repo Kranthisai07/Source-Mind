@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
@@ -24,6 +24,7 @@ from sourcemind.core.redis_client import close_redis, get_redis, init_redis
 from sourcemind.models.attribution import Attribution, AttributionEdit
 from sourcemind.models.document import Document, IngestionStatus
 from sourcemind.models.memory import Memory
+from sourcemind.models.workspace import WorkspaceMember, WorkspaceMembershipStatus
 from sourcemind.schemas.memory import MemoryCreate
 from sourcemind.services.ingestion.chunker import ChunkResult
 from sourcemind.services.ingestion.embedder import EmbeddingResult
@@ -282,9 +283,11 @@ async def _submit(
     data: SecurityTenantData,
     *,
     category: str | None = None,
+    user_id: uuid.UUID | None = None,
 ) -> tuple[str, uuid.UUID]:
     from sourcemind.workers import ingestion as worker
 
+    submitter_id = user_id or data.member_id
     job_id = f"ingestion-worker-{uuid.uuid4()}"
     monkeypatch.setattr(
         worker.process_document,
@@ -301,12 +304,12 @@ async def _submit(
 
     await init_redis()
     async with AsyncSession(engine, expire_on_commit=False) as session:
-        await set_rls_user_context(session, data.member_id)
+        await set_rls_user_context(session, submitter_id)
         await set_rls_workspace_context(session, data.target_workspace_id)
         response = await create_memory(
             body=body,
             db=session,
-            current_user=_user(data, data.member_id),
+            current_user=_user(data, submitter_id),
             request_id=str(uuid.uuid4()),
             idempotency_key=str(uuid.uuid4()),
             workspace_id=data.target_workspace_id,
@@ -431,6 +434,43 @@ async def _submit_after_ambiguous_publication(
     assert deliveries[0]["task_id"] == deliveries[1]["task_id"]
     assert deliveries[0]["kwargs"] == deliveries[1]["kwargs"]
     return response.data.job_id, response.data.document_id, deliveries
+
+
+async def _begin_member_handoff(
+    engine: AsyncEngine,
+    data: SecurityTenantData,
+) -> None:
+    from sourcemind.api.v1.team import InitiateHandoffBody, initiate_handoff
+
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        await set_rls_user_context(session, data.owner_id)
+        await set_rls_workspace_context(session, data.target_workspace_id)
+        await initiate_handoff(
+            workspace_id=data.target_workspace_id,
+            body=InitiateHandoffBody(departing_user_id=data.member_id),
+            db=session,
+            current_user=_user(data, data.owner_id),
+            request_id=str(uuid.uuid4()),
+        )
+
+
+async def _set_retrying(
+    engine: AsyncEngine,
+    data: SecurityTenantData,
+    document_id: uuid.UUID,
+) -> None:
+    async with AsyncSession(engine) as session:
+        await set_rls_user_context(session, data.owner_id)
+        await set_rls_workspace_context(session, data.target_workspace_id)
+        document = await session.scalar(
+            select(Document).where(Document.id == document_id)
+        )
+        assert document is not None
+        pipeline_data = dict(document.pipeline_data or {})
+        pipeline_data["current_stage"] = "retrying"
+        document.pipeline_data = pipeline_data
+        document.ingestion_status = IngestionStatus.PROCESSING
+        await session.commit()
 
 
 @pytest.mark.integration
@@ -728,3 +768,174 @@ async def test_stale_processing_state_is_recovered_after_worker_crash(
         data,
         document_id,
     ) == (1, 1, 1)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_handoff_departure_terminalizes_submitter_ingestion_jobs(
+    ingestion_worker_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_harness: WorkerHarness,
+) -> None:
+    from sourcemind.workers.ingestion import _run_pipeline
+
+    data = await _seed_security_tenants(ingestion_worker_engine)
+    queued_job_id, queued_document_id = await _submit(
+        ingestion_worker_engine,
+        monkeypatch,
+        data,
+    )
+    _retrying_job_id, retrying_document_id = await _submit(
+        ingestion_worker_engine,
+        monkeypatch,
+        data,
+    )
+    _control_job_id, control_document_id = await _submit(
+        ingestion_worker_engine,
+        monkeypatch,
+        data,
+        user_id=data.owner_id,
+    )
+    await _set_retrying(
+        ingestion_worker_engine,
+        data,
+        retrying_document_id,
+    )
+
+    await _begin_member_handoff(ingestion_worker_engine, data)
+
+    membership_status: str | None = None
+    async with AsyncSession(ingestion_worker_engine) as session:
+        await set_rls_user_context(session, data.owner_id)
+        await set_rls_workspace_context(session, data.target_workspace_id)
+        membership_status = await session.scalar(
+            select(WorkspaceMember.status).where(
+                WorkspaceMember.workspace_id == data.target_workspace_id,
+                WorkspaceMember.user_id == data.member_id,
+            )
+    )
+    assert membership_status == WorkspaceMembershipStatus.DEPARTING
+
+    worker_result = await _run_pipeline(
+        FakeTask(retries=0),
+        str(queued_document_id),
+        str(data.target_workspace_id),
+        str(data.member_id),
+    )
+    assert worker_result == {
+        "status": "rejected",
+        "error": "Workspace access revoked",
+    }
+    assert worker_harness.extract_calls == 0
+    assert await _stored_output_counts(
+        ingestion_worker_engine,
+        data,
+        queued_document_id,
+    ) == (0, 0, 0)
+    polled_job = await _poll(
+        ingestion_worker_engine,
+        data,
+        queued_job_id,
+        user_id=data.owner_id,
+    )
+
+    expected_error = (
+        "Workspace access ended before ingestion because the submitter began departure."
+    )
+    queued = await _document(
+        ingestion_worker_engine,
+        data,
+        queued_document_id,
+    )
+    retrying = await _document(
+        ingestion_worker_engine,
+        data,
+        retrying_document_id,
+    )
+    control = await _document(
+        ingestion_worker_engine,
+        data,
+        control_document_id,
+    )
+    assert queued.ingestion_status == IngestionStatus.FAILED
+    assert queued.error_message == expected_error
+    assert queued.pipeline_data["current_stage"] == "failed"
+    assert retrying.ingestion_status == IngestionStatus.FAILED
+    assert retrying.error_message == expected_error
+    assert retrying.pipeline_data["current_stage"] == "failed"
+    assert control.ingestion_status == IngestionStatus.PENDING
+    assert control.pipeline_data["current_stage"] == "queued"
+    assert polled_job.status == "failed"
+    assert polled_job.error == expected_error
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_failed_handoff_rolls_back_ingestion_terminalization(
+    ingestion_worker_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sourcemind.api.v1.team import InitiateHandoffBody, initiate_handoff
+    from sourcemind.services.attribution import handoff as handoff_service
+
+    data = await _seed_security_tenants(ingestion_worker_engine)
+    _job_id, document_id = await _submit(
+        ingestion_worker_engine,
+        monkeypatch,
+        data,
+    )
+    observed_before_failure: list[str] = []
+    create_handoff_record = handoff_service.create_handoff_record
+
+    async def fail_after_handoff_changes(*args: object, **kwargs: object) -> uuid.UUID:
+        await create_handoff_record(*args, **kwargs)
+        session = kwargs["session"]
+        assert isinstance(session, AsyncSession)
+        observed_status = await session.scalar(
+            select(Document.ingestion_status).where(Document.id == document_id)
+        )
+        assert observed_status is not None
+        observed_before_failure.append(str(observed_status))
+        raise RuntimeError("synthetic handoff transaction failure")
+
+    monkeypatch.setattr(
+        handoff_service,
+        "create_handoff_record",
+        fail_after_handoff_changes,
+    )
+    async with AsyncSession(ingestion_worker_engine) as session:
+        await set_rls_user_context(session, data.owner_id)
+        await set_rls_workspace_context(session, data.target_workspace_id)
+        with pytest.raises(RuntimeError, match="synthetic handoff transaction failure"):
+            await initiate_handoff(
+                workspace_id=data.target_workspace_id,
+                body=InitiateHandoffBody(departing_user_id=data.member_id),
+                db=session,
+                current_user=_user(data, data.owner_id),
+                request_id=str(uuid.uuid4()),
+            )
+        await session.rollback()
+
+    assert observed_before_failure == [IngestionStatus.FAILED]
+    document = await _document(ingestion_worker_engine, data, document_id)
+    assert document.ingestion_status == IngestionStatus.PENDING
+    assert document.error_message is None
+    assert document.pipeline_data["current_stage"] == "queued"
+    async with AsyncSession(ingestion_worker_engine) as session:
+        await set_rls_user_context(session, data.owner_id)
+        await set_rls_workspace_context(session, data.target_workspace_id)
+        membership_status = await session.scalar(
+            select(WorkspaceMember.status).where(
+                WorkspaceMember.workspace_id == data.target_workspace_id,
+                WorkspaceMember.user_id == data.member_id,
+            )
+        )
+        handoff_count = await session.scalar(
+            text(
+                "SELECT count(*) FROM handoff_records "
+                "WHERE workspace_id = CAST(:workspace_id AS uuid)"
+            ),
+            {"workspace_id": str(data.target_workspace_id)},
+        )
+    assert membership_status == WorkspaceMembershipStatus.ACTIVE
+    assert int(handoff_count or 0) == 0
