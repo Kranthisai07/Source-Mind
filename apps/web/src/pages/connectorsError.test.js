@@ -175,6 +175,85 @@ describe("ordering, asserted positively", () => {
     });
 });
 
+describe("under React Strict Mode", () => {
+    /*
+     * index.js wraps App in <React.StrictMode>, which in development mounts,
+     * runs cleanup, and mounts again. A cleanup that tears something down
+     * without setup rebuilding it is therefore permanently torn down.
+     *
+     * The `alive` ref guarding this page's responses had exactly that shape —
+     * set false by the simulated unmount and never set back — so every
+     * response was discarded and the page rendered "0 connected sources"
+     * forever. That is the same failure the error handling was added to
+     * prevent, reintroduced by the guard meant to protect it.
+     *
+     * The other suites render without StrictMode and cannot see this, which is
+     * why it needs its own cases.
+     */
+    const renderStrict = () =>
+        render(
+            <React.StrictMode>
+                <MemoryRouter><Connectors /></MemoryRouter>
+            </React.StrictMode>
+        );
+
+    test("connectors still render after the double mount", async () => {
+        mockList.mockResolvedValue({ connectors: [connector("c-1", "acme/platform")] });
+
+        renderStrict();
+        await settle();
+
+        await waitFor(() => expect(screen.getByTestId("connector-c-1")).toBeTruthy());
+        expect(screen.getByText(/1 connected sources/)).toBeTruthy();
+    });
+
+    test("an error still surfaces after the double mount", async () => {
+        mockList.mockRejectedValue({ status: 503, body: null });
+
+        renderStrict();
+        await settle();
+
+        await waitFor(() => expect(screen.getByTestId("connectors-error")).toBeTruthy());
+        expect(screen.queryByText(/0 connected sources/)).toBeNull();
+    });
+
+    test("retry still works after the double mount", async () => {
+        // Strict Mode invokes the effect twice, so BOTH initial loads must
+        // reject — `mockRejectedValueOnce` would leave the second call with no
+        // implementation and fail for a reason that has nothing to do with
+        // retry.
+        mockList.mockRejectedValue({ status: 503, body: null });
+
+        renderStrict();
+        await settle();
+        await waitFor(() => expect(screen.getByTestId("connectors-error")).toBeTruthy());
+
+        mockList.mockResolvedValue({ connectors: [connector("c-2", "acme/api")] });
+        await act(async () => {
+            fireEvent.click(screen.getByTestId("error-retry"));
+        });
+        await settle();
+
+        await waitFor(() => expect(screen.getByTestId("connector-c-2")).toBeTruthy());
+    });
+
+    test("a real unmount still discards a late response", async () => {
+        // The protection must survive the fix: rebuilding `alive` on setup
+        // must not stop a genuine unmount from rejecting what lands after it.
+        let resolveLate;
+        mockList.mockImplementation(() => new Promise((res) => { resolveLate = res; }));
+
+        const { unmount } = renderStrict();
+        await settle();
+        unmount();
+
+        await act(async () => { resolveLate({ connectors: [connector("c-late", "late/repo")] }); });
+        await settle();
+
+        expect(screen.queryByTestId("connector-c-late")).toBeNull();
+    });
+});
+
 describe("the working path is unchanged", () => {
     test("connectors render when the load succeeds", async () => {
         mockList.mockResolvedValue({

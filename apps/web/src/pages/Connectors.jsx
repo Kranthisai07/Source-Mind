@@ -38,7 +38,22 @@ export default function Connectors() {
     // warning; both are silent.
     const generation = useRef(0);
     const alive = useRef(true);
-    useEffect(() => () => { alive.current = false; }, []);
+
+    // Setup REBUILDS what cleanup tears down. Strict Mode mounts, cleans up,
+    // and mounts again in development, so a cleanup that clears `alive`
+    // without setup restoring it leaves it false for the life of the page —
+    // every response then gets discarded and the screen shows neither
+    // connectors nor an error. That is the same "0 connected sources" failure
+    // the error handling exists to prevent, reintroduced by the guard meant to
+    // protect it.
+    //
+    // Declared BEFORE the loading effect on purpose: React runs effects in
+    // declaration order, so `alive` must be true again before load() reads it.
+    // Same reasoning as the gate reset in hooks/useApiResource.js.
+    useEffect(() => {
+        alive.current = true;
+        return () => { alive.current = false; };
+    }, []);
 
     const load = useCallback(() => {
         const mine = ++generation.current;
