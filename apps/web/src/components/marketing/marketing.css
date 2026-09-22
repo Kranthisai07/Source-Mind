@@ -8,6 +8,13 @@
     --site-accent: #38604a;
     --site-accent-light: #edf2eb;
     --site-orange: #c36239;
+    /* Text-only accent. --site-orange is 3.95:1 on the paper background,
+       below the 4.5:1 WCAG AA minimum for text under 24px, and every use
+       of it as text here is 8-10px. Same hue and saturation, darkened
+       until it clears 4.5:1 on all four light surfaces: 5.05 on --site-bg,
+       5.24 on --site-paper, 4.68 on --site-wash, 4.62 on --site-accent-light.
+       Decorative uses keep --site-orange. */
+    --site-orange-text: #a85531;
     --site-glass: rgba(250, 251, 249, .96);
     color: var(--site-ink);
     background: var(--site-bg);
@@ -25,6 +32,9 @@
     --site-accent: #b5caa9;
     --site-accent-light: #232e20;
     --site-orange: #e19973;
+    /* Already 7.96:1 on the dark background, so the dark theme needs no
+       separate value. Aliased so the rules below stay theme-agnostic. */
+    --site-orange-text: #e19973;
     --site-glass: rgba(17, 20, 16, .96);
 }
 .source-site *, .source-site *::before, .source-site *::after { box-sizing: border-box; letter-spacing: 0; }
@@ -82,13 +92,18 @@
 .dark .intelligence-artwork-image .intelligence-art-light { display: none; }
 .dark .intelligence-artwork-image .intelligence-art-dark { display: block; }
 .intelligence-art-caption { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 9px; padding-top: 12px; }
-.intelligence-art-caption > span { display: flex; justify-content: center; align-items: baseline; gap: 7px; font-family: 'JetBrains Mono', monospace; font-size: 8px; text-transform: uppercase; line-height: 1.6; text-align: center; color: var(--site-muted); }
-.intelligence-art-caption b { color: var(--site-orange); font-weight: 400; }
+/* Micro-labels were 8px here and 7px at the narrowest breakpoint. A real
+   Chrome review at 1440 and 390 flagged nine to ten text nodes under 11px;
+   8px monospace uppercase is below what most people can read comfortably.
+   Raised to 10px, which is the size the rest of the micro-type already
+   uses, so the scale stays consistent rather than gaining a new step. */
+.intelligence-art-caption > span { display: flex; justify-content: center; align-items: baseline; gap: 7px; font-family: 'JetBrains Mono', monospace; font-size: 10px; text-transform: uppercase; line-height: 1.6; text-align: center; color: var(--site-muted); }
+.intelligence-art-caption b { color: var(--site-orange-text); font-weight: 400; }
 .hero-footnote { display: flex; justify-content: space-between; gap: 20px; border-top: 1px dashed var(--site-line); padding-top: 17px; padding-bottom: 17px; font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--site-muted); }
 .editorial-section { padding-block: 91px; }
 .section-intro { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 55px; }
 .section-intro > .eyebrow { padding-top: 9px; color: var(--site-muted); font-size: 10px; }
-.section-index { color: var(--site-orange); padding-right: 11px; }
+.section-index { color: var(--site-orange-text); padding-right: 11px; }
 .editorial-heading { font-family: 'Newsreader', Georgia, serif; font-size: 38px; line-height: 1.17; font-weight: 400; }
 .section-description { max-width: 590px; font-size: 14px; line-height: 1.9; margin-top: 22px; color: var(--site-muted); }
 .concept-callout { margin-top: 24px; padding-left: 18px; border-left: 2px solid var(--site-orange); font-size: 14px; line-height: 1.9; color: var(--site-muted); }
@@ -103,7 +118,7 @@
 .source-type.green { color: var(--site-accent); }
 .source-type.blue { color: #4c6d96; }
 .dark .source-type.blue { color: #9fbbe0; }
-.source-type.orange { color: var(--site-orange); }
+.source-type.orange { color: var(--site-orange-text); }
 .source-document h3 { font-size: 15px; font-weight: 500; line-height: 1.5; }
 .source-document p { font-size: 12px; line-height: 1.7; color: var(--site-muted); margin-top: 8px; }
 .connected-context { display: flex; align-items: center; gap: 15px; padding: 23px 6px; border-bottom: 1px dashed var(--site-line); }
@@ -129,7 +144,7 @@
 .use-case-content h3 { font-size: 21px; line-height: 1.4; font-weight: 500; max-width: 375px; }
 .use-case-content > div > p { color: var(--site-muted); font-size: 13px; line-height: 1.9; margin-block: 15px 22px; }
 .context-example { padding-left: 30px; border-left: 1px dashed var(--site-line); }
-.context-example > .eyebrow { color: var(--site-muted); font-size: 9px; }
+.context-example > .eyebrow { color: var(--site-muted); font-size: 10px; }
 .context-example blockquote { font-family: 'Newsreader', Georgia, serif; font-size: 25px; line-height: 1.35; margin-block: 20px; }
 .context-example > div { display: flex; gap: 13px; align-items: flex-start; }
 .context-example > div > svg { margin-top: 3px; color: var(--site-accent); flex-shrink: 0; }
@@ -152,7 +167,7 @@
 .developer-intro > .eyebrow { color: var(--site-muted); margin-bottom: 26px; }
 .developer-intro .hero-description { margin-left: 0; font-size: 16px; }
 .development-notice { display: flex; align-items: flex-start; gap: 17px; margin-top: 30px; padding: 17px 0; border-block: 1px dashed var(--site-line); }
-.status-label { flex-shrink: 0; color: var(--site-orange); font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.9; }
+.status-label { flex-shrink: 0; color: var(--site-orange-text); font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.9; }
 .development-notice p { font-size: 12px; line-height: 1.8; color: var(--site-muted); }
 .developer-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 84px; padding-bottom: 50px; }
 .guide-navigation { align-self: start; position: sticky; top: 120px; }
@@ -183,7 +198,7 @@
 .example-disclaimer { font-family: 'JetBrains Mono', monospace; font-size: 9px; line-height: 1.7; padding: 13px 24px; border-top: 1px dashed var(--site-line); color: var(--site-muted); }
 .project-checklist { margin-block: 25px 30px; }
 .project-checklist li { display: flex; align-items: flex-start; gap: 20px; padding: 18px 0; border-bottom: 1px solid var(--site-line); }
-.project-checklist li > span { color: var(--site-orange); font-family: 'JetBrains Mono', monospace; font-size: 10px; padding-top: 4px; }
+.project-checklist li > span { color: var(--site-orange-text); font-family: 'JetBrains Mono', monospace; font-size: 10px; padding-top: 4px; }
 .project-checklist h3 { font-size: 14px; font-weight: 500; }
 .project-checklist p { font-size: 12px; line-height: 1.8; color: var(--site-muted); margin-top: 8px; }
 .hero-copy { animation: source-arrive 500ms ease-out; }
@@ -219,7 +234,7 @@
     .mobile-navigation > a:not(.develop-button) { padding: 14px 0; font-size: 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--site-line); }
     .mobile-navigation .develop-button { margin-top: 20px; justify-content: space-between; }
     .hero-copy { padding-top: 49px; padding-bottom: 20px; }
-    .hero-eyebrow { font-size: 8px; gap: 8px; margin-bottom: 24px; }
+    .hero-eyebrow { font-size: 10px; gap: 8px; margin-bottom: 24px; }
     .hero-description { font-size: 13px; line-height: 1.8; margin-top: 19px; max-width: 460px; }
     .desktop-break { display: none; }
     .hero-actions { margin-top: 25px; flex-direction: column; gap: 18px; }
@@ -227,27 +242,27 @@
     .hero-actions .text-link { font-size: 11px; }
     .intelligence-artwork { margin-top: 0; margin-bottom: 22px; }
     .intelligence-art-caption { gap: 5px; padding-top: 13px; }
-    .intelligence-art-caption > span { flex-direction: column; align-items: center; justify-content: flex-start; gap: 4px; font-size: 8px; }
-    .hero-footnote { font-size: 8px; line-height: 1.7; gap: 15px; }
+    .intelligence-art-caption > span { flex-direction: column; align-items: center; justify-content: flex-start; gap: 4px; font-size: 10px; }
+    .hero-footnote { font-size: 10px; line-height: 1.7; gap: 15px; }
     .hero-footnote > span:first-child { max-width: 180px; }
     .hero-footnote > span:last-child { text-align: right; max-width: 100px; }
     .editorial-section { padding-block: 54px; }
     .section-intro { grid-template-columns: 1fr; gap: 24px; }
-    .section-intro > .eyebrow { padding-top: 0; font-size: 9px; }
+    .section-intro > .eyebrow { padding-top: 0; font-size: 10px; }
     .editorial-heading { font-size: 29px; line-height: 1.2; }
     .section-description { font-size: 13px; margin-top: 18px; }
     .concept-callout { font-size: 13px; }
     .source-story { margin-top: 37px; }
     .source-story-header { flex-wrap: wrap; gap: 5px; }
-    .source-story-header .eyebrow { font-size: 9px; }
-    .example-label { font-size: 8px; }
+    .source-story-header .eyebrow { font-size: 10px; }
+    .example-label { font-size: 10px; }
     .source-documents { grid-template-columns: 1fr; border: 1px solid var(--site-line); }
     .source-document, .source-document:first-child { border: 0; padding: 23px; }
     .source-document + .source-document { border-top: 1px solid var(--site-line); }
     .source-type { margin-bottom: 17px; }
     .connected-context { flex-wrap: wrap; align-items: flex-start; gap: 12px; }
     .connected-context p { flex: 1; font-size: 11px; line-height: 1.8; }
-    .connected-context > span { flex-basis: 100%; padding-left: 32px; font-size: 8px; }
+    .connected-context > span { flex-basis: 100%; padding-left: 32px; font-size: 10px; }
     .how-steps { grid-template-columns: 1fr; gap: 32px; margin-top: 32px; }
     .step-top { margin-bottom: 19px; }
     .step-arrow { transform: rotate(90deg); }
@@ -262,11 +277,11 @@
     .context-example { padding-left: 19px; }
     .context-example blockquote { font-size: 23px; margin-block: 16px; }
     .closing-inner { flex-direction: column; align-items: flex-start; padding-block: 49px; gap: 28px; }
-    .closing-inner .eyebrow { font-size: 9px; }
+    .closing-inner .eyebrow { font-size: 10px; }
     .site-footer { flex-wrap: wrap; align-items: flex-start; padding-block: 30px; gap: 26px; }
     .footer-links { flex-direction: column; gap: 15px; padding-top: 4px; }
     .footer-links a { font-size: 10px; }
-    .footer-copyright { flex-basis: 100%; font-size: 8px; }
+    .footer-copyright { flex-basis: 100%; font-size: 10px; }
     .developer-main { padding-top: 25px; }
     .developer-intro { padding-top: 38px; padding-bottom: 33px; }
     .developer-intro .hero-description { font-size: 14px; }
@@ -285,11 +300,11 @@
     .source-site .example-tab { padding-inline: 9px; font-size: 10px; }
     .example-explanation { padding: 20px 17px 0; }
     .example-panel pre { padding: 22px 17px; font-size: 10px; min-height: 365px; }
-    .example-disclaimer { padding-inline: 17px; font-size: 8px; }
+    .example-disclaimer { padding-inline: 17px; font-size: 10px; }
 }
 @media (max-width: 359px) {
     .site-container { width: calc(100% - 32px); }
-    .hero-eyebrow { font-size: 7px; }
+    .hero-eyebrow { font-size: 10px; }
     .source-site h1 { font-size: 32px; }
     .source-brand { font-size: 21px; }
     .source-site .use-case-tab { font-size: 9px; gap: 4px; }
