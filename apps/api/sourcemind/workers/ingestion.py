@@ -135,18 +135,52 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                 )
                 return {"status": "rejected", "error": "Workspace access revoked"}
 
+            document_filters = (
+                Document.id == doc_uuid,
+                Document.workspace_id == ws_uuid,
+                Document.submitter_id == user_uuid,
+            )
             result = await session.execute(
-                select(Document).where(
-                    Document.id == doc_uuid,
-                    Document.workspace_id == ws_uuid,
-                    Document.submitter_id == user_uuid,
-                )
+                select(Document)
+                .where(*document_filters)
+                .with_for_update(skip_locked=True)
+                .execution_options(populate_existing=True)
             )
             doc = result.scalar_one_or_none()
             if not doc:
+                existing_document_id = await session.scalar(
+                    select(Document.id).where(*document_filters)
+                )
+                if existing_document_id is not None:
+                    log.info(
+                        "pipeline_duplicate_in_progress",
+                        document_id=document_id,
+                        workspace_id=workspace_id,
+                    )
+                    return {
+                        "status": "in_progress",
+                        "document_id": document_id,
+                    }
                 log.error("pipeline_doc_not_found", document_id=document_id)
                 return {"status": "failed", "error": "Document not found"}
 
+            if doc.ingestion_status == IngestionStatus.COMPLETED:
+                return {
+                    "status": "completed",
+                    "document_id": document_id,
+                    "memories_created": doc.memory_count,
+                    "already_completed": True,
+                }
+            if doc.ingestion_status == IngestionStatus.FAILED:
+                return {
+                    "status": "failed",
+                    "document_id": document_id,
+                    "memories_created": doc.memory_count,
+                    "already_terminal": True,
+                    "error": doc.error_message,
+                }
+
+            attempt_savepoint = await session.begin_nested()
             try:
                 # Stage 2: EXTRACT
                 await update_document_status(
@@ -317,15 +351,42 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                 max_retries = getattr(task, "max_retries", 3)
                 will_retry = max_retries is None or current_retries < int(max_retries)
                 try:
-                    await session.rollback()
+                    if attempt_savepoint.is_active:
+                        await attempt_savepoint.rollback()
+                    else:
+                        await session.rollback()
+                        recovery_result = await session.execute(
+                            select(Document)
+                            .where(*document_filters)
+                            .with_for_update()
+                            .execution_options(populate_existing=True)
+                        )
+                        recovered_doc = recovery_result.scalar_one_or_none()
+                        if recovered_doc is None:
+                            raise RuntimeError("Document disappeared during recovery")
+                        if recovered_doc.ingestion_status == IngestionStatus.COMPLETED:
+                            await session.commit()
+                            return {
+                                "status": "completed",
+                                "document_id": document_id,
+                                "memories_created": recovered_doc.memory_count,
+                                "already_completed": True,
+                            }
+                        if recovered_doc.ingestion_status == IngestionStatus.FAILED:
+                            await session.commit()
+                            return {
+                                "status": "failed",
+                                "document_id": document_id,
+                                "memories_created": recovered_doc.memory_count,
+                                "already_terminal": True,
+                                "error": recovered_doc.error_message,
+                            }
                     await update_document_status(
                         session,
                         doc_uuid,
                         IngestionStatus.PROCESSING if will_retry else IngestionStatus.FAILED,
                         error_message=(
-                            None
-                            if will_retry
-                            else f"Ingestion failed ({type(exc).__name__})."
+                            None if will_retry else f"Ingestion failed ({type(exc).__name__})."
                         ),
                         current_stage="retrying" if will_retry else "failed",
                     )

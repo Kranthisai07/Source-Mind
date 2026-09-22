@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
@@ -20,6 +21,7 @@ from sourcemind.core.config import get_settings
 from sourcemind.core.database import set_rls_user_context, set_rls_workspace_context
 from sourcemind.core.dependencies import AuthenticatedUser
 from sourcemind.core.redis_client import close_redis, get_redis, init_redis
+from sourcemind.models.attribution import Attribution, AttributionEdit
 from sourcemind.models.document import Document, IngestionStatus
 from sourcemind.models.memory import Memory
 from sourcemind.schemas.memory import MemoryCreate
@@ -57,9 +59,16 @@ class WorkerHarness:
     transient_failures: int = 0
     extract_calls: int = 0
     attribution_calls: int = 0
+    attribution_delegate: Callable[..., Awaitable[Attribution]] | None = None
+    pause_first_extract: bool = False
+    first_extract_started: asyncio.Event = field(default_factory=asyncio.Event)
+    release_first_extract: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def extract_document(self, **_kwargs: object) -> DocumentExtractionResult:
         self.extract_calls += 1
+        if self.pause_first_extract and self.extract_calls == 1:
+            self.first_extract_started.set()
+            await self.release_first_extract.wait()
         if self.extract_calls <= self.transient_failures:
             raise RuntimeError("synthetic transient pipeline failure")
         return DocumentExtractionResult(
@@ -100,8 +109,10 @@ class WorkerHarness:
     async def detect_relations(self, *_args: object, **_kwargs: object) -> list[object]:
         return []
 
-    async def create_attribution(self, *_args: object, **_kwargs: object) -> None:
+    async def create_attribution(self, *args: object, **kwargs: object) -> Attribution:
         self.attribution_calls += 1
+        assert self.attribution_delegate is not None
+        return await self.attribution_delegate(*args, **kwargs)
 
 
 def _validated_database_url(value: str) -> str:
@@ -206,10 +217,29 @@ def worker_harness(monkeypatch: pytest.MonkeyPatch) -> WorkerHarness:
     from openai import AsyncOpenAI
 
     from sourcemind.services.attribution import engine as attribution_engine
+    from sourcemind.services.attribution import scorer as attribution_scorer
     from sourcemind.services.ingestion import chunker, embedder, extractor, fact_extractor
     from sourcemind.services.memory import relations
 
-    harness = WorkerHarness()
+    harness = WorkerHarness(
+        attribution_delegate=attribution_engine.create_initial_attribution,
+    )
+    monkeypatch.setattr(
+        attribution_scorer,
+        "get_scorer",
+        lambda: SimpleNamespace(
+            compute_scores=lambda _edits: [
+                SimpleNamespace(
+                    contribution_weight=1.0,
+                    char_diff_score=1.0,
+                    semantic_score=1.0,
+                    temporal_score=1.0,
+                    structural_score=0.0,
+                    approval_score=0.0,
+                )
+            ]
+        ),
+    )
     monkeypatch.setattr(extractor, "extract", harness.extract_document)
     monkeypatch.setattr(chunker, "chunk", harness.chunk_document)
     monkeypatch.setattr(
@@ -330,6 +360,77 @@ async def _memory_count(
             select(func.count(Memory.id)).where(Memory.document_id == document_id)
         )
         return int(count or 0)
+
+
+async def _stored_output_counts(
+    engine: AsyncEngine,
+    data: SecurityTenantData,
+    document_id: uuid.UUID,
+) -> tuple[int, int, int]:
+    async with AsyncSession(engine) as session:
+        await set_rls_user_context(session, data.owner_id)
+        await set_rls_workspace_context(session, data.target_workspace_id)
+        memory_ids = select(Memory.id).where(Memory.document_id == document_id)
+        memory_count = await session.scalar(
+            select(func.count(Memory.id)).where(Memory.document_id == document_id)
+        )
+        attribution_count = await session.scalar(
+            select(func.count(Attribution.id)).where(Attribution.memory_id.in_(memory_ids))
+        )
+        edit_count = await session.scalar(
+            select(func.count(AttributionEdit.id)).where(AttributionEdit.memory_id.in_(memory_ids))
+        )
+        return (
+            int(memory_count or 0),
+            int(attribution_count or 0),
+            int(edit_count or 0),
+        )
+
+
+async def _submit_after_ambiguous_publication(
+    engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    data: SecurityTenantData,
+) -> tuple[str, uuid.UUID, list[dict[str, object]]]:
+    from sourcemind.workers import ingestion as worker
+
+    deliveries: list[dict[str, object]] = []
+
+    def accepted_then_failed(**kwargs: object) -> SimpleNamespace:
+        deliveries.append(dict(kwargs))
+        if len(deliveries) == 1:
+            raise RuntimeError("synthetic exception after broker acceptance")
+        return SimpleNamespace(id=kwargs["task_id"])
+
+    monkeypatch.setattr(worker.process_document, "apply_async", accepted_then_failed)
+    idempotency_key = str(uuid.uuid4())
+    body = MemoryCreate.model_validate(
+        {
+            "content": f"Ambiguous publication payload {uuid.uuid4()}",
+            "source_type": "text",
+        }
+    )
+
+    async def submit_once():
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            await set_rls_user_context(session, data.member_id)
+            await set_rls_workspace_context(session, data.target_workspace_id)
+            return await create_memory(
+                body=body,
+                db=session,
+                current_user=_user(data, data.member_id),
+                request_id=str(uuid.uuid4()),
+                idempotency_key=idempotency_key,
+                workspace_id=data.target_workspace_id,
+            )
+
+    with pytest.raises(RuntimeError, match="broker acceptance"):
+        await submit_once()
+    response = await submit_once()
+    assert len(deliveries) == 2
+    assert deliveries[0]["task_id"] == deliveries[1]["task_id"]
+    assert deliveries[0]["kwargs"] == deliveries[1]["kwargs"]
+    return response.data.job_id, response.data.document_id, deliveries
 
 
 @pytest.mark.integration
@@ -503,3 +604,127 @@ async def test_selected_category_reaches_memory_through_worker(
     completed = await _poll(ingestion_worker_engine, data, job_id)
     assert completed.status == "completed"
     assert worker_harness.attribution_calls == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_ambiguous_publication_redelivery_preserves_committed_output(
+    ingestion_worker_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_harness: WorkerHarness,
+) -> None:
+    from sourcemind.workers.ingestion import _run_pipeline
+
+    data = await _seed_security_tenants(ingestion_worker_engine)
+    job_id, document_id, deliveries = await _submit_after_ambiguous_publication(
+        ingestion_worker_engine,
+        monkeypatch,
+        data,
+    )
+    delivery = deliveries[0]["kwargs"]
+    assert isinstance(delivery, dict)
+
+    first = await _run_pipeline(FakeTask(retries=0), **delivery)
+    counts_after_first = await _stored_output_counts(
+        ingestion_worker_engine,
+        data,
+        document_id,
+    )
+    second = await _run_pipeline(FakeTask(retries=0), **delivery)
+    counts_after_redelivery = await _stored_output_counts(
+        ingestion_worker_engine,
+        data,
+        document_id,
+    )
+
+    assert first["status"] == "completed"
+    assert second == {
+        "status": "completed",
+        "document_id": str(document_id),
+        "memories_created": 1,
+        "already_completed": True,
+    }
+    assert counts_after_first == (1, 1, 1)
+    assert counts_after_redelivery == counts_after_first
+    assert worker_harness.extract_calls == 1
+    completed = await _poll(ingestion_worker_engine, data, job_id)
+    assert completed.status == "completed"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_duplicate_deliveries_commit_output_once(
+    ingestion_worker_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_harness: WorkerHarness,
+) -> None:
+    from sourcemind.workers.ingestion import _run_pipeline
+
+    data = await _seed_security_tenants(ingestion_worker_engine)
+    _job_id, document_id = await _submit(
+        ingestion_worker_engine,
+        monkeypatch,
+        data,
+    )
+    worker_harness.pause_first_extract = True
+    delivery = {
+        "document_id": str(document_id),
+        "workspace_id": str(data.target_workspace_id),
+        "user_id": str(data.member_id),
+    }
+
+    first_delivery = asyncio.create_task(_run_pipeline(FakeTask(retries=0), **delivery))
+    await asyncio.wait_for(worker_harness.first_extract_started.wait(), timeout=5)
+    second_delivery = asyncio.create_task(_run_pipeline(FakeTask(retries=0), **delivery))
+    await asyncio.sleep(0.25)
+    worker_harness.release_first_extract.set()
+    first, second = await asyncio.gather(first_delivery, second_delivery)
+
+    assert {first["status"], second["status"]} == {"completed", "in_progress"}
+    assert await _stored_output_counts(
+        ingestion_worker_engine,
+        data,
+        document_id,
+    ) == (1, 1, 1)
+    assert worker_harness.extract_calls == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_stale_processing_state_is_recovered_after_worker_crash(
+    ingestion_worker_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_harness: WorkerHarness,
+) -> None:
+    from sourcemind.workers.ingestion import _run_pipeline
+
+    data = await _seed_security_tenants(ingestion_worker_engine)
+    _job_id, document_id = await _submit(
+        ingestion_worker_engine,
+        monkeypatch,
+        data,
+    )
+    async with AsyncSession(ingestion_worker_engine) as session:
+        await set_rls_user_context(session, data.owner_id)
+        await set_rls_workspace_context(session, data.target_workspace_id)
+        document = await session.scalar(select(Document).where(Document.id == document_id))
+        assert document is not None
+        pipeline_data = dict(document.pipeline_data or {})
+        pipeline_data["current_stage"] = "extracting"
+        document.pipeline_data = pipeline_data
+        document.ingestion_status = IngestionStatus.PROCESSING
+        await session.commit()
+
+    result = await _run_pipeline(
+        FakeTask(retries=0),
+        str(document_id),
+        str(data.target_workspace_id),
+        str(data.member_id),
+    )
+
+    assert result["status"] == "completed"
+    assert await _stored_output_counts(
+        ingestion_worker_engine,
+        data,
+        document_id,
+    ) == (1, 1, 1)
