@@ -237,6 +237,65 @@ describe("under React Strict Mode", () => {
         await waitFor(() => expect(screen.getByTestId("connector-c-2")).toBeTruthy());
     });
 
+    test("a first-lifecycle response is rejected once the second setup is active", async () => {
+        /*
+         * The case the other Strict Mode tests do not reach. They resolve both
+         * loads immediately, so the first lifecycle never lands LATE.
+         *
+         * It needs its own test because the fix changed which guard does the
+         * rejecting. While `alive` stayed false after the simulated unmount it
+         * rejected first-lifecycle responses too — accidentally, as a side
+         * effect of the bug. Now that setup restores `alive`, the ONLY thing
+         * standing between a stale first-lifecycle response and the screen is
+         * the generation counter. Nothing pinned that until now.
+         *
+         * Sequence: lifecycle 1 issues a load and hangs. Strict Mode cleans up
+         * and mounts again; lifecycle 2 issues its own load and answers. Only
+         * then does lifecycle 1 answer, with different data.
+         */
+        let resolveFirst;
+        mockList
+            .mockImplementationOnce(() => new Promise((res) => { resolveFirst = res; }))
+            .mockResolvedValueOnce({ connectors: [connector("c-second", "second/lifecycle")] });
+
+        renderStrict();
+        await settle();
+
+        // Both lifecycles issued a load; the second one answered.
+        expect(mockList.mock.calls.length).toBeGreaterThanOrEqual(2);
+        await waitFor(() => expect(screen.getByTestId("connector-c-second")).toBeTruthy());
+
+        // The abandoned first lifecycle finally answers.
+        await act(async () => {
+            resolveFirst({ connectors: [connector("c-first", "first/lifecycle")] });
+        });
+        await settle();
+
+        // It must not reach the screen, and must not displace the second.
+        expect(screen.queryByTestId("connector-c-first")).toBeNull();
+        expect(screen.getByTestId("connector-c-second")).toBeTruthy();
+        expect(screen.queryByTestId("connectors-error")).toBeNull();
+    });
+
+    test("a first-lifecycle REJECTION does not erase the second lifecycle's data", async () => {
+        // Same ordering, failure edition: a late rejection from the abandoned
+        // first lifecycle must not replace good rows with an error screen.
+        let rejectFirst;
+        mockList
+            .mockImplementationOnce(() => new Promise((_res, rej) => { rejectFirst = rej; }))
+            .mockResolvedValueOnce({ connectors: [connector("c-second", "second/lifecycle")] });
+
+        renderStrict();
+        await settle();
+        await waitFor(() => expect(screen.getByTestId("connector-c-second")).toBeTruthy());
+
+        await act(async () => { rejectFirst({ status: 503, body: null }); });
+        await settle();
+
+        expect(screen.queryByTestId("connectors-error")).toBeNull();
+        expect(screen.getByTestId("connector-c-second")).toBeTruthy();
+    });
+
     test("a real unmount still discards a late response", async () => {
         // The protection must survive the fix: rebuilding `alive` on setup
         // must not stop a genuine unmount from rejecting what lands after it.
