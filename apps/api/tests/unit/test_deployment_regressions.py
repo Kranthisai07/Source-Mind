@@ -20,6 +20,7 @@ ARCHITECTURE.md section 13. Bug 1 additionally has scripts/check_wheel.py.
 from __future__ import annotations
 
 import ast
+import json
 import pathlib
 import sys
 import tomllib
@@ -30,6 +31,22 @@ import pytest
 
 API_ROOT = pathlib.Path(__file__).resolve().parents[2]
 PACKAGE_ROOT = API_ROOT / "sourcemind"
+
+
+@pytest.mark.unit
+def test_runtime_start_commands_never_run_schema_migrations() -> None:
+    api_config = json.loads((API_ROOT / "railway.api.json").read_text())
+    worker_config = json.loads((API_ROOT / "railway.worker.json").read_text())
+    api_command = api_config["deploy"]["startCommand"]
+    worker_command = worker_config["deploy"]["startCommand"]
+    dockerfile = (API_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "alembic" not in api_command
+    assert "uvicorn sourcemind.main:app" in api_command
+    assert "alembic" not in worker_command
+    assert "default,ingestion,connectors" in worker_command
+    assert "alembic upgrade head && exec uvicorn" not in dockerfile
+    assert "COPY alembic/ ./alembic/" in dockerfile
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -259,9 +276,11 @@ def test_production_requires_clerk_publishable_key():
     with pytest.raises(ValueError, match="CLERK_PUBLISHABLE_KEY"):
         Settings(
             environment="production",
+            auth_dev_bypass_enabled=False,
             openai_api_key="x",
             anthropic_api_key="x",
             clerk_secret_key="x",
+            clerk_authorized_parties=["https://app.example.com"],
             sentry_dsn="x",
             clerk_publishable_key="",
         )
@@ -310,14 +329,28 @@ def test_derived_urls_strip_ssl_query_param():
 
 
 @pytest.mark.unit
-def test_requires_ssl_is_false_only_on_the_private_network():
-    """Railway's private network does not terminate TLS."""
+def test_requires_ssl_is_false_on_private_network_and_loopback():
+    """Railway private networking and local test transports do not use TLS."""
     from sourcemind.core.config import Settings
 
     internal = Settings(database_url="postgresql://u:p@postgres.railway.internal:5432/db")
+    localhost = Settings(database_url="postgresql://u:p@localhost:55432/db")
+    ipv4_loopback = Settings(database_url="postgresql://u:p@127.0.0.1:55432/db")
+    ipv6_loopback = Settings(database_url="postgresql://u:p@[::1]:55432/db")
     public = Settings(database_url="postgresql://u:p@x.proxy.rlwy.net:5432/db")
     assert internal.requires_ssl is False
+    assert localhost.requires_ssl is False
+    assert ipv4_loopback.requires_ssl is False
+    assert ipv6_loopback.requires_ssl is False
     assert public.requires_ssl is True
+
+
+@pytest.mark.unit
+def test_explicit_ssl_requirement_wins_on_loopback():
+    from sourcemind.core.config import Settings
+
+    local = Settings(database_url="postgresql://u:p@127.0.0.1:55432/db?ssl=require")
+    assert local.requires_ssl is True
 
 
 @pytest.mark.unit

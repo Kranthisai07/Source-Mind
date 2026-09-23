@@ -33,6 +33,7 @@ import sys
 import uuid
 
 import psycopg2
+from psycopg2 import sql
 
 from sourcemind.core.config import get_settings
 
@@ -42,9 +43,9 @@ WORKSPACE_SLUG = "production"
 
 def connect():
     settings = get_settings()
-    url = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
+    url = settings.sync_database_url.replace("postgresql+psycopg2://", "postgresql://")
     host = url.split("@")[1] if "@" in url else url
-    needs_ssl = "ssl=require" in url or ".railway.internal" not in url
+    needs_ssl = settings.requires_ssl
     print(f"target: {host}  (sslmode={'require' if needs_ssl else 'disabled'})")
     kwargs = {"connect_timeout": 10}
     if needs_ssl:
@@ -54,7 +55,7 @@ def connect():
 
 def show(cur) -> None:
     for table in ("organizations", "workspaces", "users", "workspace_members"):
-        cur.execute(f"SELECT count(*) FROM {table}")
+        cur.execute(sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table)))
         print(f"  {table:20} {cur.fetchone()[0]}")
     cur.execute(
         "SELECT id, name, slug FROM workspaces ORDER BY created_at LIMIT 5"

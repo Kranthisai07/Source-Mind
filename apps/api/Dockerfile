@@ -85,21 +85,6 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir hatchling \
     && pip install --no-cache-dir -e "."
 
-# Chromium for URL ingestion (services/ingestion/extractor.py launches
-# Playwright in pipeline Stage 2). --with-deps apt-installs the shared
-# libraries Chromium needs on a slim base.
-#
-# PLAYWRIGHT_BROWSERS_PATH must be set BEFORE the install: browsers default
-# to $HOME/.cache/ms-playwright, and the build runs as root while the
-# container runs as `sourcemind` — root's cache would be unreadable at
-# runtime. A shared world-readable path avoids that.
-#
-# Cost: adds roughly 400–500 MB to the image and several minutes to the build.
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN playwright install --with-deps chromium \
-    && chmod -R a+rX /ms-playwright \
-    && rm -rf /var/lib/apt/lists/*
-
 # Runtime-only files — not part of the wheel, so they can land after install.
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
@@ -120,13 +105,14 @@ ENV ENVIRONMENT=production
 # edge to a dead port: the healthcheck passed internally while every
 # public request returned 502.
 
-# Production: run Alembic migrations then start server
-# In Kubernetes: migrations run as an init container, not here
+# Production runtime only. Schema migrations require the migration-owner
+# credential and run as a separate one-off release command before API and
+# worker rollout; the API runtime credential must not own or alter schema.
 # NOTE: the ["sh", "-c", ...] form is required, not cosmetic. ${PORT:-8000}
 # is shell parameter expansion; with exec-form CMD (no shell) uvicorn would
 # receive the literal string and exit with
 #   Error: Invalid value for '--port': '${PORT:-8000}' is not a valid integer.
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn sourcemind.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --no-access-log"]
+CMD ["sh", "-c", "exec uvicorn sourcemind.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --no-access-log"]
 
 # Health check for Docker / ECS
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \

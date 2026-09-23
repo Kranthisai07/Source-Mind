@@ -97,13 +97,14 @@ class GitHubConnector:
                 total_skipped += skipped
 
             sync_log.status = "completed"
+            self._config.last_sync_at = datetime.now(UTC)
         except Exception as exc:
             sync_log.status = "failed"
-            sync_log.error_message = str(exc)
+            sync_log.error_message = "Connector sync failed."
             log.error(
                 "github_connector_sync_failed",
                 connector_id=str(self._config.id),
-                error=str(exc),
+                error_type=type(exc).__name__,
             )
         finally:
             sync_log.artifacts_found = total_found
@@ -111,8 +112,6 @@ class GitHubConnector:
             sync_log.artifacts_skipped = total_skipped
             sync_log.completed_at = datetime.now(UTC)
 
-            # Update connector timestamps
-            self._config.last_sync_at = datetime.now(UTC)
             await self._session.flush()
 
         return sync_log
@@ -174,7 +173,9 @@ class GitHubConnector:
             # Discussions may be disabled for the repo — non-fatal
             log.warning(
                 "github_discussions_unavailable",
-                owner=owner, repo=repo, error=str(exc),
+                owner=owner,
+                repo=repo,
+                error_type=type(exc).__name__,
             )
 
         log.info(
@@ -222,9 +223,9 @@ class GitHubConnector:
             log.warning(
                 "github_connector_ingest_failed",
                 source_id=doc.source_id,
-                error=str(exc),
+                error_type=type(exc).__name__,
             )
-            return False
+            raise
 
         if result.get("already_exists"):
             return False

@@ -5,8 +5,9 @@ These tests mock all external dependencies to run without Docker.
 Use `pytest -m integration` for tests that require running services.
 """
 
-import pytest
 from unittest.mock import AsyncMock, patch
+
+import pytest
 from fastapi.testclient import TestClient
 
 from sourcemind.core.config import get_settings
@@ -60,7 +61,42 @@ def test_health_response_shape(client: TestClient) -> None:
     assert data["status"] in ("healthy", "degraded", "unhealthy")
     assert "version" in data
     assert "environment" in data
+    assert data["process_instance_id"]
+    assert data["requests_since_start"] == 0
     assert "components" in data
+
+
+@pytest.mark.unit
+def test_health_counter_ignores_probes_and_counts_real_requests(
+    client: TestClient,
+) -> None:
+    """A fresh app reports zero until a non-health request is served."""
+    first = client.get("/health").json()
+    second = client.get("/health").json()
+    assert first["process_instance_id"] == second["process_instance_id"]
+    assert first["requests_since_start"] == 0
+    assert second["requests_since_start"] == 0
+
+    client.get("/v1/nonexistent-endpoint")
+    after_request = client.get("/health").json()
+    assert after_request["requests_since_start"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_health_dependency_errors_are_sanitized() -> None:
+    """Public health responses must not expose connection details."""
+    from sourcemind.api.v1.health import _check_postgres
+
+    secret = "postgresql://user:password@private-host/database"
+    with patch(
+        "sourcemind.api.v1.health.get_engine",
+        side_effect=RuntimeError(secret),
+    ):
+        result = await _check_postgres()
+
+    assert result["error"] == "dependency check failed"
+    assert secret not in str(result)
 
 
 @pytest.mark.unit

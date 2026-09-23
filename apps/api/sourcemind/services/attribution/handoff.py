@@ -24,6 +24,8 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sourcemind.core.exceptions import HandoffNotFoundError
+
 log = structlog.get_logger(__name__)
 
 # Thresholds (see ADR-009)
@@ -331,6 +333,41 @@ async def assign_memory(
 
     Returns the updated attribution breakdown.
     """
+    assignment_result = await session.execute(
+        text("""
+            UPDATE handoff_assignments AS assignment
+            SET new_owner_id = CAST(:owner AS uuid),
+                assigned_at = NOW(),
+                note = :note
+            FROM handoff_records AS record,
+                 memories AS memory,
+                 workspace_members AS recipient
+            WHERE assignment.handoff_id = CAST(:hid AS uuid)
+              AND assignment.memory_id = CAST(:mid AS uuid)
+              AND assignment.new_owner_id IS NULL
+              AND record.id = assignment.handoff_id
+              AND record.departing_user_id = CAST(:departing AS uuid)
+              AND record.status = 'in_progress'
+              AND memory.id = assignment.memory_id
+              AND memory.workspace_id = record.workspace_id
+              AND memory.deleted_at IS NULL
+              AND recipient.workspace_id = record.workspace_id
+              AND recipient.user_id = CAST(:owner AS uuid)
+              AND recipient.status = 'active'
+              AND recipient.departed_at IS NULL
+            RETURNING assignment.id
+        """),
+        {
+            "owner": str(new_owner_id),
+            "note": note,
+            "hid": str(handoff_record_id),
+            "mid": str(memory_id),
+            "departing": str(departing_user_id),
+        },
+    )
+    if assignment_result.fetchone() is None:
+        raise HandoffNotFoundError("Handoff assignment target not found.")
+
     # Get current attribution for departing user (latest record)
     attr_result = await session.execute(
         text("""
@@ -360,21 +397,6 @@ async def assign_memory(
         approval_score=None,
     )
     session.add(new_attr)
-
-    # Update handoff_assignments record
-    await session.execute(
-        text("""
-            UPDATE handoff_assignments
-            SET new_owner_id = CAST(:owner AS uuid), assigned_at = NOW(), note = :note
-            WHERE handoff_id = CAST(:hid AS uuid) AND memory_id = CAST(:mid AS uuid)
-        """),
-        {
-            "owner": str(new_owner_id),
-            "note": note,
-            "hid": str(handoff_record_id),
-            "mid": str(memory_id),
-        },
-    )
 
     # Increment assigned_count in handoff_records
     await session.execute(

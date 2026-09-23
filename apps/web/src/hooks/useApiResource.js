@@ -1,0 +1,184 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { classifyApiError, retryDelayMs, shouldClearData } from "@/lib/apiError";
+import { createRequestGate } from "@/lib/requestGate";
+import { onIdentityReset } from "@/lib/realApi";
+
+/**
+ * One loading/error/data lifecycle for every page.
+ *
+ * It exists because seven pages each hand-rolled the same three lines, and all
+ * seven got them wrong in the same two ways: `.catch(() => setRows([]))` turned
+ * every failure into a convincing empty state, and three pages had no `.catch`
+ * at all, so a rejection left the skeleton on screen permanently.
+ *
+ * The interesting logic lives in lib/apiError.js and lib/requestGate.js, which
+ * are plain functions with tests. This is the React seam around them.
+ *
+ * @param {() => Promise<any>} fetcher
+ * @param {object}   [options]
+ * @param {any[]}    [options.deps]      re-fetch when these change
+ * @param {string}   [options.resetKey]  identity of the scope (e.g. a route
+ *                                       parameter). A change clears data before
+ *                                       re-fetching, so the previous scope's
+ *                                       rows never show under the new one.
+ *                                       A change of signed-in USER is handled
+ *                                       automatically and needs no resetKey.
+ * @param {number}   [options.maxAutoRetries]
+ */
+export function useApiResource(fetcher, options = {}) {
+    const { deps = [], resetKey = null, maxAutoRetries = 2 } = options;
+
+    // An identity change is a scope change that no route parameter reflects,
+    // so it cannot be expressed through `resetKey` by the caller — the page
+    // does not know the workspace id, and the URL does not change when the
+    // signed-in user does. Bumping this from the subscription below re-enters
+    // the main effect, which is where data is cleared and the fetch reissued.
+    const [identityEpoch, setIdentityEpoch] = useState(0);
+
+    const [data, setData] = useState(null);
+    const [error, setError] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [retryAt, setRetryAt] = useState(null);
+
+    const gate = useRef(null);
+    if (gate.current === null) gate.current = createRequestGate();
+
+    const fetcherRef = useRef(fetcher);
+    fetcherRef.current = fetcher;
+
+    const attempts = useRef(0);
+    const timer = useRef(null);
+    const previousKey = useRef(resetKey);
+
+    const run = useCallback(() => {
+        // Capture the gate INSTANCE, not the ref, for the lifetime of this
+        // request. Reading `gate.current` when the response lands would consult
+        // whichever gate is installed by then — and since a fresh gate restarts
+        // its counter at 1, a response belonging to a closed gate could match
+        // the new gate's first token and be accepted. Holding the instance
+        // means a closed gate rejects its own in-flight responses, which is
+        // exactly what closing is for.
+        const g = gate.current;
+        const token = g.begin();
+        setLoading(true);
+        setError(null);
+
+        Promise.resolve()
+            .then(() => fetcherRef.current())
+            .then((result) => {
+                // A superseded or closed request must not touch state. This is
+                // what stops a slow response from a previous workspace from
+                // repopulating the screen.
+                if (!g.accept(token)) return;
+                attempts.current = 0;
+                setData(result);
+                setError(null);
+                setLoading(false);
+                setRetryAt(null);
+            })
+            .catch((err) => {
+                if (!g.accept(token)) return;
+                const classified = classifyApiError(err);
+
+                // Losing access clears what is on screen. Leaving a stale list
+                // visible under a permission error is worse than showing none.
+                if (shouldClearData(classified.kind)) setData(null);
+
+                // Bounded automatic retry, and only for conditions where
+                // retrying can actually succeed. 401/403/404 are never retried:
+                // the same request would produce the same answer.
+                if (classified.retryable && attempts.current < maxAutoRetries) {
+                    const delay = retryDelayMs(classified, attempts.current);
+                    attempts.current += 1;
+                    setError(classified);
+                    setRetryAt(Date.now() + delay);
+                    timer.current = setTimeout(() => {
+                        if (!g.isClosed) run();
+                    }, delay);
+                    return;
+                }
+
+                setError(classified);
+                // Always cleared, whatever the outcome. A rejected request can
+                // never leave a permanent skeleton.
+                setLoading(false);
+                setRetryAt(null);
+            });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [maxAutoRetries]);
+
+    // The user changed. Clearing `_wsPromise` in the API module is necessary
+    // but not sufficient: it only affects lookups that have not started yet.
+    // Everything already on screen still belongs to the previous user, and
+    // every request already on the wire was issued under their token and
+    // scoped to their workspace. Both are dropped here.
+    useEffect(() => {
+        return onIdentityReset(() => {
+            // Responses already in flight can no longer reach state. Without
+            // this, a read issued for A that resolves after B signs in is
+            // accepted by the gate and renders A's rows on B's screen.
+            gate.current.invalidate();
+            setData(null);
+            setError(null);
+            setRetryAt(null);
+            setLoading(true);
+            attempts.current = 0;
+            if (timer.current) clearTimeout(timer.current);
+            // Re-fetch under the new identity.
+            setIdentityEpoch((n) => n + 1);
+        });
+    }, []);
+
+    // Closing on cleanup is what stops a response landing in an unmounted
+    // component. But `gate` lives in a ref, so the SAME object survives Strict
+    // Mode's deliberate setup → cleanup → setup, and a permanently closed gate
+    // there would reject every response for the rest of the component's life:
+    // the screen would sit on its skeleton while data arrived and was thrown
+    // away.
+    //
+    // So setup installs a FRESH gate whenever the current one has been closed.
+    // Declared BEFORE the fetching effect on purpose: React runs effects in
+    // declaration order, so the gate must be replaced before anything uses it.
+    // Declared after, run() would capture the closed gate and drop its own
+    // response — which is precisely how the first attempt at this fix failed.
+    // Requests issued before the cleanup still hold the old instance (see
+    // `run`), so they remain correctly rejected — nothing is weakened. This is
+    // what Strict Mode's double invoke is for: it surfaced a cleanup that
+    // destroyed something setup never rebuilt.
+    useEffect(() => {
+        if (gate.current.isClosed) gate.current = createRequestGate();
+        const g = gate.current;
+        return () => {
+            g.close();
+            if (timer.current) clearTimeout(timer.current);
+        };
+    }, []);
+
+    useEffect(() => {
+        // Scope changed: drop the old scope's data before anything new lands,
+        // and invalidate whatever is already in flight for the old scope.
+        if (previousKey.current !== resetKey) {
+            previousKey.current = resetKey;
+            gate.current.invalidate();
+            setData(null);
+            setError(null);
+        }
+        attempts.current = 0;
+        run();
+
+        return () => {
+            if (timer.current) clearTimeout(timer.current);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [run, resetKey, identityEpoch, ...deps]);
+
+    const retry = useCallback(() => {
+        attempts.current = 0;
+        if (timer.current) clearTimeout(timer.current);
+        run();
+    }, [run]);
+
+    return { data, error, loading, retry, retryAt };
+}
+
+export default useApiResource;

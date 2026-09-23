@@ -43,11 +43,20 @@ export function statusColor(status) {
     return "#8888A8";
 }
 
+// Conflict severity. The DB constrains this column to exactly
+// ('low','medium','critical') - ck_memory_conflicts_severity - so the old
+// "high" branch could never fire, and "critical", the MOST severe tier the
+// API can emit, fell through to the neutral grey default. Critical conflicts
+// therefore rendered in the calmest colour on the page.
+//
+// Mapped onto the token vocabulary already established across the redesign:
+// success / warning / danger. "high" is retained only as an alias because
+// mock fixtures still use it; it is not a value the real API produces.
 export function severityColor(sev) {
     const s = (sev || "").toLowerCase();
-    if (s === "high")    return "#EF4444";
-    if (s === "medium")  return "#F59E0B";
-    if (s === "low")     return "#34D399";
+    if (s === "critical" || s === "high") return "#EF4444";  // danger
+    if (s === "medium")                   return "#F59E0B";  // warning
+    if (s === "low")                      return "#34D399";  // success
     return "#8888A8";
 }
 

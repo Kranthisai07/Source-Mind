@@ -41,6 +41,7 @@ class ErrorCode(StrEnum):
     CONTENT_TOO_LARGE = "SM012"
     INVALID_IDEMPOTENCY_KEY = "SM013"
     INVALID_CURSOR = "SM014"
+    RATE_LIMIT_EXCEEDED = "SM015"
 
     # Resource not found (020–029)
     MEMORY_NOT_FOUND = "SM020"
@@ -51,6 +52,7 @@ class ErrorCode(StrEnum):
     ORGANIZATION_NOT_FOUND = "SM025"
     CONFLICT_NOT_FOUND = "SM026"
     CONNECTOR_NOT_FOUND = "SM027"
+    HANDOFF_NOT_FOUND = "SM028"
 
     # Conflict / Duplicate (030–039)
     MEMORY_DUPLICATE = "SM030"
@@ -70,6 +72,7 @@ class ErrorCode(StrEnum):
     NEO4J_ERROR = "SM052"
     S3_ERROR = "SM053"
     KAFKA_ERROR = "SM054"
+    SERVICE_UNAVAILABLE = "SM055"
 
     # Internal (090–099)
     INTERNAL_ERROR = "SM090"
@@ -161,6 +164,16 @@ class InvalidIdempotencyKeyError(SourceMindError):
     http_status = HTTPStatus.BAD_REQUEST
 
 
+class RateLimitExceededError(SourceMindError):
+    """Caller exceeded an operation-specific request limit."""
+    code = ErrorCode.RATE_LIMIT_EXCEEDED
+    http_status = HTTPStatus.TOO_MANY_REQUESTS
+
+    def __init__(self, message: str, *, retry_after_seconds: int) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = max(1, retry_after_seconds)
+
+
 # ─── Not found exceptions ─────────────────────────────────────────────────────
 
 class MemoryNotFoundError(SourceMindError):
@@ -200,6 +213,12 @@ class ConflictNotFoundError(SourceMindError):
 class ConnectorNotFoundError(SourceMindError):
     """Connector with the given ID does not exist, or is not visible to the caller."""
     code = ErrorCode.CONNECTOR_NOT_FOUND
+    http_status = HTTPStatus.NOT_FOUND
+
+
+class HandoffNotFoundError(SourceMindError):
+    """Handoff record does not exist or is not visible to the caller."""
+    code = ErrorCode.HANDOFF_NOT_FOUND
     http_status = HTTPStatus.NOT_FOUND
 
 
@@ -255,6 +274,12 @@ class AnthropicError(SourceMindError):
     """Anthropic API call failed."""
     code = ErrorCode.ANTHROPIC_ERROR
     http_status = HTTPStatus.BAD_GATEWAY
+
+
+class ServiceUnavailableError(SourceMindError):
+    """Required security infrastructure is temporarily unavailable."""
+    code = ErrorCode.SERVICE_UNAVAILABLE
+    http_status = HTTPStatus.SERVICE_UNAVAILABLE
 
 
 # ─── Internal exceptions ──────────────────────────────────────────────────────

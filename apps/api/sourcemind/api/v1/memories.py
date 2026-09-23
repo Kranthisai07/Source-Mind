@@ -23,14 +23,16 @@ from sourcemind.core.dependencies import (
     IdempotencyKey,
     OpenAIClient,
     RequestID,
+    WorkspacePermission,
     require_memory_access,
-    require_workspace_member,
+    require_workspace_permission,
 )
 from sourcemind.core.exceptions import (
     JobNotFoundError,
     MemoryNotFoundError,
     WorkspaceNotFoundError,
 )
+from sourcemind.core.rate_limit import RateLimitedOperation, enforce_rate_limit
 from sourcemind.models.document import Document
 from sourcemind.models.memory import Memory
 from sourcemind.schemas.common import APIResponse, ResponseMeta
@@ -45,9 +47,6 @@ from sourcemind.schemas.memory import (
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/memories", tags=["memories"])
-
-_DEV_WORKSPACE_ID = UUID("00000000-0000-4000-8000-000000000010")
-
 
 def _make_meta(request_id: str, start: float) -> ResponseMeta:
     return ResponseMeta(
@@ -75,26 +74,28 @@ async def create_memory(
     request_id: RequestID,
     idempotency_key: IdempotencyKey,
     workspace_id: UUID = Query(
-        default=_DEV_WORKSPACE_ID,
-        description="Workspace to ingest into. In production, resolved from JWT.",
+        ...,
+        description="Workspace to ingest into.",
     ),
 ) -> APIResponse[IngestionJobResponse]:
     """Stage 1 (RECEIVE) of the ingestion pipeline."""
     start = time.perf_counter()
 
-    effective_ws_id = current_user.workspace_id or workspace_id
-
-    # AuthenticatedUser.workspace_id is declared but never assigned, so this
-    # always resolves to the caller-supplied query param - which means any
-    # authenticated user could name any workspace and ingest into it. Gate the
-    # workspace that is actually written to, not the one that was requested.
-    await require_workspace_member(db, current_user.user_id, effective_ws_id)
+    await require_workspace_permission(
+        db,
+        current_user.user_id,
+        workspace_id,
+        WorkspacePermission.CONTRIBUTE,
+    )
+    await enforce_rate_limit(
+        RateLimitedOperation.INGEST, current_user.user_id, workspace_id
+    )
 
     from sourcemind.services.ingestion.receiver import receive
 
     result = await receive(
         session=db,
-        workspace_id=effective_ws_id,
+        workspace_id=workspace_id,
         user_id=current_user.user_id,
         content=body.content,
         url=body.url,
@@ -103,6 +104,7 @@ async def create_memory(
         # Previously dropped here: MemoryCreate accepted tags and nothing
         # forwarded them, so they never reached the stored memory.
         tags=body.tags,
+        category=body.category,
         idempotency_key=idempotency_key,
     )
 
@@ -142,7 +144,12 @@ async def get_ingestion_job(
     # The job is addressed by an opaque id, but it is workspace-scoped through
     # its document. A non-member gets the same JobNotFoundError as a bad id.
     try:
-        await require_workspace_member(db, current_user.user_id, doc.workspace_id)
+        await require_workspace_permission(
+            db,
+            current_user.user_id,
+            doc.workspace_id,
+            WorkspacePermission.READ,
+        )
     except WorkspaceNotFoundError:
         raise JobNotFoundError(f"No job found with id: {job_id}") from None
 
@@ -267,7 +274,9 @@ async def update_memory(
     """Update memory content — creates new version + runs 5-signal attribution recompute."""
     start = time.perf_counter()
 
-    await require_memory_access(db, current_user.user_id, memory_id)
+    await require_memory_access(
+        db, current_user.user_id, memory_id, WorkspacePermission.CONTRIBUTE
+    )
 
     from sourcemind.services.attribution.engine import recompute_attribution
     from sourcemind.services.attribution.versioning import create_new_version
@@ -336,7 +345,9 @@ async def delete_memory(
     idempotency_key: IdempotencyKey,
 ) -> None:
     """Soft-delete a memory (sets deleted_at)."""
-    await require_memory_access(db, current_user.user_id, memory_id)
+    await require_memory_access(
+        db, current_user.user_id, memory_id, WorkspacePermission.ADMINISTER
+    )
 
     result = await db.execute(
         select(Memory).where(
@@ -390,6 +401,7 @@ def _status_message(ingestion_status: str, current_stage: str) -> str:
         "extracting_facts": "Extracting atomic facts using Claude.",
         "embedding": "Generating embeddings.",
         "indexing": "Writing memories to database.",
+        "retrying": "A temporary ingestion error occurred. Retrying shortly.",
         "completed": "Ingestion complete.",
         "failed": "Ingestion failed. Check the 'error' field for details.",
     }

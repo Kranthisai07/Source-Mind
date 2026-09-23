@@ -3,7 +3,7 @@ Stage 2 — EXTRACT: Convert raw input into clean text + metadata.
 
 Supports four source types:
   - TEXT/MARKDOWN: passthrough normalization
-  - URL: Playwright async browser → readability → clean text
+  - URL: bounded static HTTP fetch → readability → clean text
   - PDF: PyMuPDF layout-aware extraction
   - CODE: tree-sitter AST-aware extraction
 
@@ -56,30 +56,18 @@ class TextExtractor:
 
 
 class URLExtractor:
-    """Playwright + readability-lxml for URL content extraction."""
+    """SSRF-resistant static HTTP + readability-lxml extraction."""
 
     async def extract(self, url: str) -> ExtractionResult:
-        """Fetch a URL with headless Chromium and return cleaned article text."""
-        from playwright.async_api import async_playwright
+        """Fetch a bounded main document without scripts or subresources."""
+        from sourcemind.core.config import get_settings
+        from sourcemind.core.exceptions import ValidationError
+        from sourcemind.core.url_security import fetch_public_text
 
-        html = ""
-        title = ""
-
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            try:
-                context = await browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (compatible; SourceMindBot/1.0; "
-                        "+https://sourcemind.ai/bot)"
-                    )
-                )
-                page = await context.new_page()
-                await page.goto(url, timeout=30_000, wait_until="networkidle")
-                html = await page.content()
-                title = await page.title()
-            finally:
-                await browser.close()
+        if not get_settings().url_ingestion_enabled:
+            raise ValidationError("URL ingestion is disabled.")
+        html, final_url = await fetch_public_text(url)
+        title = self._readability_title(html)
 
         # Try readability first, fall back to basic HTML strip
         content = self._readability_extract(html)
@@ -99,11 +87,19 @@ class URLExtractor:
             content_type="url",
             metadata={
                 "title": title or None,
-                "source_url": url,
+                "source_url": final_url,
                 "word_count": word_count,
-                "extraction_method": "playwright+readability",
+                "extraction_method": "static-http+readability",
             },
         )
+
+    def _readability_title(self, html: str) -> str:
+        try:
+            from readability import Document as ReadDoc
+
+            return str(ReadDoc(html).short_title() or "").strip()
+        except Exception:
+            return ""
 
     def _readability_extract(self, html: str) -> str:
         try:

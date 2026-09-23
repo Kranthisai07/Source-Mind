@@ -10,6 +10,15 @@ import structlog
 from sourcemind.connectors.github.app_auth import GitHubAppAuth
 from sourcemind.connectors.github.connector import GitHubConnector
 from sourcemind.core.config import get_settings
+from sourcemind.core.database import set_rls_user_context
+from sourcemind.core.dependencies import (
+    WorkspacePermission,
+    require_workspace_permission,
+)
+from sourcemind.core.exceptions import (
+    WorkspaceAccessDeniedError,
+    WorkspaceNotFoundError,
+)
 from sourcemind.core.redis_client import close_redis, get_redis, init_redis
 from sourcemind.models.connector import ConnectorConfig
 
@@ -71,9 +80,9 @@ def sync_github_connector(
         log.error(
             "connector_sync_task_failed",
             connector_id=connector_id,
-            error=str(exc),
+            error_type=type(exc).__name__,
         )
-        raise self.retry(exc=exc) from exc
+        raise self.retry(exc=RuntimeError("Connector sync failed.")) from None
 
 
 async def _run_sync(
@@ -101,8 +110,28 @@ async def _run_sync(
 
     try:
         async with AsyncSession(engine) as session:
+            await set_rls_user_context(session, user_id)
+            try:
+                await require_workspace_permission(
+                    session,
+                    user_id,
+                    workspace_id,
+                    WorkspacePermission.ADMINISTER,
+                )
+            except (WorkspaceAccessDeniedError, WorkspaceNotFoundError):
+                log.warning(
+                    "connector_sync_membership_revoked",
+                    connector_id=str(connector_id),
+                    workspace_id=str(workspace_id),
+                    user_id=str(user_id),
+                )
+                return {"status": "rejected", "error": "Workspace access revoked"}
+
             result = await session.execute(
-                select(ConnectorConfig).where(ConnectorConfig.id == connector_id)
+                select(ConnectorConfig).where(
+                    ConnectorConfig.id == connector_id,
+                    ConnectorConfig.workspace_id == workspace_id,
+                )
             )
             config = result.scalar_one_or_none()
             if config is None:
@@ -131,7 +160,9 @@ async def _run_sync(
                 "artifacts_found": sync_log.artifacts_found,
                 "artifacts_new": sync_log.artifacts_new,
                 "artifacts_skipped": sync_log.artifacts_skipped,
-                "error_message": sync_log.error_message,
+                "error_message": (
+                    "Connector sync failed." if sync_log.error_message else None
+                ),
             }
     finally:
         await engine.dispose()

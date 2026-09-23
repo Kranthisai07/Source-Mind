@@ -23,6 +23,7 @@ from sourcemind.core.dependencies import (
     DBSession,
     OpenAIClient,
     RequestID,
+    WorkspacePermission,
     require_conflict_access,
     require_workspace_member,
 )
@@ -160,7 +161,9 @@ async def review_conflict(
     request_id: RequestID,
 ) -> ConflictReviewResponse:
     """Transition conflict from open → under_review."""
-    await require_conflict_access(db, current_user.user_id, conflict_id)
+    await require_conflict_access(
+        db, current_user.user_id, conflict_id, WorkspacePermission.ADMINISTER
+    )
 
     from sourcemind.services.conflict.resolver import mark_under_review
 
@@ -201,22 +204,13 @@ async def resolve_conflict_endpoint(
     conflict action that is gated — listing, viewing detail and marking a
     conflict under review stay open to any workspace member.
     """
-    from sourcemind.core.dependencies import require_workspace_role
-    from sourcemind.models.workspace import WorkspaceRole
     from sourcemind.services.conflict.resolver import resolve_conflict
 
     # Membership first, so a non-member gets 404 and never learns the conflict
     # exists. The role check below then only ever runs for a real member, whose
     # 403 discloses nothing they did not already know.
-    workspace_id = await require_conflict_access(
-        db, current_user.user_id, conflict_id
-    )
-
-    await require_workspace_role(
-        db,
-        current_user.user_id,
-        workspace_id,
-        {WorkspaceRole.OWNER.value, WorkspaceRole.ADMIN.value},
+    await require_conflict_access(
+        db, current_user.user_id, conflict_id, WorkspacePermission.ADMINISTER
     )
 
     ok = await resolve_conflict(

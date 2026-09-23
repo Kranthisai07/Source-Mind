@@ -1,0 +1,13 @@
+# The ingestion SUBMISSION-ACCEPTANCE tests that must execute and pass.
+#
+# Generated from jest, not typed by hand. These assert that a submission is
+# ACCEPTED and returns a job id. They do NOT assert completed worker
+# ingestion: no Celery worker runs in this job, jobs are left queued, and
+# nothing here should be described as proving ingestion finished.
+#
+# Same gate as the conflict manifest: a rename shows up as one missing and
+# one unexpected entry rather than a quietly smaller check.
+createMemory against the real API a submission is accepted and returns a job id
+createMemory against the real API two separate submissions get two different job ids
+createMemory against the real API a retry reusing the original key is accepted
+createMemory against the real API a malformed key is rejected — the header is really being read

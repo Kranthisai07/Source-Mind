@@ -76,17 +76,19 @@ POLL_INTERVAL_SECONDS = 1.0
 
 
 def _live_db_configured() -> bool:
-    """True only when DATABASE_URL points at a real (non-local) Postgres."""
-    from sourcemind.core.config import get_settings
-
-    url = get_settings().database_url or ""
-    return bool(url) and "localhost" not in url and "127.0.0.1" not in url
+    """True only for an explicit paid run against the disposable local stack."""
+    url = os.getenv("TEST_DATABASE_URL", "")
+    return (
+        os.getenv("SECURITY_TEST_ALLOW_DISPOSABLE") == "1"
+        and os.getenv("SECURITY_TEST_ALLOW_PAID_E2E") == "1"
+        and "sourcemind_test@127.0.0.1:55432/sourcemind_security_test" in url
+    )
 
 
 requires_live_stack = pytest.mark.skipif(
     not _live_db_configured(),
     reason=(
-        "Requires live Railway DB + Redis and a running Celery worker. "
+        "Requires explicit paid-API opt-in, disposable DB + Redis, and a worker. "
         "Start one with: celery -A sourcemind.workers.celery_app worker "
         "-Q default,ingestion,connectors --pool=solo"
     ),
@@ -102,10 +104,8 @@ async def committing_engine():
     test has actually committed, so the standard savepoint-rollback fixture
     is unusable here.
     """
-    from sourcemind.core.config import get_settings
-
     engine = create_async_engine(
-        get_settings().database_url,
+        os.environ["TEST_DATABASE_URL"],
         pool_size=2,
         max_overflow=0,
         pool_pre_ping=True,

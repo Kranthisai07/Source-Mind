@@ -6,8 +6,9 @@ and that production validations work.
 """
 
 import os
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 from sourcemind.core.config import Environment, Settings, get_settings
 
@@ -31,7 +32,16 @@ def test_default_settings_load() -> None:
 @pytest.mark.unit
 def test_environment_from_env_var() -> None:
     """ENVIRONMENT env var should override the default."""
-    with patch.dict(os.environ, {"ENVIRONMENT": "staging"}):
+    with patch.dict(
+        os.environ,
+        {
+            "ENVIRONMENT": "staging",
+            "AUTH_DEV_BYPASS_ENABLED": "false",
+            "CLERK_SECRET_KEY": "test-key",
+            "CLERK_PUBLISHABLE_KEY": "pk_test_dGVzdC5leGFtcGxlJA",
+            "CLERK_AUTHORIZED_PARTIES": '["https://app.example.com"]',
+        },
+    ):
         settings = Settings()
         assert settings.environment == Environment.STAGING
 
@@ -44,6 +54,9 @@ def test_production_requires_openai_key() -> None:
         "OPENAI_API_KEY": "",
         "ANTHROPIC_API_KEY": "test-key",
         "CLERK_SECRET_KEY": "test-key",
+        "CLERK_PUBLISHABLE_KEY": "pk_test_dGVzdC5leGFtcGxlJA",
+        "CLERK_AUTHORIZED_PARTIES": '["https://app.example.com"]',
+        "AUTH_DEV_BYPASS_ENABLED": "false",
         "SENTRY_DSN": "https://test@sentry.io/1",
     }
     with patch.dict(os.environ, env_vars):

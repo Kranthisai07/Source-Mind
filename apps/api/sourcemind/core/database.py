@@ -11,12 +11,14 @@ from typing import Any
 
 import structlog
 from pgvector.sqlalchemy import Vector  # noqa: F401 — registers type globally
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.orm import Session
 
 from sourcemind.core.config import get_settings
 
@@ -24,6 +26,48 @@ logger = structlog.get_logger(__name__)
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
+
+_RLS_USER_KEY = "rls_user_id"
+_RLS_WORKSPACE_KEY = "rls_workspace_id"
+
+
+@event.listens_for(Session, "after_begin")
+def _restore_transaction_rls_context(
+    session: Session, transaction: object, connection: Any
+) -> None:
+    """Reapply trusted RLS context after every commit-created transaction."""
+    user_id = session.info.get(_RLS_USER_KEY)
+    workspace_id = session.info.get(_RLS_WORKSPACE_KEY)
+    if user_id is not None:
+        connection.execute(
+            text("SELECT set_config('app.current_user_id', :value, true)"),
+            {"value": str(user_id)},
+        )
+    if workspace_id is not None:
+        connection.execute(
+            text("SELECT set_config('app.current_workspace_id', :value, true)"),
+            {"value": str(workspace_id)},
+        )
+
+
+async def set_rls_user_context(session: AsyncSession, user_id: object) -> None:
+    """Set trusted user context locally for this and subsequent transactions."""
+    session.info[_RLS_USER_KEY] = str(user_id)
+    await session.execute(
+        text("SELECT set_config('app.current_user_id', :value, true)"),
+        {"value": str(user_id)},
+    )
+
+
+async def set_rls_workspace_context(
+    session: AsyncSession, workspace_id: object
+) -> None:
+    """Set trusted workspace context locally for this session's transactions."""
+    session.info[_RLS_WORKSPACE_KEY] = str(workspace_id)
+    await session.execute(
+        text("SELECT set_config('app.current_workspace_id', :value, true)"),
+        {"value": str(workspace_id)},
+    )
 
 
 def _build_engine(settings: Any = None) -> AsyncEngine:

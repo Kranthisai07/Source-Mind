@@ -23,10 +23,16 @@ from sourcemind.core.dependencies import (
     CurrentUser,
     DBSession,
     RequestID,
-    require_workspace_member,
+    WorkspacePermission,
+    require_workspace_permission,
 )
-from sourcemind.core.exceptions import UserNotFoundError
+from sourcemind.core.exceptions import (
+    HandoffNotFoundError,
+    UserNotFoundError,
+    WorkspaceAccessDeniedError,
+)
 from sourcemind.models.user import User
+from sourcemind.models.workspace import WorkspaceMember, WorkspaceMembershipStatus, WorkspaceRole
 from sourcemind.schemas.common import APIResponse, ResponseMeta
 from sourcemind.schemas.conflict import (
     HandoffAssignResponse,
@@ -89,7 +95,9 @@ async def list_handoffs(
     request_id: RequestID,
 ) -> dict:
     """Return all handoff records for the workspace, newest first."""
-    await require_workspace_member(db, current_user.user_id, workspace_id)
+    await require_workspace_permission(
+        db, current_user.user_id, workspace_id, WorkspacePermission.ADMINISTER
+    )
 
     result = await db.execute(
         text("""
@@ -196,14 +204,56 @@ async def initiate_handoff(
 
     Returns a HandoffSummary with tier breakdown and suggested successors.
     """
-    await require_workspace_member(db, current_user.user_id, workspace_id)
+    caller_role = await require_workspace_permission(
+        db, current_user.user_id, workspace_id, WorkspacePermission.ADMINISTER
+    )
+    departing_result = await db.execute(
+        select(WorkspaceMember)
+        .where(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.user_id == body.departing_user_id,
+            WorkspaceMember.status == WorkspaceMembershipStatus.ACTIVE,
+            WorkspaceMember.departed_at.is_(None),
+        )
+        .with_for_update()
+    )
+    departing_membership = departing_result.scalar_one_or_none()
+    if departing_membership is None:
+        raise UserNotFoundError("Active departing workspace member not found.")
+    if departing_membership.role == WorkspaceRole.OWNER:
+        if caller_role != WorkspaceRole.OWNER.value:
+            raise WorkspaceAccessDeniedError(
+                "Only an owner can begin another owner's departure."
+            )
+        owners_result = await db.execute(
+            select(WorkspaceMember.id).where(
+                WorkspaceMember.workspace_id == workspace_id,
+                WorkspaceMember.role == WorkspaceRole.OWNER,
+                WorkspaceMember.status == WorkspaceMembershipStatus.ACTIVE,
+                WorkspaceMember.departed_at.is_(None),
+            )
+        )
+        if len(owners_result.scalars().all()) <= 1:
+            raise WorkspaceAccessDeniedError(
+                "The last active workspace owner cannot begin departure."
+            )
 
     from sourcemind.services.attribution.handoff import (
         classify_memories,
         create_handoff_record,
     )
+    from sourcemind.services.ingestion.lifecycle import (
+        DEPARTURE_INGESTION_ERROR,
+        terminalize_member_ingestion_documents,
+    )
 
     summary = await classify_memories(db, workspace_id, body.departing_user_id)
+    await terminalize_member_ingestion_documents(
+        db,
+        workspace_id,
+        body.departing_user_id,
+        error_message=DEPARTURE_INGESTION_ERROR,
+    )
     handoff_id = await create_handoff_record(
         session=db,
         workspace_id=workspace_id,
@@ -260,20 +310,26 @@ async def assign_handoff_memory(
     Transfer 40% of the departing user's attribution share for a memory
     to the new owner. Attribution records are append-only.
     """
-    await require_workspace_member(db, current_user.user_id, workspace_id)
+    await require_workspace_permission(
+        db, current_user.user_id, workspace_id, WorkspacePermission.ADMINISTER
+    )
 
     # Resolve departing user from handoff_records
     from sqlalchemy import text
 
     from sourcemind.services.attribution.handoff import assign_memory
     hr_result = await db.execute(
-        text("SELECT departing_user_id FROM handoff_records WHERE id = CAST(:hid AS uuid)"),
-        {"hid": str(body.handoff_record_id)},
+        text(
+            "SELECT departing_user_id FROM handoff_records "
+            "WHERE id = CAST(:hid AS uuid) "
+            "AND workspace_id = CAST(:ws AS uuid) "
+            "AND status = 'in_progress'"
+        ),
+        {"hid": str(body.handoff_record_id), "ws": str(workspace_id)},
     )
     hr_row = hr_result.fetchone()
     if not hr_row:
-        from sourcemind.core.exceptions import SourceMindError
-        raise SourceMindError("Handoff record not found.", code="SM050")
+        raise HandoffNotFoundError("Handoff record not found.")
 
     departing_user_id = hr_row[0]
 
@@ -310,7 +366,26 @@ async def complete_handoff_endpoint(
     Mark the departing member's status as 'departed', close the handoff record,
     and report any unassigned Tier 1 memories.
     """
-    await require_workspace_member(db, current_user.user_id, workspace_id)
+    await require_workspace_permission(
+        db, current_user.user_id, workspace_id, WorkspacePermission.ADMINISTER
+    )
+
+    handoff_result = await db.execute(
+        text(
+            "SELECT 1 FROM handoff_records "
+            "WHERE id = CAST(:hid AS uuid) "
+            "AND workspace_id = CAST(:ws AS uuid) "
+            "AND departing_user_id = CAST(:departing AS uuid) "
+            "AND status = 'in_progress'"
+        ),
+        {
+            "hid": str(body.handoff_record_id),
+            "ws": str(workspace_id),
+            "departing": str(body.departing_user_id),
+        },
+    )
+    if handoff_result.first() is None:
+        raise HandoffNotFoundError("Active handoff record not found.")
 
     from sourcemind.services.attribution.handoff import complete_handoff
 
