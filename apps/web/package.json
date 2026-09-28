@@ -63,6 +63,7 @@
   "scripts": {
     "start": "craco start",
     "build": "craco build",
+    "postbuild": "node scripts/copy-404.js",
     "test": "craco test",
     "predeploy": "npm run build",
     "deploy": "gh-pages -d build"
