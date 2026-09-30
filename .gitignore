@@ -59,9 +59,6 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 
-# ── Docker ────────────────────────────────────────────────────
-.dockerignore
-
 # ── Terraform ─────────────────────────────────────────────────
 infra/terraform/.terraform/
 infra/terraform/*.tfstate

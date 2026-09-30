@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import json
 import pathlib
+import re
 import sys
 import tomllib
 from importlib.metadata import PackageNotFoundError, distribution, packages_distributions
@@ -31,6 +32,7 @@ import pytest
 
 API_ROOT = pathlib.Path(__file__).resolve().parents[2]
 PACKAGE_ROOT = API_ROOT / "sourcemind"
+REPO_ROOT = API_ROOT.parents[1]
 
 
 @pytest.mark.unit
@@ -47,6 +49,102 @@ def test_runtime_start_commands_never_run_schema_migrations() -> None:
     assert "default,ingestion,connectors" in worker_command
     assert "alembic upgrade head && exec uvicorn" not in dockerfile
     assert "COPY alembic/ ./alembic/" in dockerfile
+
+
+@pytest.mark.unit
+def test_container_build_consumes_immutable_inputs() -> None:
+    """Container dependency resolution must be grounded in committed inputs."""
+    dockerfile = (API_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    dockerignore = (API_ROOT / ".dockerignore").read_text(encoding="utf-8")
+    pyproject = tomllib.loads(
+        (API_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    lock = tomllib.loads((API_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    workflow = (REPO_ROOT / ".github/workflows/api-ci.yml").read_text(encoding="utf-8")
+
+    assert re.search(
+        r"^# syntax=docker/dockerfile:1@sha256:[0-9a-f]{64}$",
+        dockerfile,
+        re.MULTILINE,
+    )
+
+    assert re.search(
+        r"^FROM python:3\.12-slim-bookworm@sha256:[0-9a-f]{64} AS base$",
+        dockerfile,
+        re.MULTILINE,
+    )
+    assert re.search(
+        r"^FROM ghcr\.io/astral-sh/uv:0\.10\.9@sha256:[0-9a-f]{64} AS uv$",
+        dockerfile,
+        re.MULTILINE,
+    )
+    assert dockerfile.count("COPY pyproject.toml uv.lock ./") == 2
+    assert len(re.findall(r"^\s+uv sync --locked", dockerfile, re.MULTILINE)) == 2
+    assert dockerfile.count("--mount=type=cache,target=/root/.cache/uv,sharing=locked") == 2
+    assert "RUN pip install" not in dockerfile
+    assert "UV_PYTHON_DOWNLOADS=never" in dockerfile
+    assert "FROM production AS validated" in dockerfile
+    assert "torch.__version__ == '2.14.0+cpu'" in dockerfile
+
+    assert "snapshot.debian.org/archive/debian/20260928T000000Z" in dockerfile
+    assert "snapshot.debian.org/archive/debian-security/20260928T000000Z" in dockerfile
+    assert "deb.debian.org" not in dockerfile
+
+    assert pyproject["build-system"]["requires"] == ["hatchling==1.27.0"]
+    assert pyproject["tool"]["uv"]["sources"]["torch"] == [{"index": "pytorch-cpu"}]
+    assert pyproject["tool"]["uv"]["index"] == [
+        {
+            "name": "pytorch-cpu",
+            "url": "https://download.pytorch.org/whl/cpu",
+            "explicit": True,
+        }
+    ]
+
+    packages = lock["package"]
+    torch_packages = [package for package in packages if package["name"] == "torch"]
+    assert {package["version"] for package in torch_packages} == {"2.14.0", "2.14.0+cpu"}
+    assert all(
+        package["source"]["registry"] == "https://download.pytorch.org/whl/cpu"
+        for package in torch_packages
+    )
+    assert any(
+        "sys_platform == 'darwin'" in marker
+        for marker in torch_packages[0]["resolution-markers"]
+    )
+    assert any(
+        "sys_platform != 'darwin'" in marker
+        for marker in torch_packages[1]["resolution-markers"]
+    )
+
+    removed_gpu_packages = {
+        "cuda-bindings",
+        "cuda-pathfinder",
+        "nvidia-cublas-cu12",
+        "nvidia-cuda-cupti-cu12",
+        "nvidia-cuda-nvrtc-cu12",
+        "nvidia-cuda-runtime-cu12",
+        "nvidia-cudnn-cu12",
+        "nvidia-cufft-cu12",
+        "nvidia-cufile-cu12",
+        "nvidia-curand-cu12",
+        "nvidia-cusolver-cu12",
+        "nvidia-cusparse-cu12",
+        "nvidia-cusparselt-cu12",
+        "nvidia-nccl-cu12",
+        "nvidia-nvjitlink-cu12",
+        "nvidia-nvshmem-cu12",
+        "nvidia-nvtx-cu12",
+        "triton",
+    }
+    assert len(removed_gpu_packages) == 18
+    assert removed_gpu_packages.isdisjoint(package["name"] for package in packages)
+
+    assert ".env.*" in dockerignore
+    assert "*.pem" in dockerignore
+    assert "*.key" in dockerignore
+    assert ".dockerignore" not in (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert "--target validated" in workflow
+    assert "--platform linux/amd64" in workflow
 
 
 # ─────────────────────────────────────────────────────────────────────────────

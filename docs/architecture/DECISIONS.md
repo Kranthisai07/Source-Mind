@@ -1879,3 +1879,45 @@ tests in 23.56 seconds. The existing 19-node security-acceptance selection now
 collects exactly 22 nodes when the three recovery regressions are included. No
 migration, authorization policy, workflow, production setting, or deployment
 behavior changed.
+
+---
+
+## D-018 — Container builds consume immutable dependency inputs
+
+**Status:** Prepared and locally verified on 2026-09-29; not deployed.
+
+The API and worker share one Dockerfile. It previously used a mutable Python
+tag, live Debian repositories, unpinned pip and Hatchling tooling, and editable
+installs that ignored the committed `uv.lock`. A redeploy of unchanged source
+could therefore resolve different build inputs and produce a materially
+different runtime environment.
+
+The Dockerfile now pins its BuildKit frontend plus the Python and uv
+multi-platform images by digest, reads Debian package metadata from dated
+Bookworm snapshots, pins Hatchling exactly, disables uv-managed Python
+downloads, and installs with `uv sync --locked --no-editable`. BuildKit cache
+mounts can reuse verified downloads without placing the cache in an image
+layer. Production excludes optional development dependencies; the development
+target includes the existing `dev` extra. API and worker startup commands are
+unchanged.
+
+Torch is now an explicit root dependency so uv can apply an explicit CPU-only
+PyTorch index without changing any other package's index. The lock moves from
+PyPI Torch 2.10.0 to Torch 2.14.0+cpu on Linux and Windows, and 2.14.0 on
+macOS. SourceMind calls Torch only through sentence-transformers 5.2.3, whose
+installed requirement is `torch>=1.11.0`; no SourceMind module calls the Torch
+API directly. The retained container build installed the CPU wheel and imported
+the application successfully. The validation target additionally imports
+SentenceTransformer and asserts that CUDA support is absent, but it does not
+download the model or prove inference output equivalence.
+
+The CPU lock removes 18 GPU-only package names: two CUDA helper packages,
+15 NVIDIA CUDA libraries, and Triton. The lock entry count falls from 231 to
+214, a net reduction of 17, because the former single Torch package entry is
+replaced by separate Darwin and non-Darwin entries. Platform markers retain
+CPython 3.12 Linux amd64 and arm64 CPU wheels; container CI exercises the
+`validated` target on Linux amd64. Arm64 container execution remains untested.
+
+Pinned inputs support repeatable dependency resolution but do not by themselves
+prove byte-for-byte identical image layers. No byte-identical image comparison
+has been claimed.
