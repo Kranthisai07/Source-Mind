@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -42,6 +42,9 @@ dependencies = [
   "openai>=1.57.0",
   "anthropic>=0.40.0",
   "sentence-transformers>=3.3.0",
+  # uv applies an explicit index override only to root dependencies. Declaring
+  # torch directly keeps sentence-transformers on the CPU-only wheel index.
+  "torch",
   "spacy>=3.8.0",
   "tiktoken>=0.8.0",
 
@@ -132,6 +135,15 @@ evaluation = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["sourcemind"]
+
+# ─── Torch: CPU-only build ────────────────────────────────────
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 # ─── Black ────────────────────────────────────────────────────
 [tool.black]

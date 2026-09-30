@@ -1,0 +1,23 @@
+# Secrets must never enter the Docker build context.
+.env
+.env.*
+!.env.example
+
+# Local environments and caches.
+.venv/
+__pycache__/
+*.pyc
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# Credential-shaped files have no valid container-build use.
+*.pem
+*.key
+*.p12
+*credentials*.json
+
+# VCS and editor metadata.
+.git/
+.DS_Store
+Thumbs.db

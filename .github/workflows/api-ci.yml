@@ -59,6 +59,14 @@ jobs:
           AUTH_DEV_BYPASS_ENABLED: "true"
         run: python scripts/check_wheel.py
 
+      - name: Validate locked production container
+        run: >-
+          docker build
+          --platform linux/amd64
+          --target validated
+          --tag sourcemind-api:validated-ci
+          .
+
       # ── Rollback + revocation contract ─────────────────────────────────
       # These five nodes carry the 15fe_0001 and 12f6_0002 corrections. The
       # general `Tests` step below would run them too, but it asserts only
