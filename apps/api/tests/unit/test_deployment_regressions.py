@@ -80,7 +80,13 @@ def test_container_build_consumes_immutable_inputs() -> None:
     )
     assert dockerfile.count("COPY pyproject.toml uv.lock ./") == 2
     assert len(re.findall(r"^\s+uv sync --locked", dockerfile, re.MULTILINE)) == 2
-    assert dockerfile.count("--mount=type=cache,target=/root/.cache/uv,sharing=locked") == 2
+    railway_uv_cache_mount = (
+        "--mount=type=cache,"
+        "id=s/45ede657-a5f2-41c2-8319-d084731a4fc6-/root/.cache/uv,"
+        "target=/root/.cache/uv,sharing=locked"
+    )
+    assert dockerfile.count(railway_uv_cache_mount) == 2
+    assert "--mount=type=cache,target=/root/.cache/uv" not in dockerfile
     assert "RUN pip install" not in dockerfile
     assert "UV_PYTHON_DOWNLOADS=never" in dockerfile
     assert "FROM production AS validated" in dockerfile

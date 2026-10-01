@@ -69,7 +69,7 @@ COPY pyproject.toml uv.lock ./
 COPY sourcemind/ ./sourcemind/
 
 # Install the exact locked dependency graph, including development extras.
-RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+RUN --mount=type=cache,id=s/45ede657-a5f2-41c2-8319-d084731a4fc6-/root/.cache/uv,target=/root/.cache/uv,sharing=locked \
     uv sync --locked --extra dev --no-editable
 
 # ── Stage 4: Development ──────────────────────────────────────
@@ -105,7 +105,7 @@ COPY pyproject.toml uv.lock ./
 COPY sourcemind/ ./sourcemind/
 
 # Install the exact locked production dependency graph.
-RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+RUN --mount=type=cache,id=s/45ede657-a5f2-41c2-8319-d084731a4fc6-/root/.cache/uv,target=/root/.cache/uv,sharing=locked \
     uv sync --locked --no-dev --no-editable
 
 # Runtime-only files — not part of the wheel, so they can land after install.
