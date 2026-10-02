@@ -1951,11 +1951,38 @@ Non-empty queries send the same request as before. The Ingest button is
 unchanged. `loading` now starts false because a blank load has nothing to wait
 for.
 
-Ten new component tests cover: no request on a blank or whitespace-only query
-or a mode change with a blank query; the exact request for a non-empty query;
+Eleven new component tests cover: no request on a blank or whitespace-only
+query or a mode change with a blank query; the exact request for a non-empty
+query; a populated response rendering both results' content, score and match
+type, the first result's tag and category, and the footer's total and latency,
+with the null `confidence_score` and null `highlight` result rendering without
+error and the populated `highlight` markup not leaking (rank is not asserted);
 a late success and a late failure after clearing being ignored; clearing after
 an error; and the Ingest button staying enabled and opening its panel. Seven
-failed before the change. Disabling the `cancelled` checks makes exactly the two
-late-response tests fail, so those tests do guard the protection. Two existing
-retry tests assumed a search on a blank load and now type a query first. All
-API calls are mocked; no provider call or production write occurred.
+failed before the change.
+Disabling the `cancelled` checks makes exactly the two late-response tests
+fail, and making the page read a flat instead of a wrapped result makes exactly
+the populated-rendering test fail. Two existing retry tests assumed a search on
+a blank load and now type a query first. All API calls are mocked; no provider
+call or production write occurred.
+
+The populated response is schema-generated, not a captured live response. It
+was produced by serializing the backend's own SearchResponse,
+SearchResultItem and MemoryResponse models with `model_dump(mode="json")`
+(values are invented) and is committed as
+`apps/web/src/pages/__fixtures__/searchResponse.populated.json`. It carries the
+wrapped `{memory, score, rank, match_type, highlight}` shape, one populated and
+one null `highlight`, and a null `confidence_score`. An earlier hand-built flat
+fixture only exercised the page's `r.memory ?? r` fallback and used a field the
+real model lacks. WORKING_STANDARDS rule 7 asks for real populated responses;
+this satisfies it at the page level only. `realApi`'s HTTP search request,
+against a real stack, remains uncovered and is outside this patch.
+
+**Intentional behavior change in mock mode.** `REACT_APP_USE_MOCKS` defaults to
+true, and `mockApi.searchMemories("")` used to return every seeded memory, so
+the default demo listed memories on load. With the guard applied in both modes
+the demo now also shows "Type to search memories" until the user types. This is
+deliberate: the two clients are meant to return identical shapes and callers are
+not meant to branch on the mode, and a blank query is not a valid search
+against the real contract. The seeded data is still reached by searching. No
+test, e2e spec or README depended on the old demo browse.

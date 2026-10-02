@@ -17,6 +17,21 @@
  * invalidates any search still in flight so a late answer cannot overwrite
  * that state. Non-empty searching, and the Ingest button, are unchanged.
  * The API is mocked; no network, provider or production call is made.
+ *
+ * ABOUT THE FIXTURE
+ *
+ * __fixtures__/searchResponse.populated.json is SCHEMA-GENERATED, not a
+ * captured live response: it was produced by serializing the backend's own
+ * SearchResponse / SearchResultItem / MemoryResponse models
+ * (apps/api/sourcemind/schemas/memory.py) with `model_dump(mode="json")`, so
+ * its shape is the wrapped one the API returns -
+ *   { memory: {...}, score, rank, match_type, highlight }
+ * - including a populated `highlight`, a null `confidence_score`, a null
+ * `highlight`, and total_found / latency_ms. Values are invented. It lets the
+ * page be exercised against the real response shape rather than a hand-built
+ * flat object (WORKING_STANDARDS rule 7). It does NOT exercise realApi's HTTP
+ * request: this suite mocks `api.searchMemories`, and HTTP search coverage
+ * against a real stack is outside this patch.
  */
 
 import React from "react";
@@ -25,6 +40,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import Memories from "./Memories";
 import api from "../lib/api";
+import REAL_SEARCH_RESPONSE from "./__fixtures__/searchResponse.populated.json";
 
 function renderPage() {
     return render(
@@ -59,20 +75,6 @@ const deferred = () => {
     return { promise, resolve, reject };
 };
 
-const HIT = {
-    results: [
-        {
-            id: "m-1",
-            content: "Vector index is HNSW.",
-            tags: ["index"],
-            importance_score: 0.9,
-            created_at: "2026-09-01T00:00:00Z",
-        },
-    ],
-    total_found: 1,
-    latency_ms: 12,
-};
-
 let search;
 
 beforeEach(() => {
@@ -85,7 +87,7 @@ afterEach(() => {
 
 describe("blank queries never reach the API", () => {
     test("the initial blank query makes no request and shows the prompt", async () => {
-        search.mockResolvedValue(HIT);
+        search.mockResolvedValue(REAL_SEARCH_RESPONSE);
 
         renderPage();
         await settle();
@@ -96,7 +98,7 @@ describe("blank queries never reach the API", () => {
     });
 
     test("a whitespace-only query makes no request and shows the prompt", async () => {
-        search.mockResolvedValue(HIT);
+        search.mockResolvedValue(REAL_SEARCH_RESPONSE);
 
         renderPage();
         await settle();
@@ -109,7 +111,7 @@ describe("blank queries never reach the API", () => {
     });
 
     test("changing the mode with a blank query still makes no request", async () => {
-        search.mockResolvedValue(HIT);
+        search.mockResolvedValue(REAL_SEARCH_RESPONSE);
 
         renderPage();
         await settle();
@@ -124,8 +126,8 @@ describe("blank queries never reach the API", () => {
 });
 
 describe("non-empty queries search as before", () => {
-    test("typing a query searches with that query and renders the results", async () => {
-        search.mockResolvedValue(HIT);
+    test("typing a query searches with that query", async () => {
+        search.mockResolvedValue(REAL_SEARCH_RESPONSE);
 
         renderPage();
         await settle();
@@ -138,10 +140,43 @@ describe("non-empty queries search as before", () => {
             mode: "hybrid",
             limit: 24,
         });
-        await waitFor(() =>
-            expect(screen.getByText(/Vector index is HNSW/)).toBeTruthy()
-        );
         expect(screen.queryByText("Type to search memories")).toBeNull();
+    });
+
+    test("a populated, wrapped response renders every result with its totals", async () => {
+        search.mockResolvedValue(REAL_SEARCH_RESPONSE);
+
+        renderPage();
+        await settle();
+        await type("postgres");
+        await settle();
+
+        const [first, second] = REAL_SEARCH_RESPONSE.results;
+        const card1 = await screen.findByTestId(`memory-card-${first.memory.id}`);
+        const card2 = screen.getByTestId(`memory-card-${second.memory.id}`);
+
+        // Fields read off the wrapped `memory`, plus the metadata beside it.
+        expect(card1.textContent).toContain(first.memory.content);
+        expect(card1.textContent).toContain("database");
+        expect(card1.textContent).toContain("decision");
+        expect(card1.textContent).toContain("semantic+keyword");
+        expect(card1.textContent).toContain(first.score.toFixed(3));
+        expect(card2.textContent).toContain(second.memory.content);
+        expect(card2.textContent).toContain("keyword");
+        expect(card2.textContent).toContain(second.score.toFixed(3));
+
+        // A null confidence_score and a null highlight (second result) render
+        // without error; a populated highlight does not leak markup.
+        expect(second.memory.confidence_score).toBeNull();
+        expect(second.highlight).toBeNull();
+        expect(first.highlight).toContain("<b>");
+        expect(document.body.textContent).not.toContain("<b>");
+        expect(screen.queryByTestId("error-state")).toBeNull();
+
+        // Totals and latency from the response envelope.
+        const meta = screen.getByTestId("results-meta").textContent;
+        expect(meta).toContain(`1–${REAL_SEARCH_RESPONSE.results.length} of ${REAL_SEARCH_RESPONSE.total_found}`);
+        expect(meta).toContain(`${Math.round(REAL_SEARCH_RESPONSE.latency_ms)} ms`);
     });
 
     test("a failed non-empty search still shows the error state", async () => {
@@ -172,11 +207,11 @@ describe("clearing the query invalidates an in-flight search", () => {
         expect(screen.getByText("Type to search memories")).toBeTruthy();
 
         await act(async () => {
-            slow.resolve(HIT);
+            slow.resolve(REAL_SEARCH_RESPONSE);
         });
         await settle();
 
-        expect(screen.queryByText(/Vector index is HNSW/)).toBeNull();
+        expect(screen.queryByText(/primary store because it keeps embeddings/)).toBeNull();
         expect(screen.queryByTestId("results-meta")).toBeNull();
         expect(screen.getByText("Type to search memories")).toBeTruthy();
         expect(search).toHaveBeenCalledTimes(1);
@@ -232,7 +267,7 @@ describe("the Ingest button stays available", () => {
     });
 
     test("after a search was cleared, and it still opens the panel", async () => {
-        search.mockResolvedValue(HIT);
+        search.mockResolvedValue(REAL_SEARCH_RESPONSE);
 
         renderPage();
         await settle();
