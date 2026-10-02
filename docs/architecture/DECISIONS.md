@@ -2018,12 +2018,24 @@ patch with `skipDeploys=true`; verified that only that field changed and that no
 deployment was created). Setting `railwayConfigFile` was rejected: config in code
 overrides dashboard settings, and every other value in the file already matched
 the live service. The file's `dockerBuildTarget` key is absent from Railway's
-published config schema and is inferred to be ignored, so Railway builds the
-Dockerfile's final stage, `validated`, which is the stage CI builds
-(`api-ci.yml` `--target validated`); its build log confirmed that stage ran. That
-the key is ignored is an inference, not a tested fact. The worker setting
-`/apps/api/Dockerfile.worker` is kept. A rebuild of a commit that has no
-`Dockerfile.worker` (for example `ddd401b`) first requires restoring
+published config schema, and the deployment metadata carries no build-target
+field. The effective target was confirmed from the build logs: in the worker
+builds `a8cc5ae6` and `159dc640` and the API build `07ed863e`, the `validated`
+stage steps (`COPY scripts/`, then the wheel and CPU-Torch checks) executed.
+BuildKit only builds the stages the requested target depends on, and
+`production` does not depend on `validated`, so a `production` target would not
+have run them. (The API deployment `fa64a300` reused the digest of `07ed863e` and
+logs no stage steps of its own.) Railway therefore builds the Dockerfile's final
+stage, `validated`, which is the stage CI builds (`api-ci.yml` `--target
+validated`). This contradicts the stage comment in `apps/api/Dockerfile` and
+`apps/api/Dockerfile.worker` ("CI only, never deployed"): that comment is wrong
+for the live services, and anything added to the `validated` stage would ship in
+both. Correcting the comment is tracked as a separate, comment-only follow-up
+and is not made here; Railway's build target is deliberately left unchanged. The
+running containers' filesystems were not inspected for that stage's `scripts/`
+directory; the conclusion rests on the validated-stage build logs and the reused
+image digests. The worker setting `/apps/api/Dockerfile.worker` is kept. A
+rebuild of a commit that has no `Dockerfile.worker` (for example `ddd401b`) first requires restoring
 `/apps/api/Dockerfile`; a retained-image `deploymentRollback` needs no rebuild
 and no such change.
 
