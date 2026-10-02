@@ -549,34 +549,62 @@ GitHub-artifact dataset does not provide.
 
 ## 13. Deployment
 
-**Two services** are deployed from this one repository, both building
-`apps/api/Dockerfile` at the `production` target with root directory
-`apps/api`. Each names its own config file, because an auto-detected
-`railway.json` would apply to both — and the worker would inherit the API's
-`healthcheckPath`, which it can never satisfy.
+**Two services** are deployed from this repository with root directory
+`apps/api`. Their current Railway configuration was verified on 2026-10-02
+(see D-020):
 
-| Service | Config file | Public domain | Healthcheck |
-|---------|-------------|---------------|-------------|
-| API | `apps/api/railway.api.json` | yes | `/health` |
-| Worker | `apps/api/railway.worker.json` | no | none |
+| Service | Live Dockerfile selection | Public domain | Railway healthcheck |
+|---------|---------------------------|---------------|---------------------|
+| API | `/apps/api/Dockerfile` | yes | none |
+| Worker | `/apps/api/Dockerfile.worker` | no | none |
 
-**API start command:**
+Both services have `railwayConfigFile = null`; the live worker therefore does
+**not** load `apps/api/railway.worker.json`. Railway selects its dedicated
+Dockerfile through the verified service setting `build.dockerfilePath`: the API
+builds `apps/api/Dockerfile`, and the worker builds
+`apps/api/Dockerfile.worker`. The API likewise does not load
+`apps/api/railway.api.json`. Those repository files record an intended
+config-as-code layout, not the live configuration. Neither live service has a
+Railway healthcheck configured, autodeploy is disabled for both, and each
+Dockerfile's cache-mount IDs name its corresponding service.
+
+The API has no service-level start-command override, so the final image `CMD`
+runs. The reviewed, verified no-migration command is:
+
 ```sh
-sh -c 'alembic upgrade head && exec uvicorn sourcemind.main:app \
-    --host 0.0.0.0 --port ${PORT:-8000} --workers 1'
+sh -c 'exec uvicorn sourcemind.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --no-access-log'
 ```
 
-**Worker start command:**
+The worker uses this verified service-level start command:
+
 ```sh
-sh -c 'celery -A sourcemind.workers.celery_app worker --loglevel=info \
-    -Q default,ingestion,connectors --concurrency=2'
+sh -c 'celery -A sourcemind.workers.celery_app worker --loglevel=info -Q default,ingestion,connectors --concurrency=2'
 ```
 
-**Dockerfile CMD** (used only when no config file applies):
+The API Dockerfile's final-stage `CMD` is the same no-migration command:
+
 ```dockerfile
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn sourcemind.main:app \
-    --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --no-access-log"]
+CMD ["sh", "-c", "exec uvicorn sourcemind.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --no-access-log"]
 ```
+
+### Migrations are a separate owner-run release step
+
+Current application startup does not run Alembic. When a release includes
+schema changes, an operator runs the following separately from `apps/api`
+using the migration-owner connection before deploying the API or worker:
+
+```sh
+alembic upgrade head
+```
+
+The runtime connection remains the restricted, non-owner role.
+
+Historical recovery instructions are version-specific. A retained-image
+rollback does not rebuild and does not change `build.dockerfilePath`. Rebuilding
+the historical `ddd401b` worker is different: that source predates
+`Dockerfile.worker`, so the worker path must first be restored to
+`/apps/api/Dockerfile`. That historical exception is not the current worker
+configuration.
 
 ### `sh -c` is mandatory, not stylistic
 
@@ -587,10 +615,9 @@ Railway tokenizes `startCommand` and execs it **without a shell**, so
 Error: Invalid value for '--port': '${PORT:-8000}' is not a valid integer.
 ```
 
-That failure is nearly invisible — alembic still succeeds, uvicorn never
-prints a banner, and the healthcheck simply reports the service as
-unavailable for its whole window. Wrapping in `sh -c` supplies the shell
-that performs the expansion. The Dockerfile `CMD` uses the
+That failure is nearly invisible: uvicorn never prints a banner, and the
+service remains unavailable. Wrapping in `sh -c` supplies the shell that
+performs the expansion. The Dockerfile `CMD` uses the
 `["sh", "-c", ...]` form for the same reason; converting it to exec form
 reintroduces the bug.
 
@@ -622,11 +649,9 @@ that check.
 - Each uvicorn worker opens its own pool (20 + 10 overflow); check the total
   against the database connection limit before raising `--workers`.
 - The Docker `HEALTHCHECK` hardcodes port 8000 while the server binds
-  `$PORT`. Railway uses `healthcheckPath` instead, so this is inert there,
-  but it is wrong for any runtime that honours `HEALTHCHECK`.
-- Playwright Chromium is installed in the production image with
-  `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` so the non-root user can read it.
-  The development stage has no browsers, so URL ingestion fails there.
+  `$PORT`. Neither live Railway service currently configures
+  `healthcheckPath`, and the container-level check is not a verified Railway
+  readiness gate. It remains wrong for any runtime that honours it.
 
 ---
 

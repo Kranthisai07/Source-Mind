@@ -1986,3 +1986,98 @@ deliberate: the two clients are meant to return identical shapes and callers are
 not meant to branch on the mode, and a blank query is not a valid search
 against the real contract. The seeded data is still reached by searching. No
 test, e2e spec or README depended on the old demo browse.
+
+
+---
+
+## D-020 — c413d15 backend rollout: per-service Docker cache IDs, worker Dockerfile selection, worker-first validation and recovery
+
+**Status:** Deployed and validated on Railway on 2026-10-02 (commit
+`c413d15b8b506a5e427d1143d78a3e392a9d1e44`, tree
+`f06ce49d851cc43cbc80e5603d33cf2080405a19`). Records the rollout lessons; no
+code change.
+
+**Cache-mount IDs.** Railway's Dockerfile parser rejects
+`RUN --mount=type=cache` without an `id`. The first c413d15-lineage attempt
+(candidate `89abf3f`, worker deployment `da18da69`) failed at Dockerfile parse,
+before any instance or image existed, with "flag
+'--mount=type=cache,target=/root/.cache/uv,sharing=locked' is missing an id
+argument" at lines 72 and 108. Railway's documented form is
+`id=s/<service id>-<target path>`; environment variables cannot appear in the
+id. Each service therefore has its own Dockerfile: `apps/api/Dockerfile` uses
+the API service id and `apps/api/Dockerfile.worker` uses the worker service id.
+At c413d15 the two files differ only in those two cache-mount ids, so the API
+and worker builds do not share a cache and the files must be kept in step.
+
+**Worker Dockerfile selection.** `apps/api/railway.worker.json` selects
+`Dockerfile.worker`, but the live worker had `railwayConfigFile = null` and
+`dockerfilePath = /apps/api/Dockerfile`, so it never read that file and would
+have built the API's cache IDs. The worker's own service setting
+`build.dockerfilePath` was set to `/apps/api/Dockerfile.worker` (environment
+patch with `skipDeploys=true`; verified that only that field changed and that no
+deployment was created). Setting `railwayConfigFile` was rejected: config in code
+overrides dashboard settings, and every other value in the file already matched
+the live service. The file's `dockerBuildTarget` key is absent from Railway's
+published config schema, and the deployment metadata carries no build-target
+field. The effective target was confirmed from the build logs: in the worker
+builds `a8cc5ae6` and `159dc640` and the API build `07ed863e`, the `validated`
+stage steps (`COPY scripts/`, then the wheel and CPU-Torch checks) executed.
+BuildKit only builds the stages the requested target depends on, and
+`production` does not depend on `validated`, so a `production` target would not
+have run them. (The API deployment `fa64a300` reused the digest of `07ed863e` and
+logs no stage steps of its own.) Railway therefore builds the Dockerfile's final
+stage, `validated`, which is the stage CI builds (`api-ci.yml` `--target
+validated`). This contradicts the stage comment in `apps/api/Dockerfile` and
+`apps/api/Dockerfile.worker` ("CI only, never deployed"): that comment is wrong
+for the live services, and anything added to the `validated` stage would ship in
+both. Correcting the comment is tracked as a separate, comment-only follow-up
+and is not made here; Railway's build target is deliberately left unchanged. The
+running containers' filesystems were not inspected for that stage's `scripts/`
+directory; the conclusion rests on the validated-stage build logs and the reused
+image digests. The worker setting `/apps/api/Dockerfile.worker` is kept. A
+rebuild of a commit that has no `Dockerfile.worker` (for example `ddd401b`) first requires restoring
+`/apps/api/Dockerfile`; a retained-image `deploymentRollback` needs no rebuild
+and no such change.
+
+**Worker-first validation and recovery.** Deploying the API reopens its public
+route and there is no independent maintenance barrier or write-only switch, so
+the order is fixed. Freeze: stop every active API deployment, require three
+consecutive failed public probes and an instance that is no longer
+SSH-commandable. Drain: two empty samples at least 15 seconds apart on the
+baseline worker (active, reserved, scheduled, the four queues, and the
+`unacked` structures). Deploy the worker with a pinned
+`serviceInstanceDeploy` without first stopping the healthy baseline worker.
+Validate the exact new instance directly before touching the API: a unique
+Celery node that answers ping, both reviewed tasks registered, exactly one node,
+the restricted database role, Redis, and the old node no longer replying.
+Railway `SUCCESS` and instance `RUNNING` are not readiness: during an earlier
+attempt a stale control-plane state led to the API being restored before the
+worker was verified. Only then deploy the API and check health, the process
+command (no migration), signed-out 401 and an authenticated call. Recovery runs
+in the same order: keep the API blocked, `deploymentRollback` the worker (Boolean
+form, no selection set), validate it, then roll back the API.
+
+**Evidence.** The first window aborted at its validation gate and was recovered
+(rollback complete at T+36m59s). The second, supervised window passed every gate
+about six minutes after T0: worker `159dc640-6684-4079-bc4a-65d753569529`, API
+`fa64a300-afba-4c40-a8aa-8efca66fee50`, both rollback-capable with autodeploy
+still disabled. One user-submitted text ingestion completed (the ingestion panel
+showed Completed; the worker log showed `memories_created=3`, no retries, queues
+back to 0). The image digests matched the earlier c413d15 builds. No migration,
+Redis, credential, grant or startup-command change was made.
+
+**Deadline breach (first window).** The rule was to begin recovery at T+25
+(`03:17:44Z`); it began at `03:24:40Z`, T+31m56s, 6m56s late. The operator ended
+its turn awaiting a reply and had no timer, then asked about an extension
+instead of recovering. Deadline enforcement is therefore manual: the operator
+checks the clock before every step, stays in one continuous run while production
+is frozen, and the user keeps backup commands. No automatic enforcement exists.
+A stop-only script was dry-run tested and does not complete recovery. A full
+unattended recovery script, `recovery_watchdog.py` (kept outside the repository
+with the release records), is unfinished and untested, was never launched, and is
+not for use.
+
+**Not covered here.** Provider spend remains unenforced, the exposed predecessor
+provider keys are not established as revoked, no alerting or Railway healthcheck
+exists, and no backup of the new database has been taken. These are tracked
+separately and are not changed by this entry.
