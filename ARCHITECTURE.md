@@ -560,6 +560,15 @@ GitHub-artifact dataset does not provide.
 | API | `apps/api/railway.api.json` | yes | `/health` |
 | Worker | `apps/api/railway.worker.json` | no | none |
 
+> **Live configuration, verified 2026-10-02 (see D-020).** The table above is the
+> intended design; the deployed services do not read these files. Both have
+> `railwayConfigFile = null` and select their Dockerfile through the service
+> setting `build.dockerfilePath`: the API uses `/apps/api/Dockerfile`, the worker
+> `/apps/api/Dockerfile.worker` (its own cache-mount IDs). The API sets no start
+> command (the image CMD runs, with no `alembic upgrade head`), neither service has
+> a Railway healthcheck configured, and autodeploy is disabled for both. Each
+> service's cache-mount IDs must name its own service id.
+
 **API start command:**
 ```sh
 sh -c 'alembic upgrade head && exec uvicorn sourcemind.main:app \
