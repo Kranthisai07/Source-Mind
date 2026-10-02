@@ -46,7 +46,7 @@ export default function Memories() {
     const [results, setResults] = useState([]);
     const [total, setTotal] = useState(0);
     const [latency, setLatency] = useState(null);
-    const [loading, setLoading] = useState(true);
+    const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
     const [open, setOpen] = useState(false);
     // Bumped by "Try again". The retry has to reissue the SAME query and mode,
@@ -58,6 +58,20 @@ export default function Memories() {
 
     useEffect(() => {
         let cancelled = false;
+        // A blank query has nothing to ask the API: SearchRequest.query is
+        // min_length=1, so sending it is a guaranteed 422 SM010, and there is
+        // no list-all endpoint to fall back on. Show the prompt instead. The
+        // cleanup below still runs when the query changes, so a search that
+        // was already in flight when the box was cleared is marked cancelled
+        // and its late answer cannot overwrite this state.
+        if (!query.trim()) {
+            setResults([]);
+            setTotal(0);
+            setLatency(null);
+            setError(null);
+            setLoading(false);
+            return () => { cancelled = true; };
+        }
         setLoading(true);
         setError(null);
         const t = setTimeout(() => {
@@ -188,11 +202,11 @@ export default function Memories() {
                     <EmptyState
                         testId="memories-empty"
                         icon={Search}
-                        headline={query ? "No matches yet" : "No memories yet"}
+                        headline={query.trim() ? "No matches yet" : "Type to search memories"}
                         description={
-                            query
+                            query.trim()
                                 ? "Nothing matched that query. Try different wording, or switch the search mode to broaden the match."
-                                : "Ingest a document, meeting note or decision record and its extracted memories will appear here."
+                                : "Search your team's extracted knowledge, or ingest a document, meeting note or decision record to add to it."
                         }
                         action={
                             <Button

@@ -1921,3 +1921,41 @@ CPython 3.12 Linux amd64 and arm64 CPU wheels; container CI exercises the
 Pinned inputs support repeatable dependency resolution but do not by themselves
 prove byte-for-byte identical image layers. No byte-identical image comparison
 has been claimed.
+
+---
+
+## D-019 — The Memories page does not search on a blank query
+
+**Status:** Fixed in a separate branch and verified with mocked-API tests on
+2026-10-02; not published or deployed.
+
+On the recovered ddd401b baseline the Memories page opened on "Something went
+wrong · 422 · SM010". The page's search effect called `searchMemories`
+unconditionally, so every visit POSTed `{"query": ""}` to
+`/v1/memories/search`. `SearchRequest.query` is declared `min_length=1`, so the
+backend answers 422 with the generic validation envelope (SM010, field
+`body.query`, "String should have at least 1 character"). The same contract
+exists at c413d15, so the c413d15 rollout would not have fixed it. HTTP logs
+from the recovered API showed the Dashboard's four workspace calls returning
+200 and this one search returning 422; the response body itself was not
+captured, and the message above was reproduced locally against the ddd401b
+schema. This is a frontend defect, independent of the paused rollout.
+
+The backend has no list-all-memories endpoint, and relaxing `min_length` would
+send an empty string to the embedding provider, so the correction is in the
+page. A blank or whitespace-only query now skips the API call, clears results
+and errors, stops loading and shows "Type to search memories". The effect's
+existing cleanup marks the previous search cancelled when the query changes, so
+a response that arrives after the box was cleared cannot overwrite that state.
+Non-empty queries send the same request as before. The Ingest button is
+unchanged. `loading` now starts false because a blank load has nothing to wait
+for.
+
+Ten new component tests cover: no request on a blank or whitespace-only query
+or a mode change with a blank query; the exact request for a non-empty query;
+a late success and a late failure after clearing being ignored; clearing after
+an error; and the Ingest button staying enabled and opening its panel. Seven
+failed before the change. Disabling the `cancelled` checks makes exactly the two
+late-response tests fail, so those tests do guard the protection. Two existing
+retry tests assumed a search on a blank load and now type a query first. All
+API calls are mocked; no provider call or production write occurred.
