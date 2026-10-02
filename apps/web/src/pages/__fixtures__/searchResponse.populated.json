@@ -1,0 +1,53 @@
+{
+  "results": [
+    {
+      "memory": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "workspace_id": "00000000-0000-4000-8000-0000000000aa",
+        "document_id": "00000000-0000-0000-0000-000000000065",
+        "content": "We chose PostgreSQL with pgvector for the primary store because it keeps embeddings next to relational data.",
+        "version": 1,
+        "tags": [
+          "database",
+          "architecture"
+        ],
+        "category": "decision",
+        "confidence_score": 0.91,
+        "created_at": "2026-09-28T18:36:28Z",
+        "updated_at": null,
+        "attribution": null,
+        "relation_count": 0
+      },
+      "score": 0.8123,
+      "rank": 1,
+      "match_type": "semantic+keyword",
+      "highlight": "chose <b>PostgreSQL</b> with pgvector"
+    },
+    {
+      "memory": {
+        "id": "00000000-0000-0000-0000-000000000002",
+        "workspace_id": "00000000-0000-4000-8000-0000000000aa",
+        "document_id": "00000000-0000-0000-0000-000000000066",
+        "content": "The HNSW index uses m=16 and ef_construction=64.",
+        "version": 1,
+        "tags": [
+          "index"
+        ],
+        "category": "architecture",
+        "confidence_score": null,
+        "created_at": "2026-09-28T18:36:28Z",
+        "updated_at": null,
+        "attribution": null,
+        "relation_count": 0
+      },
+      "score": 0.5471,
+      "rank": 2,
+      "match_type": "keyword",
+      "highlight": null
+    }
+  ],
+  "total_found": 2,
+  "query": "postgres",
+  "mode": "hybrid",
+  "latency_ms": 42.7
+}

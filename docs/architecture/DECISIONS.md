@@ -1921,3 +1921,68 @@ CPython 3.12 Linux amd64 and arm64 CPU wheels; container CI exercises the
 Pinned inputs support repeatable dependency resolution but do not by themselves
 prove byte-for-byte identical image layers. No byte-identical image comparison
 has been claimed.
+
+---
+
+## D-019 — The Memories page does not search on a blank query
+
+**Status:** Fixed in a separate branch and verified with mocked-API tests on
+2026-10-02; not published or deployed.
+
+On the recovered ddd401b baseline the Memories page opened on "Something went
+wrong · 422 · SM010". The page's search effect called `searchMemories`
+unconditionally, so every visit POSTed `{"query": ""}` to
+`/v1/memories/search`. `SearchRequest.query` is declared `min_length=1`, so the
+backend answers 422 with the generic validation envelope (SM010, field
+`body.query`, "String should have at least 1 character"). The same contract
+exists at c413d15, so the c413d15 rollout would not have fixed it. HTTP logs
+from the recovered API showed the Dashboard's four workspace calls returning
+200 and this one search returning 422; the response body itself was not
+captured, and the message above was reproduced locally against the ddd401b
+schema. This is a frontend defect, independent of the paused rollout.
+
+The backend has no list-all-memories endpoint, and relaxing `min_length` would
+send an empty string to the embedding provider, so the correction is in the
+page. A blank or whitespace-only query now skips the API call, clears results
+and errors, stops loading and shows "Type to search memories". The effect's
+existing cleanup marks the previous search cancelled when the query changes, so
+a response that arrives after the box was cleared cannot overwrite that state.
+Non-empty queries send the same request as before. The Ingest button is
+unchanged. `loading` now starts false because a blank load has nothing to wait
+for.
+
+Eleven new component tests cover: no request on a blank or whitespace-only
+query or a mode change with a blank query; the exact request for a non-empty
+query; a populated response rendering both results' content, score and match
+type, the first result's tag and category, and the footer's total and latency,
+with the null `confidence_score` and null `highlight` result rendering without
+error and the populated `highlight` markup not leaking (rank is not asserted);
+a late success and a late failure after clearing being ignored; clearing after
+an error; and the Ingest button staying enabled and opening its panel. Seven
+failed before the change.
+Disabling the `cancelled` checks makes exactly the two late-response tests
+fail, and making the page read a flat instead of a wrapped result makes exactly
+the populated-rendering test fail. Two existing retry tests assumed a search on
+a blank load and now type a query first. All API calls are mocked; no provider
+call or production write occurred.
+
+The populated response is schema-generated, not a captured live response. It
+was produced by serializing the backend's own SearchResponse,
+SearchResultItem and MemoryResponse models with `model_dump(mode="json")`
+(values are invented) and is committed as
+`apps/web/src/pages/__fixtures__/searchResponse.populated.json`. It carries the
+wrapped `{memory, score, rank, match_type, highlight}` shape, one populated and
+one null `highlight`, and a null `confidence_score`. An earlier hand-built flat
+fixture only exercised the page's `r.memory ?? r` fallback and used a field the
+real model lacks. WORKING_STANDARDS rule 7 asks for real populated responses;
+this satisfies it at the page level only. `realApi`'s HTTP search request,
+against a real stack, remains uncovered and is outside this patch.
+
+**Intentional behavior change in mock mode.** `REACT_APP_USE_MOCKS` defaults to
+true, and `mockApi.searchMemories("")` used to return every seeded memory, so
+the default demo listed memories on load. With the guard applied in both modes
+the demo now also shows "Type to search memories" until the user types. This is
+deliberate: the two clients are meant to return identical shapes and callers are
+not meant to branch on the mode, and a blank query is not a valid search
+against the real contract. The seeded data is still reached by searching. No
+test, e2e spec or README depended on the old demo browse.

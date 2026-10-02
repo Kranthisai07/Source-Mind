@@ -39,6 +39,16 @@ const settle = async () => {
     });
 };
 
+/** A blank query never reaches the API, so reaching an error needs a query. */
+const searchFor = async (value) => {
+    await act(async () => {
+        fireEvent.change(screen.getByTestId("memories-search-input"), {
+            target: { value },
+        });
+    });
+    await settle();
+};
+
 let search;
 
 beforeEach(() => {
@@ -55,6 +65,7 @@ describe("recovering from a failed search", () => {
 
         renderPage();
         await settle();
+        await searchFor("vector index");
 
         await waitFor(() => expect(screen.getByTestId("error-state")).toBeTruthy());
         const callsBeforeRetry = search.mock.calls.length;
@@ -105,6 +116,7 @@ describe("recovering from a failed search", () => {
 
         renderPage();
         await settle();
+        await searchFor("vector index");
         await waitFor(() => expect(screen.getByTestId("error-state")).toBeTruthy());
 
         // The recovery path: the next attempt works.
