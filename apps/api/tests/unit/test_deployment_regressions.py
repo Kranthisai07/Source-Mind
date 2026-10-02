@@ -33,6 +33,8 @@ import pytest
 API_ROOT = pathlib.Path(__file__).resolve().parents[2]
 PACKAGE_ROOT = API_ROOT / "sourcemind"
 REPO_ROOT = API_ROOT.parents[1]
+API_SERVICE_ID = "4ac0f94b-aecd-42bf-8d75-1c8b5919806f"
+WORKER_SERVICE_ID = "45ede657-a5f2-41c2-8319-d084731a4fc6"
 
 
 @pytest.mark.unit
@@ -80,7 +82,8 @@ def test_container_build_consumes_immutable_inputs() -> None:
     )
     assert dockerfile.count("COPY pyproject.toml uv.lock ./") == 2
     assert len(re.findall(r"^\s+uv sync --locked", dockerfile, re.MULTILINE)) == 2
-    assert dockerfile.count("--mount=type=cache,target=/root/.cache/uv,sharing=locked") == 2
+    assert dockerfile.count("target=/root/.cache/uv,sharing=locked") == 2
+    assert "--mount=type=cache,target=/root/.cache/uv" not in dockerfile
     assert "RUN pip install" not in dockerfile
     assert "UV_PYTHON_DOWNLOADS=never" in dockerfile
     assert "FROM production AS validated" in dockerfile
@@ -145,6 +148,32 @@ def test_container_build_consumes_immutable_inputs() -> None:
     assert ".dockerignore" not in (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "--target validated" in workflow
     assert "--platform linux/amd64" in workflow
+
+
+@pytest.mark.unit
+def test_railway_cache_mounts_use_each_service_namespace() -> None:
+    api_config = json.loads((API_ROOT / "railway.api.json").read_text())
+    worker_config = json.loads((API_ROOT / "railway.worker.json").read_text())
+
+    assert api_config["build"]["dockerfilePath"] == "Dockerfile"
+    assert worker_config["build"]["dockerfilePath"] == "Dockerfile.worker"
+
+    api_dockerfile = (API_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    worker_dockerfile = (API_ROOT / "Dockerfile.worker").read_text(encoding="utf-8")
+    mount_suffix = "/root/.cache/uv,target=/root/.cache/uv,sharing=locked"
+
+    for dockerfile, service_id, other_service_id in (
+        (api_dockerfile, API_SERVICE_ID, WORKER_SERVICE_ID),
+        (worker_dockerfile, WORKER_SERVICE_ID, API_SERVICE_ID),
+    ):
+        expected_mount = f"--mount=type=cache,id=s/{service_id}-{mount_suffix}"
+        assert dockerfile.count(expected_mount) == 2
+        assert other_service_id not in dockerfile
+        assert "${RAILWAY_SERVICE_ID}" not in dockerfile
+
+    assert api_dockerfile.replace(API_SERVICE_ID, "<service-id>") == (
+        worker_dockerfile.replace(WORKER_SERVICE_ID, "<service-id>")
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
