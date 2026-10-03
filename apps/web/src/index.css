@@ -1,15 +1,44 @@
-/* Design tokens: primitive -> semantic -> component.
-   Mirrors the primitive layer in tailwind.config.js; see that file's header.
-   Must precede every other rule: a CSS @import after a rule is invalid and
-   postcss will drop or warn on it. */
-@import './styles/tokens.css';
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Newsreader:ital,wght@0,400;0,500;0,600;1,400;1,500&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* SourceMind brand palette — exact spec values */
+/* ─────────────────────────────────────────────────────────────
+   SourceMind — dual theme tokens.
+   Light is the default (Supermemory editorial paper feel);
+   .dark is a refined version of the original dark palette.
+   ───────────────────────────────────────────────────────────── */
 :root {
+    /* Brand tokens — LIGHT */
+    --sm-bg: #FBFBF9;
+    --sm-surface: #FFFFFF;
+    --sm-surface-2: #F3F3EE;
+    --sm-border: #E7E7E1;
+    --sm-border-hover: #D4D4CE;
+    --sm-text: #18181B;
+    --sm-text-secondary: #5B5B63;
+    --sm-text-muted: #9A9A9F;
+    --sm-blue: #4F7EFF;
+    --sm-green: #34D399;
+    --sm-amber: #F59E0B;
+    --sm-red: #EF4444;
+    --sm-purple: #A78BFA;
+
+    /* Theme-aware helpers used in raw CSS below */
+    --sm-hover: rgba(0, 0, 0, 0.035);
+    --sm-hover-strong: rgba(0, 0, 0, 0.06);
+    --sm-glass: rgba(255, 255, 255, 0.78);
+    --sm-grid: #ECECE6;
+    --sm-card-shadow: 0 1px 2px rgba(24, 24, 27, 0.04);
+    --sm-card-shadow-hover: 0 6px 20px -12px rgba(24, 24, 27, 0.18);
+    --sm-graph-node-bg: #FFFFFF;
+    --sm-graph-node-ink: #18181B;
+}
+
+/* Dark brand tokens — :root.dark has higher specificity than :root so it
+   always wins when the .dark class is present on <html>. */
+:root.dark {
     --sm-bg: #0A0A0F;
     --sm-surface: #12121A;
     --sm-surface-2: #17172160;
@@ -18,33 +47,83 @@
     --sm-text: #E8E8F0;
     --sm-text-secondary: #8888A8;
     --sm-text-muted: #4A4A6A;
-    --sm-blue: #4F7EFF;
-    --sm-green: #34D399;
-    --sm-amber: #F59E0B;
-    --sm-red: #EF4444;
-    --sm-purple: #A78BFA;
+
+    --sm-hover: rgba(255, 255, 255, 0.035);
+    --sm-hover-strong: rgba(255, 255, 255, 0.06);
+    --sm-glass: rgba(18, 18, 26, 0.72);
+    --sm-grid: #1E1E2E;
+    --sm-card-shadow: none;
+    --sm-card-shadow-hover: 0 8px 28px -12px rgba(79, 126, 255, 0.12);
+    --sm-graph-node-bg: #12121A;
+    --sm-graph-node-ink: #E8E8F0;
 }
 
-/* shadcn tokens mapped to SourceMind palette (all in HSL for compatibility) */
 @layer base {
     :root {
-        --background: 240 22% 5%;            /* #0A0A0F */
-        --foreground: 240 22% 93%;           /* #E8E8F0 */
-        --card: 240 17% 9%;                  /* #12121A */
+        --background: 60 14% 98%;
+        --foreground: 240 6% 10%;
+        --card: 0 0% 100%;
+        --card-foreground: 240 6% 10%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 240 6% 10%;
+        --primary: 225 100% 66%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 60 9% 95%;
+        --secondary-foreground: 240 6% 10%;
+        --muted: 60 9% 93%;
+        --muted-foreground: 240 5% 45%;
+        --accent: 60 9% 92%;
+        --accent-foreground: 240 6% 10%;
+        --destructive: 0 84% 60%;
+        --destructive-foreground: 0 0% 100%;
+        --border: 48 10% 90%;
+        --input: 48 10% 90%;
+        --ring: 225 100% 66%;
+        --chart-1: 225 100% 66%;
+        --chart-2: 158 64% 52%;
+        --chart-3: 38 92% 50%;
+        --chart-4: 255 92% 76%;
+        --chart-5: 0 84% 60%;
+        --radius: 0.5rem;
+    }
+
+    .dark {
+        /* Brand tokens — DARK */
+        --sm-bg: #0A0A0F;
+        --sm-surface: #12121A;
+        --sm-surface-2: #17172160;
+        --sm-border: #1E1E2E;
+        --sm-border-hover: #2A2A3E;
+        --sm-text: #E8E8F0;
+        --sm-text-secondary: #8888A8;
+        --sm-text-muted: #4A4A6A;
+
+        --sm-hover: rgba(255, 255, 255, 0.035);
+        --sm-hover-strong: rgba(255, 255, 255, 0.06);
+        --sm-glass: rgba(18, 18, 26, 0.72);
+        --sm-grid: #1E1E2E;
+        --sm-card-shadow: none;
+        --sm-card-shadow-hover: 0 8px 28px -12px rgba(79, 126, 255, 0.12);
+        --sm-graph-node-bg: #12121A;
+        --sm-graph-node-ink: #E8E8F0;
+
+        --background: 240 22% 5%;
+        --foreground: 240 22% 93%;
+        --card: 240 17% 9%;
         --card-foreground: 240 22% 93%;
         --popover: 240 17% 9%;
         --popover-foreground: 240 22% 93%;
-        --primary: 225 100% 66%;             /* #4F7EFF */
+        --primary: 225 100% 66%;
         --primary-foreground: 0 0% 100%;
         --secondary: 240 20% 14%;
         --secondary-foreground: 240 22% 93%;
         --muted: 240 20% 12%;
-        --muted-foreground: 240 18% 60%;     /* #8888A8 */
+        --muted-foreground: 240 18% 60%;
         --accent: 240 20% 15%;
         --accent-foreground: 240 22% 93%;
-        --destructive: 0 84% 60%;            /* #EF4444 */
+        --destructive: 0 84% 60%;
         --destructive-foreground: 0 0% 100%;
-        --border: 240 25% 15%;               /* #1E1E2E */
+        --border: 240 25% 15%;
         --input: 240 25% 15%;
         --ring: 225 100% 66%;
         --chart-1: 225 100% 66%;
@@ -52,7 +131,6 @@
         --chart-3: 38 92% 50%;
         --chart-4: 255 92% 76%;
         --chart-5: 0 84% 60%;
-        --radius: 0.75rem;
     }
 }
 
@@ -64,49 +142,37 @@ html, body, #root {
 
 body {
     margin: 0;
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    letter-spacing: -0.005em;
+    letter-spacing: -0.004em;
+    transition: background-color 200ms ease, color 200ms ease;
 }
 
 code, pre, .font-mono {
     font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
-/* Custom scrollbars — subtle to match dark theme */
-::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-}
-::-webkit-scrollbar-track {
-    background: transparent;
-}
+/* Custom scrollbars */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-    background: #2A2A3E;
+    background: var(--sm-border-hover);
     border-radius: 6px;
     border: 2px solid var(--sm-bg);
 }
-::-webkit-scrollbar-thumb:hover {
-    background: #3A3A52;
-}
+::-webkit-scrollbar-thumb:hover { background: var(--sm-text-muted); }
 
-/* Selection */
-::selection {
-    background: #4F7EFF40;
-    color: #E8E8F0;
-}
+::selection { background: #4F7EFF33; color: var(--sm-text); }
 
 /* Subtle background grid used on landing + auth */
 .bg-grid {
     background-image:
-        linear-gradient(to right, #1E1E2E 1px, transparent 1px),
-        linear-gradient(to bottom, #1E1E2E 1px, transparent 1px);
+        linear-gradient(to right, var(--sm-grid) 1px, transparent 1px),
+        linear-gradient(to bottom, var(--sm-grid) 1px, transparent 1px);
     background-size: 48px 48px;
     background-position: -1px -1px;
 }
-
 .bg-grid-fade {
     mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, black 40%, transparent 100%);
     -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, black 40%, transparent 100%);
@@ -114,13 +180,18 @@ code, pre, .font-mono {
 
 /* Glass panel */
 .glass {
-    background: rgba(18, 18, 26, 0.72);
+    background: var(--sm-glass);
     backdrop-filter: blur(20px) saturate(140%);
     -webkit-backdrop-filter: blur(20px) saturate(140%);
     border: 1px solid var(--sm-border);
 }
 
-/* Pulse dot (for ACTIVE / SYNCING) */
+/* Dotted / dashed editorial divider */
+.sm-divider-dashed {
+    border-top: 1px dashed var(--sm-border);
+}
+
+/* Pulse dot */
 @keyframes sm-pulse {
     0%, 100% { transform: scale(1); opacity: 1; }
     50% { transform: scale(1.4); opacity: 0.5; }
@@ -140,30 +211,26 @@ code, pre, .font-mono {
     from { opacity: 0; transform: translateY(6px); }
     to { opacity: 1; transform: translateY(0); }
 }
-.fade-in-up {
-    animation: sm-fade-in-up 360ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
-}
+.fade-in-up { animation: sm-fade-in-up 360ms cubic-bezier(0.2, 0.9, 0.3, 1) both; }
 
 /* Bar grow from left */
 @keyframes sm-bar-grow {
     from { transform: scaleX(0); }
     to { transform: scaleX(1); }
 }
-.bar-grow {
-    transform-origin: left center;
-    animation: sm-bar-grow 600ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
-}
+.bar-grow { transform-origin: left center; animation: sm-bar-grow 600ms cubic-bezier(0.2, 0.9, 0.3, 1) both; }
 
-/* Card hover glow */
+/* Card */
 .sm-card {
     background-color: var(--sm-surface);
     border: 1px solid var(--sm-border);
     border-radius: 12px;
+    box-shadow: var(--sm-card-shadow);
     transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
 }
 .sm-card:hover {
     border-color: var(--sm-border-hover);
-    box-shadow: 0 0 0 1px #4F7EFF10, 0 8px 28px -12px rgba(79, 126, 255, 0.12);
+    box-shadow: var(--sm-card-shadow-hover);
 }
 
 /* Shimmer on skeletons */
@@ -172,47 +239,36 @@ code, pre, .font-mono {
     100% { background-position: 200% 0; }
 }
 .shimmer {
-    background: linear-gradient(90deg, #17172100 0%, #22223380 50%, #17172100 100%);
+    background: linear-gradient(90deg, transparent 0%, var(--sm-surface-2) 50%, transparent 100%);
     background-size: 200% 100%;
     animation: sm-shimmer 1.6s ease-in-out infinite;
 }
 
 @layer base {
-    * {
-        @apply border-border;
+    * { @apply border-border; }
+    body { @apply bg-background text-foreground; }
+}
+
+/* Respect reduced motion: show final state (also what headless renderers see). */
+@media (prefers-reduced-motion: reduce) {
+    .fade-in-up,
+    .bar-grow {
+        animation: none !important;
+        opacity: 1 !important;
+        transform: none !important;
     }
-    body {
-        @apply bg-background text-foreground;
-    }
+    .shimmer,
+    .pulse-dot::after { animation: none !important; }
 }
 
 @layer base {
-    [data-debug-wrapper="true"] {
-        display: contents !important;
-    }
+    [data-debug-wrapper="true"] { display: contents !important; }
     [data-debug-wrapper="true"] > * {
-        margin-left: inherit;
-        margin-right: inherit;
-        margin-top: inherit;
-        margin-bottom: inherit;
-        padding-left: inherit;
-        padding-right: inherit;
-        padding-top: inherit;
-        padding-bottom: inherit;
-        column-gap: inherit;
-        row-gap: inherit;
-        gap: inherit;
-        border-left-width: inherit;
-        border-right-width: inherit;
-        border-top-width: inherit;
-        border-bottom-width: inherit;
-        border-left-style: inherit;
-        border-right-style: inherit;
-        border-top-style: inherit;
-        border-bottom-style: inherit;
-        border-left-color: inherit;
-        border-right-color: inherit;
-        border-top-color: inherit;
-        border-bottom-color: inherit;
+        margin-left: inherit; margin-right: inherit; margin-top: inherit; margin-bottom: inherit;
+        padding-left: inherit; padding-right: inherit; padding-top: inherit; padding-bottom: inherit;
+        column-gap: inherit; row-gap: inherit; gap: inherit;
+        border-left-width: inherit; border-right-width: inherit; border-top-width: inherit; border-bottom-width: inherit;
+        border-left-style: inherit; border-right-style: inherit; border-top-style: inherit; border-bottom-style: inherit;
+        border-left-color: inherit; border-right-color: inherit; border-top-color: inherit; border-bottom-color: inherit;
     }
 }

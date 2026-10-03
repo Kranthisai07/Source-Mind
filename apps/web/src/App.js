@@ -21,12 +21,9 @@ export default function App() {
     return (
         <div className="App min-h-screen bg-sm-bg text-sm-text">
             <BrowserRouter basename={process.env.PUBLIC_URL}>
-                {/* Publishes Clerk's getToken() to realApi.js. Renders nothing. */}
                 <ClerkTokenBridge />
                 <Routes>
                     <Route path="/" element={<Landing />} />
-                    {/* Public marketing page. Deliberately outside RequireAuth,
-                        alongside Landing — it is documentation, not console. */}
                     <Route path="/develop" element={<Develop />} />
                     <Route path="/sign-in" element={<AuthPage mode="sign-in" />} />
                     <Route path="/sign-up" element={<AuthPage mode="sign-up" />} />
@@ -51,10 +48,10 @@ export default function App() {
                 position="bottom-right"
                 toastOptions={{
                     style: {
-                        background: "#12121A",
-                        border: "1px solid #1E1E2E",
-                        color: "#E8E8F0",
-                        fontFamily: "Inter, sans-serif",
+                        background: "var(--sm-surface)",
+                        border: "1px solid var(--sm-border)",
+                        color: "var(--sm-text)",
+                        fontFamily: "'DM Sans', sans-serif",
                     },
                 }}
             />

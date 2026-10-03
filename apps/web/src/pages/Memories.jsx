@@ -1,9 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Search, Plus, X, Brain } from "lucide-react";
-import PageHeader from "../components/ui-kit/PageHeader";
-import EmptyState from "../components/ui-kit/EmptyState";
-import { Skeleton } from "../components/ui-kit/Skeleton";
-import ErrorState from "../components/ui-kit/ErrorState";
+import { Search, Plus, X } from "lucide-react";
+import TopBar from "../components/layout/TopBar";
 import MemoryCard from "../components/widgets/MemoryCard";
 import PipelineTracker from "../components/widgets/PipelineTracker";
 import { Button } from "../components/ui/button";
@@ -12,30 +9,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "../components/ui/sheet";
 import api, { resolveCurrentWorkspace } from "../lib/api";
 import { classifyApiError } from "../lib/apiError";
-import { toast } from "sonner";
 import { createSubmissionKeyHolder, submissionIdentity } from "../lib/submissionKey";
 import { getCurrentUserId } from "../lib/currentUser";
-
-/**
- * Page 3 of the Supermemory-console redesign, modelled on §4.2 (Documents):
- * toolbar row (search + filters + right-aligned primary button), then the
- * result list, then the §4.5 footer summary line.
- *
- * The data call is unchanged. Three real bugs the live response exposed:
- *
- *   1. `results` items are WRAPPERS — {memory, score, rank, match_type,
- *      highlight} — and the whole wrapper was handed to MemoryCard as its
- *      `memory` prop. So `memory.content` was undefined and
- *      `memory.tags.map(...)` threw as soon as any result came back. The page
- *      crashed on a successful search.
- *   2. `r.__latency_ms` does not exist; the field is `latency_ms`, so the
- *      timing read "undefinedms".
- *   3. The list keyed on and linked to `m.memory_id`, which does not exist —
- *      every result linked to /memories/undefined.
- *
- * §6: the six `shimmer` blocks are replaced by skeleton rows matching the real
- * row height, so the layout does not jump when results land.
- */
+import { toast } from "sonner";
 
 const MODES = ["hybrid", "semantic", "keyword"];
 const CATEGORIES = ["general", "architecture", "decision", "incident", "onboarding"];
@@ -49,21 +25,10 @@ export default function Memories() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
     const [open, setOpen] = useState(false);
-    // Bumped by "Try again". The retry has to reissue the SAME query and mode,
-    // so it cannot work by changing either of them — and the previous handler,
-    // `setQuery((q) => q)`, set state to a value React considers identical, so
-    // React bailed out of the render and the effect below never re-ran. The
-    // button did nothing. A counter is a state change React cannot bail out of.
     const [reloadNonce, setReloadNonce] = useState(0);
 
     useEffect(() => {
         let cancelled = false;
-        // A blank query has nothing to ask the API: SearchRequest.query is
-        // min_length=1, so sending it is a guaranteed 422 SM010, and there is
-        // no list-all endpoint to fall back on. Show the prompt instead. The
-        // cleanup below still runs when the query changes, so a search that
-        // was already in flight when the box was cleared is marked cancelled
-        // and its late answer cannot overwrite this state.
         if (!query.trim()) {
             setResults([]);
             setTotal(0);
@@ -72,374 +37,299 @@ export default function Memories() {
             setLoading(false);
             return () => { cancelled = true; };
         }
+
         setLoading(true);
         setError(null);
-        const t = setTimeout(() => {
-            api.searchMemories({ query, mode, limit: 24 }).then(r => {
-                if (cancelled) return;
-                setResults(Array.isArray(r?.results) ? r.results : []);
-                setTotal(r?.total_found ?? 0);
-                // The response field is `latency_ms`. `__latency_ms` was never
-                // on it, so this rendered "undefinedms".
-                setLatency(r?.latency_ms ?? r?.__latency_ms ?? null);
-                setError(null);
-                setLoading(false);
-            }).catch((err) => {
-                if (cancelled) return;
-                // Previously `.catch` set results to [] — a failed search was
-                // indistinguishable from one that genuinely matched nothing.
-                setError(classifyApiError(err));
-                setResults([]);
-                setTotal(0);
-                setLatency(null);
-                setLoading(false);
-            });
+        const timer = setTimeout(() => {
+            api.searchMemories({ query, mode, limit: 24 })
+                .then((response) => {
+                    if (cancelled) return;
+                    setResults(Array.isArray(response?.results) ? response.results : []);
+                    setTotal(response?.total_found ?? 0);
+                    setLatency(response?.latency_ms ?? response?.__latency_ms ?? null);
+                    setLoading(false);
+                })
+                .catch((requestError) => {
+                    if (cancelled) return;
+                    setError(classifyApiError(requestError));
+                    setResults([]);
+                    setTotal(0);
+                    setLatency(null);
+                    setLoading(false);
+                });
         }, 120);
-        return () => { cancelled = true; clearTimeout(t); };
+
+        return () => {
+            cancelled = true;
+            clearTimeout(timer);
+        };
     }, [query, mode, reloadNonce]);
 
     return (
         <>
-            <PageHeader
+            <TopBar
                 title="Memories"
-                subtitle="Search your team's extracted knowledge, ranked by relevance across semantic and keyword signals."
-            />
-
-            {/* §4.2 toolbar: search, filters, right-aligned primary button. */}
-            <div className="flex items-center gap-2 mb-5">
-                <div className="relative flex-1 min-w-0 flex items-center">
-                    <Search
-                        className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-content-muted pointer-events-none"
-                        aria-hidden="true"
-                    />
-                    <input
-                        data-testid="memories-search-input"
-                        type="text"
-                        value={query}
-                        onChange={(e) => setQuery(e.target.value)}
-                        placeholder="Search your team's knowledge…"
-                        aria-label="Search memories"
-                        className="w-full h-9 pl-10 pr-9 rounded-md bg-surface border border-hairline
-                                   text-body text-content placeholder:text-content-muted
-                                   focus:border-hairline-hover outline-none sm-focusable transition-colors"
-                    />
-                    {query && (
-                        <button
-                            data-testid="memories-search-clear"
-                            onClick={() => setQuery("")}
-                            aria-label="Clear search"
-                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-content-muted
-                                       hover:text-content sm-focusable rounded"
-                        >
-                            <X className="w-3.5 h-3.5" />
-                        </button>
-                    )}
-                </div>
-
-                {/* §2: the active mode is the one blue affordance here — an
-                    active tab/pill is on the accent's permitted list. */}
-                <div
-                    className="flex items-center gap-1 shrink-0"
-                    role="group"
-                    aria-label="Search mode"
-                >
-                    {MODES.map((m) => (
-                        <button
-                            key={m}
-                            data-testid={`mode-${m}`}
-                            onClick={() => setMode(m)}
-                            aria-pressed={mode === m}
-                            className={`h-9 px-3 rounded-md text-[11.5px] font-mono transition-colors sm-focusable ${
-                                mode === m
-                                    ? "bg-brand/10 text-brand"
-                                    : "text-content-secondary hover:text-content hover:bg-white/[0.03]"
-                            }`}
-                        >
-                            {m}
-                        </button>
-                    ))}
-                </div>
-
-                <Button
-                    data-testid="ingest-open-btn"
-                    onClick={() => setOpen(true)}
-                    className="h-9 shrink-0 bg-brand-fill hover:bg-brand-fill-hover text-white text-body font-medium"
-                >
-                    <Plus className="w-4 h-4" /> Ingest
-                </Button>
-            </div>
-
-            {error ? (
-                <div className="sm-card">
-                    <ErrorState
-                        error={error}
-                        onRetry={() => setReloadNonce((n) => n + 1)}
-                    />
-                </div>
-            ) : loading ? (
-                <div
-                    className="space-y-3"
-                    role="status"
-                    aria-busy="true"
-                    aria-label="Searching"
-                >
-                    {Array.from({ length: 6 }).map((_, i) => (
-                        <div key={i} className="sm-card p-5 space-y-3">
-                            <Skeleton className="h-[1em] w-full" />
-                            <Skeleton className="h-[1em] w-4/5" />
-                            <div className="flex justify-between pt-3 border-t border-hairline">
-                                <Skeleton className="h-4 w-32" />
-                                <Skeleton className="h-4 w-24" />
-                            </div>
-                        </div>
-                    ))}
-                    <span className="sr-only">Searching…</span>
-                </div>
-            ) : results.length === 0 ? (
-                /* §5 template, via the shared component so the copy formula and
-                   vertical rhythm match every other empty state. */
-                <div className="sm-card">
-                    <EmptyState
-                        testId="memories-empty"
-                        icon={Search}
-                        headline={query.trim() ? "No matches yet" : "Type to search memories"}
-                        description={
-                            query.trim()
-                                ? "Nothing matched that query. Try different wording, or switch the search mode to broaden the match."
-                                : "Search your team's extracted knowledge, or ingest a document, meeting note or decision record to add to it."
-                        }
-                        action={
-                            <Button
-                                onClick={() => setOpen(true)}
-                                className="h-9 bg-brand-fill hover:bg-brand-fill-hover text-white text-body font-medium"
-                            >
-                                <Plus className="w-4 h-4" /> Ingest a document
-                            </Button>
-                        }
-                    />
-                </div>
-            ) : (
-                <>
-                    <div className="space-y-3">
-                        {results.map((r, i) => {
-                            // Unwrap. `r.memory` is the memory; the rest is
-                            // search metadata about it.
-                            const memory = r?.memory ?? r;
-                            return (
-                                <MemoryCard
-                                    key={memory?.id || memory?.memory_id || i}
-                                    memory={memory}
-                                    score={r?.score}
-                                    rank={r?.rank ?? i + 1}
-                                    matchType={r?.match_type}
-                                />
-                            );
-                        })}
-                    </div>
-
-                    {/* §4.5: "Footer summary row under the table: '1–1 of 1',
-                        ... '187 ms avg' — the aggregate stats are echoed once
-                        more at the bottom of the list, not just at the top." */}
-                    <div
-                        data-testid="results-meta"
-                        className="flex items-center justify-between mt-5 pt-4 border-t border-hairline"
+                subtitle="Your team's extracted knowledge, ranked by relevance"
+                actions={
+                    <Button
+                        data-testid="ingest-open-btn"
+                        onClick={() => setOpen(true)}
+                        className="bg-sm-blue hover:bg-sm-blue/90 text-white h-9 shadow-[0_0_0_1px_rgba(79,126,255,0.4)_inset]"
                     >
-                        <span className="font-mono text-[11px] text-content-secondary">
-                            1–{results.length} of {total}
-                        </span>
-                        {latency != null && (
-                            <span className="font-mono text-[11px] text-content-secondary">
-                                {Math.round(latency)} ms
-                            </span>
+                        <Plus className="w-4 h-4" /> Ingest
+                    </Button>
+                }
+            />
+            <div className="flex-1 px-8 py-6 space-y-5">
+                <div className="sm-card p-1.5 flex items-center gap-2">
+                    <div className="relative flex-1 flex items-center">
+                        <Search className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-sm-text-muted pointer-events-none" />
+                        <input
+                            data-testid="memories-search-input"
+                            type="text"
+                            value={query}
+                            onChange={(event) => setQuery(event.target.value)}
+                            placeholder="Search your team's knowledge..."
+                            aria-label="Search memories"
+                            className="w-full h-11 pl-11 pr-9 bg-transparent text-[14px] text-sm-text placeholder:text-sm-text-muted outline-none"
+                        />
+                        {query && (
+                            <button
+                                data-testid="memories-search-clear"
+                                onClick={() => setQuery("")}
+                                aria-label="Clear search"
+                                className="absolute right-3 top-1/2 -translate-y-1/2 text-sm-text-muted hover:text-sm-text"
+                            >
+                                <X className="w-4 h-4" />
+                            </button>
                         )}
                     </div>
-                </>
-            )}
+                    <div className="flex items-center gap-1 pr-2" role="group" aria-label="Search mode">
+                        {MODES.map((searchMode) => (
+                            <button
+                                key={searchMode}
+                                data-testid={`mode-${searchMode}`}
+                                onClick={() => setMode(searchMode)}
+                                aria-pressed={mode === searchMode}
+                                className={`h-8 px-3 rounded-md text-[11.5px] font-mono tracking-wide transition-colors ${
+                                    mode === searchMode
+                                        ? "bg-sm-blue/15 text-sm-blue border border-sm-blue/30"
+                                        : "text-sm-text-secondary hover:text-sm-text border border-transparent hover:bg-white/[0.03]"
+                                }`}
+                            >
+                                {searchMode}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                {error ? (
+                    <SearchError error={error} onRetry={() => setReloadNonce((value) => value + 1)} />
+                ) : loading ? (
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4" role="status" aria-label="Searching">
+                        {Array.from({ length: 6 }).map((_, index) => (
+                            <div key={index} className="sm-card p-5 h-[200px] shimmer rounded-xl" />
+                        ))}
+                    </div>
+                ) : results.length === 0 ? (
+                    <EmptyState query={query} onIngest={() => setOpen(true)} />
+                ) : (
+                    <>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                            {results.map((result, index) => {
+                                const memory = result?.memory ?? result;
+                                return (
+                                    <MemoryCard
+                                        key={memory?.id || memory?.memory_id || index}
+                                        memory={memory}
+                                        score={result?.score}
+                                        rank={result?.rank ?? index + 1}
+                                        matchType={result?.match_type}
+                                    />
+                                );
+                            })}
+                        </div>
+                        <div data-testid="results-meta" className="flex items-center justify-between pt-4 border-t border-sm-border">
+                            <span className="font-mono text-[11.5px] text-sm-text-secondary">1–{results.length} of {total}</span>
+                            {latency != null && <span className="font-mono text-[11.5px] text-sm-text-secondary">{Math.round(latency)} ms</span>}
+                        </div>
+                    </>
+                )}
+            </div>
 
             <IngestPanel open={open} onOpenChange={setOpen} />
         </>
     );
 }
 
-function IngestPanel({ open, onOpenChange }) {
-    const [content, setContent]   = useState("");
-    const [tagsRaw, setTagsRaw]   = useState("");
-    const [tags, setTags]         = useState([]);
-    const [category, setCategory] = useState("general");
-    const [jobId, setJobId]       = useState(null);
-    const [job, setJob]           = useState(null);
-    const [jobError, setJobError] = useState(null);
-    // Bumped by "Check again". It re-runs the status effect for the SAME
-    // jobId — it never re-submits, which is the distinction that matters:
-    // resubmitting on a failed poll would ingest the content twice.
-    const [retryNonce, setRetryNonce] = useState(0);
+function SearchError({ error, onRetry }) {
+    return (
+        <div className="sm-card py-20 flex flex-col items-center text-center" data-testid="error-state">
+            <div className="w-12 h-12 rounded-xl bg-sm-red/10 border border-sm-red/20 flex items-center justify-center mb-4 text-sm-red">!</div>
+            <h3 className="text-[16px] font-semibold text-sm-text mb-2">{error.title}</h3>
+            <p className="text-[13px] text-sm-text-secondary max-w-md mb-5">{error.detail}</p>
+            <Button data-testid="error-retry" onClick={onRetry} variant="outline" className="border-sm-border text-sm-text">
+                Try again
+            </Button>
+        </div>
+    );
+}
 
-    // Polling stopped on exactly one status:
-    //
-    //     if (r.status === "done") return;
-    //
-    // so a job ending in `failed` was polled for ever, and the panel kept
-    // rendering "Processing · stage …" — a failure shown as progress, with no
-    // way out, because the reset button was gated on `done` too. That became
-    // reachable on demand once revocation started terminalising queued
-    // documents as `failed`.
-    //
-    // There was also no catch. Losing access mid-poll rejected the request,
-    // the rejection escaped as an unhandled rejection, and the panel was left
-    // displaying the details of a resource the caller may no longer be
-    // allowed to see.
+function EmptyState({ query, onIngest }) {
+    const hasQuery = Boolean(query.trim());
+    return (
+        <div className="sm-card py-24 flex flex-col items-center text-center" data-testid="memories-empty">
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-sm-blue/20 to-sm-purple/20 border border-sm-border flex items-center justify-center mb-5">
+                <Search className="w-7 h-7 text-sm-blue" strokeWidth={1.8} />
+            </div>
+            <h3 className="text-[16px] font-semibold text-sm-text mb-2">{hasQuery ? "No matches yet" : "Type to search memories"}</h3>
+            <p className="text-[13px] text-sm-text-secondary max-w-sm mb-6">
+                {hasQuery
+                    ? "Try different wording, or switch the search mode to broaden the match."
+                    : "Search your team's extracted knowledge, or ingest a document, meeting note or decision record to add to it."}
+            </p>
+            <Button onClick={onIngest} className="bg-sm-blue hover:bg-sm-blue/90 text-white h-9">
+                <Plus className="w-4 h-4" /> Ingest a document
+            </Button>
+        </div>
+    );
+}
+
+function IngestPanel({ open, onOpenChange }) {
+    const [content, setContent] = useState("");
+    const [tagsRaw, setTagsRaw] = useState("");
+    const [tags, setTags] = useState([]);
+    const [category, setCategory] = useState("general");
+    const [jobId, setJobId] = useState(null);
+    const [job, setJob] = useState(null);
+    const [jobError, setJobError] = useState(null);
+    const [retryNonce, setRetryNonce] = useState(0);
+    const keyHolder = useRef(null);
+    const inFlight = useRef(false);
+
+    if (keyHolder.current === null) keyHolder.current = createSubmissionKeyHolder();
+
     useEffect(() => {
         if (!jobId) return;
         let cancelled = false;
         let timer = null;
-        // The job belongs to whoever submitted it. If the signed-in user
-        // changes mid-flight it is not ours to poll any more.
         const owner = getCurrentUserId();
 
         const stop = () => {
             cancelled = true;
-            if (timer) { clearTimeout(timer); timer = null; }
+            if (timer) clearTimeout(timer);
         };
 
         const poll = async () => {
             while (!cancelled) {
-                if (getCurrentUserId() !== owner) { stop(); return; }
-                let r;
+                if (getCurrentUserId() !== owner) return stop();
                 try {
-                    r = await api.getJobStatus(jobId);
-                } catch (e) {
+                    const response = await api.getJobStatus(jobId);
                     if (cancelled) return;
-                    // Drop the rendered job before showing the error: on a 403
-                    // the stage detail already on screen describes a resource
-                    // this caller may no longer be permitted to see.
+                    setJob(response);
+                    if (response.status === "done" || response.status === "failed") return stop();
+                } catch (requestError) {
+                    if (cancelled) return;
                     setJob(null);
-                    setJobError(
-                        e?.body?.error?.message || classifyApiError(e).title
-                    );
-                    stop();
-                    return;
+                    setJobError(requestError?.body?.error?.message || classifyApiError(requestError).title);
+                    return stop();
                 }
-                if (cancelled) return;
-                setJob(r);
-                // BOTH terminal states end the loop.
-                if (r.status === "done" || r.status === "failed") { stop(); return; }
-                await new Promise((res) => { timer = setTimeout(res, 180); });
+                await new Promise((resolve) => { timer = setTimeout(resolve, 180); });
             }
         };
+
         poll();
-        // Covers unmount, a reset that clears jobId, and a retry that bumps
-        // the nonce — each cancels the in-flight wait rather than leaving a
-        // timer to fire into a dead closure.
         return stop;
     }, [jobId, retryNonce]);
 
-    const addTag = (e) => {
-        if (e.key === "Enter" && tagsRaw.trim()) {
-            e.preventDefault();
+    const addTag = (event) => {
+        if (event.key === "Enter" && tagsRaw.trim()) {
+            event.preventDefault();
             setTags([...tags, tagsRaw.trim()]);
             setTagsRaw("");
-        } else if (e.key === "Backspace" && !tagsRaw && tags.length) {
+        } else if (event.key === "Backspace" && !tagsRaw && tags.length) {
             setTags(tags.slice(0, -1));
         }
     };
-
-    // The key is bound to the submission, not to the panel. An unchanged retry
-    // reuses it; changing the content, tags, category, workspace or user earns
-    // a new one. The earlier version held a key on the panel alone, so editing
-    // the text after a failure resent the NEW text under the OLD key — which
-    // the backend can read as a replay, returning the first job while the edit
-    // is silently discarded.
-    const keyHolder = useRef(null);
-    if (keyHolder.current === null) keyHolder.current = createSubmissionKeyHolder();
-    // Duplicate-submit protection: a second click while one is in flight would
-    // otherwise issue a second request.
-    const inFlight = useRef(false);
 
     const submit = async () => {
         if (!content.trim() || inFlight.current) return;
         inFlight.current = true;
         try {
-            // Resolved ONCE, then used for both the key identity and the
-            // request. Letting the adapter resolve separately could key
-            // against one workspace and send to another.
             const workspaceId = await resolveCurrentWorkspace();
             const payload = { content, tags, category };
-            const key = keyHolder.current.keyFor(
-                submissionIdentity({
-                    payload,
-                    workspaceId,
-                    userId: getCurrentUserId(),
-                })
-            );
-            const r = await api.createMemory({
+            const idempotencyKey = keyHolder.current.keyFor(submissionIdentity({
+                payload,
+                workspaceId,
+                userId: getCurrentUserId(),
+            }));
+            const response = await api.createMemory({
                 ...payload,
                 workspace_id: workspaceId,
-                idempotencyKey: key,
+                idempotencyKey,
             });
             keyHolder.current.clear();
-            setJobId(r.job_id);
-        } catch (e) {
-            // Without this the rejected promise escapes the click handler as
-            // an unhandled rejection and the panel gives no sign of failure —
-            // so the user cannot even know to retry, which is the situation
-            // the key binding above exists to handle. The key is deliberately
-            // NOT cleared: the next attempt at the same content is a retry.
-            const classified = classifyApiError(e);
+            setJobId(response.job_id);
+        } catch (requestError) {
+            const classified = classifyApiError(requestError);
             toast.error(classified.title, {
-                description: e?.body?.error?.message || classified.detail,
+                description: requestError?.body?.error?.message || classified.detail,
             });
         } finally {
             inFlight.current = false;
         }
     };
 
-    // Either the job itself ended badly, or we can no longer read its status.
-    // Both are terminal for this panel and both must offer a way out.
     const failed = job?.status === "failed" || jobError != null;
 
     const reset = () => {
         keyHolder.current?.clear();
-        setContent(""); setTagsRaw(""); setTags([]); setCategory("general"); setJobId(null); setJob(null);
-        setJobError(null); setRetryNonce(0);
+        setContent("");
+        setTagsRaw("");
+        setTags([]);
+        setCategory("general");
+        setJobId(null);
+        setJob(null);
+        setJobError(null);
+        setRetryNonce(0);
     };
 
     return (
-        <Sheet open={open} onOpenChange={(v) => { onOpenChange(v); if (!v) reset(); }}>
+        <Sheet open={open} onOpenChange={(value) => { onOpenChange(value); if (!value) reset(); }}>
             <SheetContent
                 side="right"
-                className="sm:max-w-[480px] w-[480px] bg-surface border-l border-hairline text-content p-0 overflow-y-auto"
+                className="sm:max-w-[480px] w-[480px] bg-sm-surface border-l border-sm-border text-sm-text p-0 overflow-y-auto"
                 data-testid="ingest-panel"
             >
-                <SheetHeader className="p-6 border-b border-hairline">
-                    <SheetTitle className="text-content text-title">Ingest knowledge</SheetTitle>
-                    <SheetDescription className="text-content-secondary text-body">
-                        Paste a document, meeting notes, or decision record. SourceMind will
-                        extract, chunk, embed, and attribute it.
+                <SheetHeader className="p-6 border-b border-sm-border">
+                    <SheetTitle className="text-sm-text text-[17px] font-semibold">Ingest Knowledge</SheetTitle>
+                    <SheetDescription className="text-sm-text-secondary text-[12.5px]">
+                        Paste a document, meeting notes, or decision record. We'll extract, chunk, embed, and attribute.
                     </SheetDescription>
                 </SheetHeader>
 
                 {!jobId ? (
                     <div className="p-6 space-y-5">
                         <div>
-                            <label htmlFor="ingest-content" className="sm-micro-label block mb-2">Content</label>
+                            <label htmlFor="ingest-content" className="block text-[12px] text-sm-text-secondary mb-2 font-medium">Content</label>
                             <Textarea
                                 id="ingest-content"
                                 data-testid="ingest-content"
                                 value={content}
-                                onChange={(e) => setContent(e.target.value)}
-                                placeholder="Paste document content, meeting notes, decision records…"
+                                onChange={(event) => setContent(event.target.value)}
+                                placeholder="Paste document content, meeting notes, decision records..."
                                 rows={10}
-                                className="bg-surface-page border-hairline text-content placeholder:text-content-muted resize-none font-mono text-[12.5px]"
+                                className="bg-sm-bg/60 border-sm-border text-sm-text placeholder:text-sm-text-muted resize-none font-mono text-[12.5px]"
                             />
                         </div>
 
                         <div>
-                            <label htmlFor="ingest-tags" className="sm-micro-label block mb-2">Tags</label>
-                            <div className="min-h-[44px] flex flex-wrap gap-1.5 p-2 rounded-md bg-surface-page border border-hairline">
-                                {tags.map((t, i) => (
-                                    <span key={i} className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-hairline text-content-secondary text-[11px] font-mono">
-                                        {t}
-                                        <button onClick={() => setTags(tags.filter((_, j) => j !== i))} aria-label={`Remove tag ${t}`}>
+                            <label htmlFor="ingest-tags" className="block text-[12px] text-sm-text-secondary mb-2 font-medium">Tags</label>
+                            <div className="min-h-[44px] flex flex-wrap gap-1.5 p-2 rounded-lg bg-sm-bg/60 border border-sm-border">
+                                {tags.map((tag, index) => (
+                                    <span key={tag} className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-sm-blue/15 border border-sm-blue/30 text-sm-blue text-[11px] font-mono">
+                                        {tag}
+                                        <button onClick={() => setTags(tags.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove tag ${tag}`}>
                                             <X className="w-3 h-3" />
                                         </button>
                                     </span>
@@ -448,23 +338,23 @@ function IngestPanel({ open, onOpenChange }) {
                                     id="ingest-tags"
                                     data-testid="ingest-tags"
                                     value={tagsRaw}
-                                    onChange={(e) => setTagsRaw(e.target.value)}
+                                    onChange={(event) => setTagsRaw(event.target.value)}
                                     onKeyDown={addTag}
                                     placeholder={tags.length ? "" : "type and press enter"}
-                                    className="flex-1 min-w-[120px] bg-transparent outline-none text-[12.5px] text-content font-mono placeholder:text-content-muted"
+                                    className="flex-1 min-w-[120px] bg-transparent outline-none text-[12.5px] text-sm-text font-mono placeholder:text-sm-text-muted"
                                 />
                             </div>
                         </div>
 
                         <div>
-                            <label className="sm-micro-label block mb-2">Category</label>
+                            <label className="block text-[12px] text-sm-text-secondary mb-2 font-medium">Category</label>
                             <Select value={category} onValueChange={setCategory}>
-                                <SelectTrigger data-testid="ingest-category" className="bg-surface-page border-hairline text-content">
+                                <SelectTrigger data-testid="ingest-category" className="bg-sm-bg/60 border-sm-border text-sm-text">
                                     <SelectValue />
                                 </SelectTrigger>
-                                <SelectContent className="bg-surface border-hairline text-content">
-                                    {CATEGORIES.map((c) => (
-                                        <SelectItem key={c} value={c} className="text-content">{c}</SelectItem>
+                                <SelectContent className="bg-sm-surface border-sm-border text-sm-text">
+                                    {CATEGORIES.map((item) => (
+                                        <SelectItem key={item} value={item} className="text-sm-text focus:bg-white/5 focus:text-sm-text">{item}</SelectItem>
                                     ))}
                                 </SelectContent>
                             </Select>
@@ -474,49 +364,39 @@ function IngestPanel({ open, onOpenChange }) {
                             data-testid="ingest-submit"
                             onClick={submit}
                             disabled={!content.trim()}
-                            className="w-full h-10 bg-brand-fill hover:bg-brand-fill-hover text-white disabled:opacity-40"
+                            className="w-full h-10 bg-sm-blue hover:bg-sm-blue/90 text-white disabled:opacity-40"
                         >
-                            Ingest &amp; process
+                            Ingest &amp; Process
                         </Button>
                     </div>
                 ) : (
                     <div className="p-6 space-y-4">
-                        {/* §6 forbids spinners as the loading indicator. This is
-                            a determinate multi-stage pipeline with its own
-                            tracker, so progress is shown by stage rather than
-                            by a spinning icon. */}
-                        <div className="flex items-center gap-2 text-body text-content-secondary">
+                        <div className="flex items-center gap-2 text-[12.5px] text-sm-text-secondary">
                             {failed ? (
-                                <span className="text-danger" data-testid="ingest-failed">
+                                <span className="text-sm-red" data-testid="ingest-failed">
                                     {jobError
                                         ? `Could not read ingestion status · ${jobError}`
                                         : `Ingestion failed${job?.error ? ` · ${job.error}` : ""}`}
                                 </span>
                             ) : job?.status === "done" ? (
-                                <span className="text-success">Pipeline complete · {job.elapsed_ms}ms total</span>
+                                <span className="text-sm-green">Pipeline complete · {job.elapsed_ms}ms total</span>
                             ) : (
-                                <>
-                                    Processing · stage
-                                    <span className="font-mono text-brand">{job?.stage ?? "queued"}</span>
-                                </>
+                                <>Processing · stage: <span className="font-mono text-sm-blue">{job?.stage ?? "queued"}</span></>
                             )}
                         </div>
                         <PipelineTracker stages={job?.stages ?? []} currentStage={job?.stage} />
-                        {/* Retries the STATUS request only. The submission is
-                            not repeated — the job already exists, and sending
-                            it again would ingest the same content twice. */}
                         {jobError && (
                             <Button
-                                onClick={() => { setJobError(null); setRetryNonce((n) => n + 1); }}
+                                onClick={() => { setJobError(null); setRetryNonce((value) => value + 1); }}
                                 variant="outline"
                                 data-testid="ingest-status-retry"
-                                className="w-full mt-4 bg-white/[0.03] border-hairline text-content"
+                                className="w-full mt-4 bg-white/[0.03] border-sm-border text-sm-text"
                             >
                                 Check again
                             </Button>
                         )}
                         {(job?.status === "done" || failed) && (
-                            <Button onClick={reset} variant="outline" data-testid="ingest-reset" className="w-full mt-4 bg-white/[0.03] border-hairline text-content">
+                            <Button onClick={reset} variant="outline" data-testid="ingest-reset" className="w-full mt-4 bg-white/[0.03] border-sm-border text-sm-text hover:bg-white/[0.06]">
                                 {failed ? "Start over" : "Ingest another"}
                             </Button>
                         )}

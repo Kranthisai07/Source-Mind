@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, RefreshCw, Settings2, Github, MessageSquare, Upload, FileText } from "lucide-react";
 import TopBar from "../components/layout/TopBar";
-import ErrorState from "../components/ui-kit/ErrorState";
 import StatusBadge from "../components/widgets/StatusBadge";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "../components/ui/sheet";
 import { Button } from "../components/ui/button";
@@ -10,8 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Checkbox } from "../components/ui/checkbox";
 import { toast } from "sonner";
 import api from "../lib/api";
-import { relativeTime } from "../lib/format";
 import { classifyApiError } from "../lib/apiError";
+import { relativeTime } from "../lib/format";
 
 const SOURCE_ICON = {
     github: Github,
@@ -23,53 +22,28 @@ export default function Connectors() {
     const [open, setOpen] = useState(false);
     const [logsOpen, setLogsOpen] = useState(false);
     const [selectedConn, setSelectedConn] = useState(null);
-
     const [error, setError] = useState(null);
-
-    // A failed load used to reject into nothing: no catch, no error state, no
-    // retry. `list` stayed at [] and the page reported "0 connected sources",
-    // which is exactly what a user with no integrations sees — so an outage
-    // was indistinguishable from their connectors having disappeared.
-    //
-    // The generation counter exists because retry makes concurrent loads
-    // possible. Without it the response that happens to arrive last wins, so
-    // an abandoned request could overwrite fresher data, or a late rejection
-    // could replace good rows with an error screen. Neither produces a React
-    // warning; both are silent.
     const generation = useRef(0);
     const alive = useRef(true);
 
-    // Setup REBUILDS what cleanup tears down. Strict Mode mounts, cleans up,
-    // and mounts again in development, so a cleanup that clears `alive`
-    // without setup restoring it leaves it false for the life of the page —
-    // every response then gets discarded and the screen shows neither
-    // connectors nor an error. That is the same "0 connected sources" failure
-    // the error handling exists to prevent, reintroduced by the guard meant to
-    // protect it.
-    //
-    // Declared BEFORE the loading effect on purpose: React runs effects in
-    // declaration order, so `alive` must be true again before load() reads it.
-    // Same reasoning as the gate reset in hooks/useApiResource.js.
     useEffect(() => {
         alive.current = true;
         return () => { alive.current = false; };
     }, []);
 
     const load = useCallback(() => {
-        const mine = ++generation.current;
-        const current = () => alive.current && mine === generation.current;
+        const requestGeneration = ++generation.current;
+        const isCurrent = () => alive.current && requestGeneration === generation.current;
+
         return api.listConnectors().then(
-            (r) => {
-                if (!current()) return;
-                setList(r.connectors);
+            (response) => {
+                if (!isCurrent()) return;
+                setList(response.connectors);
                 setError(null);
             },
-            (err) => {
-                if (!current()) return;
-                // ErrorState reads `retryable` and the classified copy, the
-                // same shape useApiResource stores — a raw rejection would
-                // render without the retry control.
-                setError(classifyApiError(err));
+            (requestError) => {
+                if (!isCurrent()) return;
+                setError(classifyApiError(requestError));
             }
         );
     }, []);
@@ -86,13 +60,9 @@ export default function Connectors() {
         <>
             <TopBar
                 title="Connectors"
-                // Counting from an unloaded list would state "0 connected
-                // sources" as fact while the request was failing.
-                subtitle={
-                    error
-                        ? "Connector list unavailable"
-                        : `${list.length} connected sources · ${list.reduce((a, c) => a + c.total_artifacts_synced, 0).toLocaleString()} artifacts synced`
-                }
+                subtitle={error
+                    ? "Connector list unavailable"
+                    : `${list.length} connected sources · ${list.reduce((a, c) => a + c.total_artifacts_synced, 0).toLocaleString()} artifacts synced`}
                 actions={
                     <Button
                         data-testid="add-connector-btn"
@@ -105,12 +75,27 @@ export default function Connectors() {
             />
             <div className="flex-1 px-8 py-6">
                 {error && (
-                    <ErrorState error={error} onRetry={load} testId="connectors-error" />
+                    <div data-testid="connectors-error" className="sm-card p-6 mb-4 border-sm-red/30">
+                        <div className="text-[14px] font-semibold text-sm-text">{error.title}</div>
+                        <p className="mt-1 text-[12.5px] text-sm-text-secondary">{error.detail}</p>
+                        {error.retryable && (
+                            <Button
+                                data-testid="error-retry"
+                                onClick={load}
+                                size="sm"
+                                className="mt-4 bg-sm-blue hover:bg-sm-blue/90 text-white"
+                            >
+                                <RefreshCw className="w-3.5 h-3.5" /> Retry
+                            </Button>
+                        )}
+                    </div>
                 )}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                     {!error && list.map((c) => {
-                        const Icon = SOURCE_ICON[c.source_tool] || FileText;
-                        const iconColor = c.source_tool === "github" ? "#E8E8F0" : "#5865F2";
+                        const sourceType = c.source_tool || c.connector_type;
+                        const connectorName = c.name || c.display_name;
+                        const Icon = SOURCE_ICON[sourceType] || FileText;
+                        const iconColor = sourceType === "github" ? "#E8E8F0" : "#5865F2";
                         return (
                             <div key={c.id} data-testid={`connector-${c.id}`} className="sm-card p-5">
                                 <div className="flex items-start justify-between mb-4">
@@ -119,9 +104,9 @@ export default function Connectors() {
                                             <Icon className="w-5 h-5" style={{ color: iconColor }} />
                                         </div>
                                         <div className="min-w-0">
-                                            <div className="text-[14px] font-semibold text-sm-text truncate font-mono">{c.name}</div>
+                                            <div className="text-[14px] font-semibold text-sm-text truncate font-mono">{connectorName}</div>
                                             <div className="font-mono text-[10.5px] text-sm-text-secondary uppercase tracking-wider mt-0.5">
-                                                {c.source_tool}
+                                                {sourceType}
                                             </div>
                                         </div>
                                     </div>
@@ -131,7 +116,7 @@ export default function Connectors() {
                                 <div className="grid grid-cols-2 gap-4 mb-4 pb-4 border-b border-sm-border">
                                     <div>
                                         <div className="font-mono text-[10px] text-sm-text-secondary uppercase mb-1">Last synced</div>
-                                        <div className="font-mono text-[12.5px] text-sm-text">{relativeTime(c.last_synced_at)}</div>
+                                        <div className="font-mono text-[12.5px] text-sm-text">{relativeTime(c.last_synced_at || c.last_sync_at)}</div>
                                     </div>
                                     <div>
                                         <div className="font-mono text-[10px] text-sm-text-secondary uppercase mb-1">Artifacts synced</div>
