@@ -13,47 +13,18 @@ import { relativeTime } from "../lib/format";
 export default function Analytics() {
     const [riskFilter, setRiskFilter] = useState("ALL");
 
-    const resource = useApiResource(async () => {
-        const [overviewResult, gapsResult, contributorsResult, memorySeriesResult, searchActivityResult] = await Promise.allSettled([
-            api.getAnalyticsOverview(),
-            api.getKnowledgeGaps(),
-            api.listContributors(),
-            useMocks ? api.getMemoriesOverTime() : Promise.resolve({ series: [] }),
-            useMocks ? api.getSearchActivity() : Promise.resolve({ series: [] }),
-        ]);
-        return {
-            overview: settledValue(overviewResult, null),
-            overviewError: settledError(overviewResult),
-            gaps: settledValue(gapsResult, { gaps: [] }).gaps,
-            gapsError: settledError(gapsResult),
-            contributors: settledValue(contributorsResult, { contributors: [] }).contributors,
-            contributorsError: settledError(contributorsResult),
-            series: settledValue(memorySeriesResult, { series: [] }).series,
-            seriesError: settledError(memorySeriesResult),
-            searchSeries: settledValue(searchActivityResult, { series: [] }).series,
-            searchSeriesError: settledError(searchActivityResult),
-        };
-    });
-    const overview = resource.data?.overview ?? null;
-    const overviewError = resource.data?.overviewError ?? null;
-    const gaps = resource.data?.gaps ?? [];
-    const gapsError = resource.data?.gapsError ?? null;
-    const contribs = resource.data?.contributors ?? [];
-    const contributorsError = resource.data?.contributorsError ?? null;
-    const series = resource.data?.series ?? [];
-    const seriesError = resource.data?.seriesError ?? null;
-    const searchSeries = resource.data?.searchSeries ?? [];
-    const searchSeriesError = resource.data?.searchSeriesError ?? null;
+    const overviewResource = useApiResource(() => api.getAnalyticsOverview());
+    const gapsResource = useApiResource(() => api.getKnowledgeGaps());
+    const contributorsResource = useApiResource(() => api.listContributors());
+    const seriesResource = useApiResource(() => useMocks ? api.getMemoriesOverTime() : Promise.resolve({ series: [] }));
+    const searchSeriesResource = useApiResource(() => useMocks ? api.getSearchActivity() : Promise.resolve({ series: [] }));
+    const overview = overviewResource.data;
+    const gaps = gapsResource.data?.gaps ?? [];
+    const contribs = contributorsResource.data?.contributors ?? [];
+    const series = seriesResource.data?.series ?? [];
+    const searchSeries = searchSeriesResource.data?.series ?? [];
 
     const filteredGaps = gaps.filter(g => riskFilter === "ALL" || String(g.risk_level || "").toUpperCase() === riskFilter);
-
-    if (resource.error) {
-        return <><TopBar title="Analytics" subtitle="Workspace analytics unavailable" /><div className="flex-1 px-8 py-6"><PageLoadError error={resource.error} onRetry={resource.retry} testId="analytics-error" /></div></>;
-    }
-
-    if (resource.loading && !resource.data) {
-        return <><TopBar title="Analytics" subtitle="Loading workspace analytics…" /><div className="flex-1 px-8 py-6"><PageLoading label="Loading analytics" testId="analytics-loading" /></div></>;
-    }
 
     return (
         <>
@@ -71,8 +42,10 @@ export default function Analytics() {
 
                     {/* OVERVIEW */}
                     <TabsContent value="overview" className="space-y-5 mt-0">
-                        {overviewError ? (
-                            <PageLoadError error={panelError("Health overview unavailable", overviewError)} onRetry={resource.retry} testId="analytics-overview-error" />
+                        {overviewResource.error ? (
+                            <PageLoadError error={panelError("Health overview unavailable", overviewResource.error)} onRetry={overviewResource.retry} testId="analytics-overview-error" />
+                        ) : overviewResource.loading && !overview ? (
+                            <PageLoading label="Loading health overview" testId="analytics-overview-loading" />
                         ) : <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-4">
                             <section className="sm-card p-6 flex flex-col items-center">
                                     <HealthGauge score={overview?.knowledge_health_score ?? 0} size={220} label="Health Score" />
@@ -92,8 +65,10 @@ export default function Analytics() {
                             </section>
                         </div>}
 
-                        {useMocks && (seriesError || searchSeriesError) ? (
-                            <PageLoadError error={panelError("Historical analytics unavailable", seriesError || searchSeriesError)} onRetry={resource.retry} testId="analytics-series-error" />
+                        {useMocks && (seriesResource.error || searchSeriesResource.error) ? (
+                            <PageLoadError error={panelError("Historical analytics unavailable", seriesResource.error || searchSeriesResource.error)} onRetry={() => { seriesResource.retry(); searchSeriesResource.retry(); }} testId="analytics-series-error" />
+                        ) : useMocks && ((seriesResource.loading && !seriesResource.data) || (searchSeriesResource.loading && !searchSeriesResource.data)) ? (
+                            <PageLoading label="Loading historical analytics" testId="analytics-series-loading" />
                         ) : useMocks ? <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
                             <section className="sm-card p-6">
                                 <div className="flex items-center justify-between mb-3">
@@ -141,8 +116,10 @@ export default function Analytics() {
 
                     {/* CONTRIBUTION */}
                     <TabsContent value="contribution" className="space-y-5 mt-0">
-                        {contributorsError ? (
-                            <PageLoadError error={panelError("Contribution data unavailable", contributorsError)} onRetry={resource.retry} testId="analytics-contributors-error" />
+                        {contributorsResource.error ? (
+                            <PageLoadError error={panelError("Contribution data unavailable", contributorsResource.error)} onRetry={contributorsResource.retry} testId="analytics-contributors-error" />
+                        ) : contributorsResource.loading && !contributorsResource.data ? (
+                            <PageLoading label="Loading contribution data" testId="analytics-contributors-loading" />
                         ) : <>
                         <section className="sm-card p-6">
                             <h3 className="text-[15px] font-semibold text-sm-text mb-4">Contribution Map</h3>
@@ -185,7 +162,7 @@ export default function Analytics() {
                                             </td>
                                             <td className="py-3 text-right font-mono">{c.count}</td>
                                             <td className="py-3 text-right font-mono text-sm-text">{c.score.toFixed(2)}</td>
-                                            <td className="py-3 text-right font-mono text-sm-text-secondary">{c.last_active}</td>
+                                            <td className="py-3 text-right font-mono text-sm-text-secondary">{formatContributorActivity(c.last_active)}</td>
                                         </tr>
                                     ))}
                                 </tbody>
@@ -196,8 +173,10 @@ export default function Analytics() {
 
                     {/* GAPS */}
                     <TabsContent value="gaps" className="space-y-5 mt-0">
-                        {gapsError ? (
-                            <PageLoadError error={panelError("Knowledge gaps unavailable", gapsError)} onRetry={resource.retry} testId="analytics-gaps-error" />
+                        {gapsResource.error ? (
+                            <PageLoadError error={panelError("Knowledge gaps unavailable", gapsResource.error)} onRetry={gapsResource.retry} testId="analytics-gaps-error" />
+                        ) : gapsResource.loading && !gapsResource.data ? (
+                            <PageLoading label="Loading knowledge gaps" testId="analytics-gaps-loading" />
                         ) : <>
                         <div className="flex items-center gap-2" data-testid="gaps-filter-bar">
                             <Filter className="w-4 h-4 text-sm-text-secondary" />
@@ -273,18 +252,17 @@ export function TreemapNode({ x, y, width, height, name, fill }) {
     );
 }
 
-function settledValue(result, fallback) {
-    return result.status === "fulfilled" ? result.value : fallback;
-}
-
-function settledError(result) {
-    return result.status === "rejected" ? result.reason : null;
+function formatContributorActivity(value) {
+    if (!value) return "—";
+    return Number.isNaN(Date.parse(value)) ? value : relativeTime(value);
 }
 
 function panelError(title, error) {
     return {
         title,
-        detail: error?.message || "This analytics panel could not be loaded.",
-        retryable: ![401, 403, 404].includes(error?.status),
+        detail: error?.detail || error?.message || "This analytics panel could not be loaded.",
+        retryable: typeof error?.retryable === "boolean"
+            ? error.retryable
+            : ![401, 403, 404].includes(error?.status),
     };
 }

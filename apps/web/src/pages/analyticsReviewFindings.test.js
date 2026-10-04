@@ -83,8 +83,18 @@ test("keeps successful analytics panels when another panel fails", async () => {
     expect(document.body.textContent).not.toContain("Top Category");
 
     fireEvent.mouseDown(screen.getByTestId("tab-gaps"), { button: 0, ctrlKey: false });
-    expect((await screen.findByTestId("analytics-gaps-error")).textContent).toContain("Gap service unavailable");
+    expect((await screen.findByTestId("analytics-gaps-error")).textContent).toContain("server couldn't complete");
     expect(document.body.textContent).not.toContain("6 pts vs last month");
+});
+
+test("renders analytics overview without waiting for a stalled gaps request", async () => {
+    mockGetGaps.mockImplementation(() => new Promise(() => {}));
+
+    render(<Analytics />);
+
+    expect((await screen.findByTestId("health-gauge-score")).textContent).toContain("82");
+    fireEvent.mouseDown(screen.getByTestId("tab-gaps"), { button: 0, ctrlKey: false });
+    expect(screen.getByTestId("analytics-gaps-loading")).toBeTruthy();
 });
 
 test("keeps the dashboard overview when knowledge gaps fail", async () => {
@@ -96,7 +106,20 @@ test("keeps the dashboard overview when knowledge gaps fail", async () => {
 
     expect((await screen.findByTestId("health-gauge-score")).textContent).toContain("82");
     expect(screen.queryByTestId("dashboard-error")).toBeNull();
-    expect((await screen.findByTestId("dashboard-gaps-error")).textContent).toContain("Gap service unavailable");
+    expect((await screen.findByTestId("dashboard-gaps-error")).textContent).toContain("server couldn't complete");
+});
+
+test("renders the dashboard overview without waiting for stalled knowledge gaps", async () => {
+    mockGetGaps.mockImplementation(() => new Promise(() => {}));
+
+    render(
+        <MemoryRouter>
+            <Dashboard />
+        </MemoryRouter>
+    );
+
+    expect((await screen.findByTestId("health-gauge-score")).textContent).toContain("82");
+    expect(screen.getByTestId("dashboard-gaps-loading")).toBeTruthy();
 });
 
 test("dashboard labels current metrics without unsupported trend claims", async () => {
@@ -114,6 +137,39 @@ test("dashboard labels current metrics without unsupported trend claims", async 
     expect(document.body.textContent).not.toContain("New This Month");
     expect(document.body.textContent).not.toContain("All active this week");
     expect(document.body.textContent).not.toContain("18% vs. last 30d");
+    expect(document.body.textContent).not.toContain("refreshed hourly");
+    expect(document.body.textContent).toContain("cached up to 5 minutes");
+});
+
+test("formats production contributor timestamps and preserves shorthand values", async () => {
+    const timestamp = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    mockListContributors.mockResolvedValue({
+        contributors: [
+            {
+                id: "production-user",
+                login: "production-user",
+                count: 4,
+                score: 0.88,
+                last_active: timestamp,
+                avatarColor: "#4F7EFF",
+            },
+            {
+                id: "mock-user",
+                login: "mock-user",
+                count: 2,
+                score: 0.72,
+                last_active: "today",
+                avatarColor: "#A78BFA",
+            },
+        ],
+    });
+
+    render(<Analytics />);
+    fireEvent.mouseDown(await screen.findByTestId("tab-contribution"), { button: 0, ctrlKey: false });
+
+    expect(await screen.findByText(/1h ago/)).toBeTruthy();
+    expect(screen.queryByText(timestamp)).toBeNull();
+    expect(screen.getByText("today")).toBeTruthy();
 });
 
 test.each(["light", "dark"])("uses readable theme tokens for populated charts in %s mode", (theme) => {
