@@ -67,7 +67,7 @@ export default function Dashboard() {
                         icon={Users}
                         label="Active Contributors"
                         value={data?.total_contributors ?? "—"}
-                        delta={<span className="text-sm-green">● All active this week</span>}
+                        delta={<span>Current workspace total</span>}
                         accent="#A78BFA"
                     />
                     <MetricCard
@@ -75,7 +75,7 @@ export default function Dashboard() {
                         icon={TrendingUp}
                         label="New This Month"
                         value={data?.memories_created_last_30_days ?? "—"}
-                        delta={<span className="text-sm-green">↑ 18% vs. last 30d</span>}
+                        delta={<span>Rolling 30-day count</span>}
                         accent="#34D399"
                     />
                     <MetricCard

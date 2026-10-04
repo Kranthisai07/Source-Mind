@@ -75,10 +75,10 @@ export default function Analytics() {
                             <PageLoadError error={panelError("Health overview unavailable", overviewError)} onRetry={resource.retry} testId="analytics-overview-error" />
                         ) : <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-4">
                             <section className="sm-card p-6 flex flex-col items-center">
-                                <HealthGauge score={overview?.knowledge_health_score ?? 0} size={220} label="Health Score" />
-                                <div className="mt-6 text-center">
-                                    <div className="font-mono text-[11px] text-sm-text-secondary mb-1">TREND (30d)</div>
-                                    <div className="text-sm-green font-mono text-[14px]">↑ 6 pts vs last month</div>
+                                    <HealthGauge score={overview?.knowledge_health_score ?? 0} size={220} label="Health Score" />
+                                    <div className="mt-6 text-center">
+                                        <div className="font-mono text-[11px] text-sm-text-secondary mb-1">CURRENT SCORE</div>
+                                        <div className="text-sm-text-secondary font-mono text-[12px]">No historical comparison available</div>
                                 </div>
                             </section>
                             <section className="sm-card p-6">

@@ -1,5 +1,6 @@
 import React from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 
 const mockGetOverview = jest.fn();
 const mockGetGaps = jest.fn();
@@ -33,6 +34,7 @@ jest.mock("../lib/api", () => ({
 }));
 
 import Analytics, { TreemapNode } from "./Analytics";
+import Dashboard from "./Dashboard";
 import AttributionBar from "../components/widgets/AttributionBar";
 import HealthGauge from "../components/widgets/HealthGauge";
 
@@ -40,7 +42,13 @@ beforeEach(() => {
     jest.clearAllMocks();
     document.documentElement.classList.remove("dark");
     mockGetOverview.mockResolvedValue({
+        total_memories: 12,
+        total_contributors: 3,
+        memories_created_last_30_days: 4,
+        open_conflicts: 0,
         knowledge_health_score: 82,
+        recent_activity: [],
+        top_contributors: [],
         health_breakdown: {
             coverage: 80,
             freshness: 81,
@@ -73,6 +81,22 @@ test("keeps successful analytics panels when another panel fails", async () => {
 
     fireEvent.mouseDown(screen.getByTestId("tab-gaps"), { button: 0, ctrlKey: false });
     expect((await screen.findByTestId("analytics-gaps-error")).textContent).toContain("Gap service unavailable");
+    expect(document.body.textContent).not.toContain("6 pts vs last month");
+});
+
+test("dashboard labels current metrics without unsupported trend claims", async () => {
+    mockGetGaps.mockResolvedValue({ gaps: [] });
+
+    render(
+        <MemoryRouter>
+            <Dashboard />
+        </MemoryRouter>
+    );
+
+    expect((await screen.findByTestId("metric-contributors")).textContent).toContain("Current workspace total");
+    expect(screen.getByTestId("metric-new-this-month").textContent).toContain("Rolling 30-day count");
+    expect(document.body.textContent).not.toContain("All active this week");
+    expect(document.body.textContent).not.toContain("18% vs. last 30d");
 });
 
 test.each(["light", "dark"])("uses readable theme tokens for populated charts in %s mode", (theme) => {

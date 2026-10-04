@@ -149,6 +149,29 @@ describe("conflict pagination", () => {
     });
 });
 
+describe("knowledge-gap response adaptation", () => {
+    test("normalizes the production affected-memory and recommendation fields", async () => {
+        captureFetch({
+            body: {
+                gaps: [{
+                    risk_level: "HIGH",
+                    gap_type: "single_contributor",
+                    description: "Synthetic gap",
+                    affected_memories: 7,
+                    recommendation: "Assign a reviewer.",
+                }],
+            },
+        });
+
+        const response = await realApi.getKnowledgeGaps("00000000-0000-4000-8000-000000000001");
+
+        expect(response.gaps[0]).toMatchObject({
+            affected_count: 7,
+            recommended_action: "Assign a reviewer.",
+        });
+    });
+});
+
 /**
  * Route by URL, because creating a memory makes TWO requests: the workspace
  * lookup and then the create. A single canned body would hand the lookup a job
