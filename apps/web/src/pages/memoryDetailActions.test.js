@@ -175,3 +175,32 @@ describe("version timeline contract", () => {
         expect(historical.textContent).toContain("Earlier contract content.");
     });
 });
+
+describe("production attribution contract", () => {
+    test("uses the production avatar shape without inventing a login", async () => {
+        mockGetMemory.mockResolvedValue({
+            id: "m-1",
+            content: "Attributed production memory.",
+            tags: [],
+            created_at: "2026-09-01T00:00:00Z",
+            attribution: [{
+                author: "Jane Doe",
+                name: "Jane Doe",
+                avatar_url: "https://example.invalid/avatar.png",
+                color: "#34D399",
+                score: 1,
+                percentage: 100,
+                is_primary: true,
+                signals: null,
+            }],
+        });
+
+        renderPage();
+
+        const avatar = await screen.findByTestId("contributor-avatar");
+        expect(avatar.getAttribute("title")).toBe("Jane Doe");
+        expect(avatar.getAttribute("title")).not.toContain("[object Object]");
+        expect(avatar.getAttribute("title")).not.toContain("@");
+        expect(screen.getByTestId("contributor-avatar-image").getAttribute("src")).toBe("https://example.invalid/avatar.png");
+    });
+});
