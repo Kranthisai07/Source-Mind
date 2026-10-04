@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AlertTriangle } from "lucide-react";
 import TopBar from "../components/layout/TopBar";
@@ -19,11 +19,42 @@ const STATUS_TABS = [
 export default function Conflicts() {
     const navigate = useNavigate();
     const [status, setStatus] = useState("all");
+    const [cursor, setCursor] = useState(null);
+    const [conflicts, setConflicts] = useState([]);
+    const [nextCursor, setNextCursor] = useState(null);
+    const selectedStatus = status === "all" ? null : status;
     const resource = useApiResource(
-        () => api.listConflicts(undefined, { status: status === "all" ? null : status }),
-        { deps: [status], resetKey: status }
+        async () => ({
+            ...(await api.listConflicts(undefined, {
+                status: selectedStatus,
+                ...(cursor ? { cursor } : {}),
+            })),
+            requestedStatus: status,
+            requestedCursor: cursor,
+        }),
+        { deps: [status, cursor], resetKey: `${status}:${cursor || "first"}` }
     );
-    const conflicts = Array.isArray(resource.data?.conflicts) ? resource.data.conflicts : [];
+
+    useEffect(() => {
+        if (!resource.data) return;
+        if (resource.data.requestedStatus !== status || resource.data.requestedCursor !== cursor) return;
+
+        const page = Array.isArray(resource.data.conflicts) ? resource.data.conflicts : [];
+        setConflicts((current) => {
+            if (!cursor) return page;
+            const seen = new Set(current.map((conflict) => conflict.id));
+            return [...current, ...page.filter((conflict) => !seen.has(conflict.id))];
+        });
+        setNextCursor(resource.data.next_cursor || null);
+    }, [cursor, resource.data, status]);
+
+    const selectStatus = (nextStatus) => {
+        if (nextStatus === status) return;
+        setStatus(nextStatus);
+        setCursor(null);
+        setConflicts([]);
+        setNextCursor(null);
+    };
 
     return (
         <>
@@ -37,7 +68,7 @@ export default function Conflicts() {
                         <button
                             key={tab.key}
                             data-testid={`conflict-tab-${tab.key}`}
-                            onClick={() => setStatus(tab.key)}
+                            onClick={() => selectStatus(tab.key)}
                             aria-pressed={status === tab.key}
                             className={`h-8 px-3.5 rounded-md text-[12px] font-medium transition-colors ${
                                 status === tab.key
@@ -50,9 +81,9 @@ export default function Conflicts() {
                     ))}
                 </div>
 
-                {resource.error ? (
+                {resource.error && conflicts.length === 0 ? (
                     <PageLoadError error={resource.error} onRetry={resource.retry} testId="conflicts-error" />
-                ) : resource.loading ? (
+                ) : resource.loading && conflicts.length === 0 ? (
                     <div className="space-y-3" role="status" aria-label="Loading conflicts">
                         {Array.from({ length: 3 }).map((_, index) => <div key={index} className="sm-card h-[180px] shimmer" />)}
                     </div>
@@ -71,6 +102,20 @@ export default function Conflicts() {
                                 onOpen={() => navigate(`/conflicts/${conflict.id}`)}
                             />
                         ))}
+                        {resource.error && (
+                            <PageLoadError error={resource.error} onRetry={resource.retry} testId="conflicts-page-error" compact />
+                        )}
+                        {nextCursor && !resource.error && (
+                            <button
+                                type="button"
+                                data-testid="conflicts-load-more"
+                                disabled={resource.loading}
+                                onClick={() => setCursor(nextCursor)}
+                                className="w-full h-10 rounded-md border border-sm-border bg-sm-surface text-[12px] font-medium text-sm-text-secondary hover:text-sm-text hover:border-sm-border-hover disabled:opacity-50"
+                            >
+                                {resource.loading ? "Loading more conflicts…" : "Load more conflicts"}
+                            </button>
+                        )}
                     </div>
                 )}
             </div>

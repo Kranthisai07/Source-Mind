@@ -22,7 +22,7 @@ export default function HealthGauge({ score = 0, size = 160, strokeWidth = 10, l
             <svg width={size} height={size} className="drop-shadow-[0_0_24px_rgba(79,126,255,0.08)]">
                 <circle
                     cx={size / 2} cy={size / 2} r={r}
-                    fill="none" stroke="#1E1E2E" strokeWidth={strokeWidth}
+                    fill="none" stroke="var(--sm-border)" strokeWidth={strokeWidth}
                 />
                 <circle
                     cx={size / 2} cy={size / 2} r={r}
@@ -34,17 +34,18 @@ export default function HealthGauge({ score = 0, size = 160, strokeWidth = 10, l
                     style={{ transition: "stroke 300ms ease" }}
                 />
                 <text
+                    data-testid="health-gauge-score"
                     x="50%" y="50%" dy="0.18em"
                     textAnchor="middle"
                     className="font-mono"
-                    style={{ fill: "#E8E8F0", fontSize: size * 0.28, fontWeight: 600 }}
+                    style={{ fill: "var(--sm-text)", fontSize: size * 0.28, fontWeight: 600 }}
                 >
                     {display}
                 </text>
                 <text
                     x="50%" y={size / 2 + size * 0.19}
                     textAnchor="middle"
-                    style={{ fill: "#8888A8", fontSize: size * 0.085, letterSpacing: "0.08em" }}
+                    style={{ fill: "var(--sm-text-secondary)", fontSize: size * 0.085, letterSpacing: "0.08em" }}
                 >
                     / 100
                 </text>

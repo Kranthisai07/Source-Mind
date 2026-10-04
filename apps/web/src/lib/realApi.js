@@ -527,9 +527,9 @@ export const realApi = {
     //   GET    /v1/memories/{id}/versions, /attribution, /edits
 
     // ----- conflicts -----
-    listConflicts: async (wsId, { status = "all" } = {}) =>
+    listConflicts: async (wsId, { status = "all", cursor = null } = {}) =>
         request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/conflicts`, {
-            params: { status },
+            params: { status, cursor },
         }),
     // GET /v1/memories/{id}/versions -> MemoryVersionsResponse
     //   { versions: [{id, version, is_current, content, created_at}], total }

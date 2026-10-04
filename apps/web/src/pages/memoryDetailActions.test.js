@@ -124,3 +124,40 @@ describe("the supported control is untouched", () => {
         expect(screen.getByTestId("mem-back").disabled).toBe(false);
     });
 });
+
+describe("version timeline contract", () => {
+    test("renders the backend version fields without inventing an editor", async () => {
+        mockGetVersions.mockResolvedValue({
+            versions: [
+                {
+                    id: "v-2",
+                    version: 2,
+                    is_current: true,
+                    content: "Use the versioned backend contract.",
+                    created_at: "2026-09-30T12:00:00Z",
+                },
+                {
+                    id: "v-1",
+                    version: 1,
+                    is_current: false,
+                    content: "Earlier contract content.",
+                    created_at: "2026-09-29T12:00:00Z",
+                },
+            ],
+            total: 2,
+        });
+
+        renderPage();
+
+        const row = await screen.findByTestId("memory-version-2");
+        expect(row.textContent).toContain("v2");
+        expect(row.textContent).toContain("Current");
+        expect(row.textContent).toContain("Use the versioned backend contract.");
+        expect(row.querySelector("time")?.getAttribute("datetime")).toBe("2026-09-30T12:00:00Z");
+        expect(row.textContent).not.toContain("@undefined");
+
+        const historical = screen.getByTestId("memory-version-1");
+        expect(historical.textContent).toContain("Historical");
+        expect(historical.textContent).toContain("Earlier contract content.");
+    });
+});

@@ -66,6 +66,51 @@ test("renders the real conflict-list schema without inferred contributors", asyn
     expect(api.listConflicts).toHaveBeenCalledWith(undefined, { status: null });
 });
 
+test("loads the next conflict page and resets paging when the status changes", async () => {
+    const second = {
+        ...summary,
+        id: "00000000-0000-4000-8000-000000000002",
+        memory_a_content: "Second-page memory A.",
+        memory_b_content: "Second-page memory B.",
+    };
+    const resolved = {
+        ...summary,
+        id: "00000000-0000-4000-8000-000000000003",
+        status: "resolved",
+        memory_a_content: "Resolved memory A.",
+        memory_b_content: "Resolved memory B.",
+    };
+    api.listConflicts.mockImplementation((_workspaceId, options) => {
+        if (options.status === "resolved") {
+            return Promise.resolve({ conflicts: [resolved], total: 1, next_cursor: null });
+        }
+        if (options.cursor === "cursor-page-2") {
+            return Promise.resolve({ conflicts: [second], total: 1, next_cursor: null });
+        }
+        return Promise.resolve({ conflicts: [summary], total: 1, next_cursor: "cursor-page-2" });
+    });
+
+    render(
+        <MemoryRouter>
+            <Conflicts />
+        </MemoryRouter>
+    );
+
+    expect(await screen.findByText(summary.memory_a_content)).not.toBeNull();
+    fireEvent.click(screen.getByTestId("conflicts-load-more"));
+    expect(await screen.findByText(second.memory_a_content)).not.toBeNull();
+    expect(api.listConflicts).toHaveBeenCalledWith(undefined, {
+        status: null,
+        cursor: "cursor-page-2",
+    });
+
+    fireEvent.click(screen.getByTestId("conflict-tab-resolved"));
+    expect(await screen.findByText(resolved.memory_a_content)).not.toBeNull();
+    expect(screen.queryByText(summary.memory_a_content)).toBeNull();
+    expect(screen.queryByText(second.memory_a_content)).toBeNull();
+    expect(api.listConflicts).toHaveBeenLastCalledWith(undefined, { status: "resolved" });
+});
+
 test("renders nullable conflict detail and submits the supported merged contract", async () => {
     render(
         <MemoryRouter initialEntries={[`/conflicts/${detail.id}`]}>

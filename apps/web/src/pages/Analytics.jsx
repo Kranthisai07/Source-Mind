@@ -14,27 +14,36 @@ export default function Analytics() {
     const [riskFilter, setRiskFilter] = useState("ALL");
 
     const resource = useApiResource(async () => {
-        const [overview, gapResponse, contributorResponse] = await Promise.all([
+        const [overviewResult, gapsResult, contributorsResult, memorySeriesResult, searchActivityResult] = await Promise.allSettled([
             api.getAnalyticsOverview(),
             api.getKnowledgeGaps(),
             api.listContributors(),
+            useMocks ? api.getMemoriesOverTime() : Promise.resolve({ series: [] }),
+            useMocks ? api.getSearchActivity() : Promise.resolve({ series: [] }),
         ]);
-        const [memorySeries, searchActivity] = useMocks
-            ? await Promise.all([api.getMemoriesOverTime(), api.getSearchActivity()])
-            : [{ series: [] }, { series: [] }];
         return {
-            overview,
-            gaps: gapResponse.gaps,
-            contributors: contributorResponse.contributors,
-            series: memorySeries.series,
-            searchSeries: searchActivity.series,
+            overview: settledValue(overviewResult, null),
+            overviewError: settledError(overviewResult),
+            gaps: settledValue(gapsResult, { gaps: [] }).gaps,
+            gapsError: settledError(gapsResult),
+            contributors: settledValue(contributorsResult, { contributors: [] }).contributors,
+            contributorsError: settledError(contributorsResult),
+            series: settledValue(memorySeriesResult, { series: [] }).series,
+            seriesError: settledError(memorySeriesResult),
+            searchSeries: settledValue(searchActivityResult, { series: [] }).series,
+            searchSeriesError: settledError(searchActivityResult),
         };
     });
     const overview = resource.data?.overview ?? null;
+    const overviewError = resource.data?.overviewError ?? null;
     const gaps = resource.data?.gaps ?? [];
+    const gapsError = resource.data?.gapsError ?? null;
     const contribs = resource.data?.contributors ?? [];
+    const contributorsError = resource.data?.contributorsError ?? null;
     const series = resource.data?.series ?? [];
+    const seriesError = resource.data?.seriesError ?? null;
     const searchSeries = resource.data?.searchSeries ?? [];
+    const searchSeriesError = resource.data?.searchSeriesError ?? null;
 
     const filteredGaps = gaps.filter(g => riskFilter === "ALL" || String(g.risk_level || "").toUpperCase() === riskFilter);
 
@@ -42,7 +51,7 @@ export default function Analytics() {
         return <><TopBar title="Analytics" subtitle="Workspace analytics unavailable" /><div className="flex-1 px-8 py-6"><PageLoadError error={resource.error} onRetry={resource.retry} testId="analytics-error" /></div></>;
     }
 
-    if (resource.loading && !overview) {
+    if (resource.loading && !resource.data) {
         return <><TopBar title="Analytics" subtitle="Loading workspace analytics…" /><div className="flex-1 px-8 py-6"><PageLoading label="Loading analytics" testId="analytics-loading" /></div></>;
     }
 
@@ -62,7 +71,9 @@ export default function Analytics() {
 
                     {/* OVERVIEW */}
                     <TabsContent value="overview" className="space-y-5 mt-0">
-                        <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-4">
+                        {overviewError ? (
+                            <PageLoadError error={panelError("Health overview unavailable", overviewError)} onRetry={resource.retry} testId="analytics-overview-error" />
+                        ) : <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-4">
                             <section className="sm-card p-6 flex flex-col items-center">
                                 <HealthGauge score={overview?.knowledge_health_score ?? 0} size={220} label="Health Score" />
                                 <div className="mt-6 text-center">
@@ -79,9 +90,11 @@ export default function Analytics() {
                                     <BigBar label="Attribution"  weight="15%" value={overview?.health_breakdown.attribution_coverage ?? 0} color="#F59E0B" desc="% of memories with high-confidence author attribution" />
                                 </div>
                             </section>
-                        </div>
+                        </div>}
 
-                        {useMocks ? <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
+                        {useMocks && (seriesError || searchSeriesError) ? (
+                            <PageLoadError error={panelError("Historical analytics unavailable", seriesError || searchSeriesError)} onRetry={resource.retry} testId="analytics-series-error" />
+                        ) : useMocks ? <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
                             <section className="sm-card p-6">
                                 <div className="flex items-center justify-between mb-3">
                                     <h3 className="text-[15px] font-semibold text-sm-text">Memories Over Time</h3>
@@ -128,6 +141,9 @@ export default function Analytics() {
 
                     {/* CONTRIBUTION */}
                     <TabsContent value="contribution" className="space-y-5 mt-0">
+                        {contributorsError ? (
+                            <PageLoadError error={panelError("Contribution data unavailable", contributorsError)} onRetry={resource.retry} testId="analytics-contributors-error" />
+                        ) : <>
                         <section className="sm-card p-6">
                             <h3 className="text-[15px] font-semibold text-sm-text mb-4">Contribution Map</h3>
                             <p className="text-[12.5px] text-sm-text-secondary mb-5">Size = memory count · color intensity = recency</p>
@@ -177,10 +193,14 @@ export default function Analytics() {
                                 </tbody>
                             </table>
                         </section>
+                        </>}
                     </TabsContent>
 
                     {/* GAPS */}
                     <TabsContent value="gaps" className="space-y-5 mt-0">
+                        {gapsError ? (
+                            <PageLoadError error={panelError("Knowledge gaps unavailable", gapsError)} onRetry={resource.retry} testId="analytics-gaps-error" />
+                        ) : <>
                         <div className="flex items-center gap-2" data-testid="gaps-filter-bar">
                             <Filter className="w-4 h-4 text-sm-text-secondary" />
                             {["ALL", "HIGH", "MEDIUM", "LOW"].map(l => (
@@ -214,6 +234,7 @@ export default function Analytics() {
                                 </div>
                             ))}
                         </div>
+                        </>}
                     </TabsContent>
                 </Tabs>
             </div>
@@ -239,17 +260,33 @@ function BigBar({ label, weight, value, color, desc }) {
     );
 }
 
-function TreemapNode({ x, y, width, height, name, fill }) {
+export function TreemapNode({ x, y, width, height, name, fill }) {
     if (width < 20 || height < 20) return null;
     return (
         <g>
-            <rect x={x} y={y} width={width} height={height} fill={fill} fillOpacity={0.18} stroke="#0A0A0F" strokeWidth={2} />
+            <rect x={x} y={y} width={width} height={height} fill={fill} fillOpacity={0.18} stroke="var(--sm-bg)" strokeWidth={2} />
             <rect x={x} y={y} width={width} height={4} fill={fill} />
             {width > 80 && height > 40 && (
-                <text x={x + 10} y={y + 22} fill="#E8E8F0" fontSize={12} fontFamily="JetBrains Mono" fontWeight={600}>
+                <text data-testid="treemap-label" x={x + 10} y={y + 22} fill="var(--sm-text)" fontSize={12} fontFamily="JetBrains Mono" fontWeight={600}>
                     @{name}
                 </text>
             )}
         </g>
     );
+}
+
+function settledValue(result, fallback) {
+    return result.status === "fulfilled" ? result.value : fallback;
+}
+
+function settledError(result) {
+    return result.status === "rejected" ? result.reason : null;
+}
+
+function panelError(title, error) {
+    return {
+        title,
+        detail: error?.message || "This analytics panel could not be loaded.",
+        retryable: ![401, 403, 404].includes(error?.status),
+    };
 }

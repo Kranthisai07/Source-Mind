@@ -134,6 +134,21 @@ describe("memory version history", () => {
     });
 });
 
+describe("conflict pagination", () => {
+    test("forwards the opaque cursor without interpreting it", async () => {
+        const calls = captureFetch({ body: { conflicts: [], total: 0, next_cursor: null } });
+
+        await realApi.listConflicts("00000000-0000-4000-8000-000000000001", {
+            status: "open",
+            cursor: "opaque-page-token",
+        });
+
+        const url = new URL(calls[0].url);
+        expect(url.searchParams.get("status")).toBe("open");
+        expect(url.searchParams.get("cursor")).toBe("opaque-page-token");
+    });
+});
+
 /**
  * Route by URL, because creating a memory makes TWO requests: the workspace
  * lookup and then the create. A single canned body would hand the lookup a job

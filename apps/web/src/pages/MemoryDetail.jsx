@@ -10,7 +10,6 @@ import { Button } from "../components/ui/button";
 import useApiResource from "../hooks/useApiResource";
 import api from "../lib/api";
 import { relativeTime, formatDate } from "../lib/format";
-import { CONTRIBUTORS } from "../lib/mockData";
 
 export default function MemoryDetail() {
     const { id } = useParams();
@@ -175,21 +174,27 @@ export default function MemoryDetail() {
                     <h3 className="text-[14px] font-semibold text-sm-text mb-5">Version Timeline</h3>
                     {versionsResource.error ? (
                         <PageLoadError error={versionsResource.error} onRetry={versionsResource.retry} testId="memory-versions-error" compact />
+                    ) : versions.length === 0 ? (
+                        <p className="text-[12.5px] text-sm-text-secondary">No version history is available.</p>
                     ) : <ol className="relative border-l-2 border-sm-border ml-2 space-y-5">
-                        {versions.map((v, i) => {
-                            const editor = CONTRIBUTORS.find(c => c.login === v.editor) || { name: v.editor, login: v.editor, avatarColor: "#4F7EFF" };
-                            return (
-                                <li key={i} className="pl-5 relative">
-                                    <span className="absolute -left-[9px] top-1 w-4 h-4 rounded-full border-2 border-sm-bg" style={{ background: editor.avatarColor }} />
-                                    <div className="flex items-center gap-2 mb-1">
-                                        <span className="font-mono text-[11px] text-sm-blue">v{v.v}</span>
-                                        <span className="font-mono text-[10.5px] text-sm-text-secondary">{relativeTime(v.at)}</span>
-                                    </div>
-                                    <div className="text-[12.5px] text-sm-text">@{editor.login}</div>
-                                    <div className="font-mono text-[11px] text-sm-text-secondary mt-0.5">{v.summary}</div>
-                                </li>
-                            );
-                        })}
+                        {versions.map((version, index) => (
+                            <li key={version.id || `${version.version}-${index}`} className="pl-5 relative" data-testid={`memory-version-${version.version}`}>
+                                <span className="absolute -left-[9px] top-1 w-4 h-4 rounded-full border-2 border-sm-bg bg-sm-blue" />
+                                <div className="flex flex-wrap items-center gap-2 mb-1">
+                                    <span className="font-mono text-[11px] text-sm-blue">v{version.version}</span>
+                                    <span className={`font-mono text-[9.5px] uppercase tracking-wider ${version.is_current ? "text-sm-green" : "text-sm-text-muted"}`}>
+                                        {version.is_current ? "Current" : "Historical"}
+                                    </span>
+                                    <time
+                                        dateTime={version.created_at || undefined}
+                                        className="font-mono text-[10.5px] text-sm-text-secondary"
+                                    >
+                                        {version.created_at ? formatDate(version.created_at) : "Date unavailable"}
+                                    </time>
+                                </div>
+                                <p className="text-[12.5px] text-sm-text leading-relaxed whitespace-pre-wrap">{version.content || "No content recorded."}</p>
+                            </li>
+                        ))}
                     </ol>}
 
                     <Button variant="outline" size="sm" className="w-full mt-6 bg-white/[0.03] border-sm-border text-sm-amber hover:bg-sm-amber/10" onClick={() => navigate("/conflicts")}>
