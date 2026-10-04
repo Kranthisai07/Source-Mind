@@ -1,9 +1,10 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import api from "../lib/api";
 import { mockApi } from "../lib/mockApi";
+import { resetIdentityScopedCaches } from "../lib/realApi";
 import ConflictDetail from "./ConflictDetail";
 import Conflicts from "./Conflicts";
 
@@ -109,6 +110,44 @@ test("loads the next conflict page and resets paging when the status changes", a
     expect(screen.queryByText(summary.memory_a_content)).toBeNull();
     expect(screen.queryByText(second.memory_a_content)).toBeNull();
     expect(api.listConflicts).toHaveBeenLastCalledWith(undefined, { status: "resolved" });
+});
+
+test("clears accumulated conflicts when a later page loses access", async () => {
+    api.listConflicts
+        .mockResolvedValueOnce({ conflicts: [summary], total: 2, next_cursor: "cursor-page-2" })
+        .mockRejectedValueOnce({ status: 403 });
+
+    render(
+        <MemoryRouter>
+            <Conflicts />
+        </MemoryRouter>
+    );
+
+    expect(await screen.findByText(summary.memory_a_content)).not.toBeNull();
+    fireEvent.click(screen.getByTestId("conflicts-load-more"));
+
+    expect(await screen.findByTestId("conflicts-error")).not.toBeNull();
+    expect(screen.queryByText(summary.memory_a_content)).toBeNull();
+});
+
+test("clears accumulated conflicts when the signed-in identity changes", async () => {
+    let finishReload;
+    api.listConflicts
+        .mockResolvedValueOnce({ conflicts: [summary], total: 1, next_cursor: null })
+        .mockImplementationOnce(() => new Promise((resolve) => { finishReload = resolve; }));
+
+    render(
+        <MemoryRouter>
+            <Conflicts />
+        </MemoryRouter>
+    );
+
+    expect(await screen.findByText(summary.memory_a_content)).not.toBeNull();
+    await act(async () => { resetIdentityScopedCaches(); });
+
+    await waitFor(() => expect(screen.queryByText(summary.memory_a_content)).toBeNull());
+    await act(async () => { finishReload({ conflicts: [], total: 0, next_cursor: null }); });
+    expect(await screen.findByText("No conflicts in this state.")).toBeTruthy();
 });
 
 test("renders nullable conflict detail and submits the supported merged contract", async () => {

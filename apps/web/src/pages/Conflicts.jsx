@@ -6,6 +6,7 @@ import StatusBadge from "../components/widgets/StatusBadge";
 import { PageLoadError } from "../components/widgets/PageLoadState";
 import useApiResource from "../hooks/useApiResource";
 import api from "../lib/api";
+import { onIdentityReset } from "../lib/realApi";
 import { relativeTime, severityColor } from "../lib/format";
 
 const STATUS_TABS = [
@@ -47,6 +48,18 @@ export default function Conflicts() {
         });
         setNextCursor(resource.data.next_cursor || null);
     }, [cursor, resource.data, status]);
+
+    useEffect(() => {
+        if (!["auth", "forbidden", "missing"].includes(resource.error?.kind)) return;
+        setConflicts([]);
+        setNextCursor(null);
+    }, [resource.error]);
+
+    useEffect(() => onIdentityReset(() => {
+        setCursor(null);
+        setConflicts([]);
+        setNextCursor(null);
+    }), []);
 
     const selectStatus = (nextStatus) => {
         if (nextStatus === status) return;

@@ -126,6 +126,20 @@ describe("the supported control is untouched", () => {
 });
 
 describe("version timeline contract", () => {
+    test("keeps the version timeline loading until the request settles", async () => {
+        let finishVersions;
+        mockGetVersions.mockImplementation(() => new Promise((resolve) => { finishVersions = resolve; }));
+
+        renderPage();
+
+        expect(await screen.findByTestId("mem-edit")).toBeTruthy();
+        expect(screen.getByTestId("memory-versions-loading")).toBeTruthy();
+        expect(screen.queryByText("No version history is available.")).toBeNull();
+
+        await act(async () => { finishVersions({ versions: [], total: 0 }); });
+        expect(await screen.findByText("No version history is available.")).toBeTruthy();
+    });
+
     test("renders the backend version fields without inventing an editor", async () => {
         mockGetVersions.mockResolvedValue({
             versions: [

@@ -174,6 +174,8 @@ export default function MemoryDetail() {
                     <h3 className="text-[14px] font-semibold text-sm-text mb-5">Version Timeline</h3>
                     {versionsResource.error ? (
                         <PageLoadError error={versionsResource.error} onRetry={versionsResource.retry} testId="memory-versions-error" compact />
+                    ) : versionsResource.loading ? (
+                        <p data-testid="memory-versions-loading" role="status" className="text-[12.5px] text-sm-text-secondary">Loading version history…</p>
                     ) : versions.length === 0 ? (
                         <p className="text-[12.5px] text-sm-text-secondary">No version history is available.</p>
                     ) : <ol className="relative border-l-2 border-sm-border ml-2 space-y-5">
