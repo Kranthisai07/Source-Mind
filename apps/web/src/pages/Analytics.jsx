@@ -153,7 +153,7 @@ export default function Analytics() {
                                     <tr className="text-left font-mono text-[10.5px] uppercase tracking-wider text-sm-text-secondary border-b border-sm-border">
                                         <th className="py-2.5">Contributor</th>
                                         <th className="py-2.5 text-right">Memories</th>
-                                        <th className="py-2.5 text-right">Avg Score</th>
+                                        <th className="py-2.5 text-right">Avg Contribution</th>
                                         <th className="py-2.5 text-right">Last Active</th>
                                     </tr>
                                 </thead>
@@ -167,7 +167,7 @@ export default function Analytics() {
                                                 </div>
                                             </td>
                                             <td className="py-3 text-right font-mono">{c.count}</td>
-                                            <td className="py-3 text-right font-mono text-sm-text">{c.score.toFixed(2)}</td>
+                                            <td data-testid={`contributor-score-${c.id}`} className="py-3 text-right font-mono text-sm-text">{(c.score * 100).toFixed(0)}%</td>
                                             <td className="py-3 text-right font-mono text-sm-text-secondary">{formatContributorActivity(c.last_active)}</td>
                                         </tr>
                                     ))}

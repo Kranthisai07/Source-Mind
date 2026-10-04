@@ -170,6 +170,9 @@ test("formats production contributor timestamps and preserves shorthand values",
     expect(await screen.findByText(/1h ago/)).toBeTruthy();
     expect(screen.queryByText(timestamp)).toBeNull();
     expect(screen.getByText("today")).toBeTruthy();
+    expect(screen.getByText("Avg Contribution")).toBeTruthy();
+    expect(screen.getByTestId("contributor-score-production-user").textContent).toBe("88%");
+    expect(screen.queryByText("0.88")).toBeNull();
 });
 
 test.each(["light", "dark"])("uses readable theme tokens for populated charts in %s mode", (theme) => {
