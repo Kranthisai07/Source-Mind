@@ -65,17 +65,17 @@ export default function Analytics() {
                             </section>
                         </div>}
 
-                        {useMocks && (seriesResource.error || searchSeriesResource.error) ? (
-                            <PageLoadError error={panelError("Historical analytics unavailable", seriesResource.error || searchSeriesResource.error)} onRetry={() => { seriesResource.retry(); searchSeriesResource.retry(); }} testId="analytics-series-error" />
-                        ) : useMocks && ((seriesResource.loading && !seriesResource.data) || (searchSeriesResource.loading && !searchSeriesResource.data)) ? (
-                            <PageLoading label="Loading historical analytics" testId="analytics-series-loading" />
-                        ) : useMocks ? <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
+                        {useMocks ? <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
                             <section className="sm-card p-6">
                                 <div className="flex items-center justify-between mb-3">
                                     <h3 className="text-[15px] font-semibold text-sm-text">Memories Over Time</h3>
                                     <span className="font-mono text-[11px] text-sm-text-secondary">LAST 30 DAYS</span>
                                 </div>
-                                <div className="h-[220px]">
+                                {seriesResource.error ? (
+                                    <PageLoadError error={panelError("Memory history unavailable", seriesResource.error)} onRetry={seriesResource.retry} testId="analytics-memory-series-error" compact />
+                                ) : seriesResource.loading && !seriesResource.data ? (
+                                    <PageLoading label="Loading memory history" testId="analytics-memory-series-loading" />
+                                ) : <div className="h-[220px]" data-testid="analytics-memory-series-chart">
                                     <ResponsiveContainer width="100%" height="100%">
                                         <AreaChart data={series} margin={{ top: 5, right: 10, bottom: 0, left: -20 }}>
                                             <defs>
@@ -90,19 +90,25 @@ export default function Analytics() {
                                             <Area dataKey="count" stroke="#4F7EFF" fill="url(#g1)" strokeWidth={2} dot={false} activeDot={{ r: 4, stroke: "#4F7EFF", fill: "#0A0A0F", strokeWidth: 2 }} />
                                         </AreaChart>
                                     </ResponsiveContainer>
-                                </div>
+                                </div>}
                             </section>
                             <section className="sm-card p-6">
                                 <h3 className="text-[14px] font-semibold text-sm-text mb-2">Search Activity</h3>
-                                <div className="font-mono text-[28px] text-sm-text font-semibold">{searchSeries.reduce((a, b) => a + b.searches, 0)}</div>
-                                <div className="font-mono text-[11px] text-sm-text-secondary mb-4">searches · 14d</div>
-                                <div className="h-[100px]">
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <LineChart data={searchSeries}>
-                                            <Line dataKey="searches" stroke="#34D399" strokeWidth={2} dot={false} />
-                                        </LineChart>
-                                    </ResponsiveContainer>
-                                </div>
+                                {searchSeriesResource.error ? (
+                                    <PageLoadError error={panelError("Search activity unavailable", searchSeriesResource.error)} onRetry={searchSeriesResource.retry} testId="analytics-search-series-error" compact />
+                                ) : searchSeriesResource.loading && !searchSeriesResource.data ? (
+                                    <PageLoading label="Loading search activity" testId="analytics-search-series-loading" />
+                                ) : <div data-testid="analytics-search-series-chart">
+                                    <div className="font-mono text-[28px] text-sm-text font-semibold">{searchSeries.reduce((a, b) => a + b.searches, 0)}</div>
+                                    <div className="font-mono text-[11px] text-sm-text-secondary mb-4">searches · 14d</div>
+                                    <div className="h-[100px]">
+                                        <ResponsiveContainer width="100%" height="100%">
+                                            <LineChart data={searchSeries}>
+                                                <Line dataKey="searches" stroke="#34D399" strokeWidth={2} dot={false} />
+                                            </LineChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>}
                             </section>
                         </div> : (
                             <div data-testid="analytics-series-unavailable" className="sm-card p-6">
