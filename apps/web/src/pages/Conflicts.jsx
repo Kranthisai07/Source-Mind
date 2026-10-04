@@ -193,7 +193,7 @@ function ConflictRow({ conflict, onOpen }) {
                     className="h-8 px-3 rounded-md bg-sm-blue/15 border border-sm-blue/30 text-sm-blue text-[11.5px] font-medium hover:bg-sm-blue/25"
                     onClick={(event) => { event.stopPropagation(); onOpen(); }}
                 >
-                    Start Review →
+                    Review →
                 </button>
             </div>
         </article>

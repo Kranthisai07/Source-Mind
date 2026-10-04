@@ -64,6 +64,8 @@ test("renders the real conflict-list schema without inferred contributors", asyn
     expect(await screen.findByText(summary.memory_a_content)).not.toBeNull();
     expect(screen.getByText(summary.memory_b_content)).not.toBeNull();
     expect(screen.getByTestId("conflict-severity-critical").style.color).toBe("rgb(239, 68, 68)");
+    expect(screen.getByTestId(`start-review-${summary.id}`).textContent).toContain("Review");
+    expect(screen.getByTestId(`start-review-${summary.id}`).textContent).not.toContain("Start Review");
     expect(api.listConflicts).toHaveBeenCalledWith(undefined, { status: null });
 });
 

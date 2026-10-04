@@ -26,11 +26,11 @@ export default function MemoryCard({ memory, score, rank, matchType }) {
     const tags = Array.isArray(memory.tags) ? memory.tags : [];
     const attribution = Array.isArray(memory.attribution) ? memory.attribution : [];
     const primary = attribution.find((item) => item.is_primary) || attribution[0] || null;
-    const contributor = {
-        name: primary?.name || primary?.author || "Unattributed",
-        login: primary?.author || "unattributed",
-        avatarColor: primary?.color || "#4F7EFF",
-    };
+    const contributor = primary ? {
+        name: primary.name || primary.author,
+        login: primary.author,
+        avatarColor: primary.color || "#4F7EFF",
+    } : null;
 
     return (
         <article
@@ -69,11 +69,15 @@ export default function MemoryCard({ memory, score, rank, matchType }) {
 
             <div className="flex items-center justify-between pt-1 gap-4">
                 <div className="flex items-center gap-2 min-w-0">
-                    <ContributorAvatar contributor={contributor} size={22} />
-                    <div className="min-w-0">
-                        <div className="text-[12px] font-medium text-sm-text truncate">{contributor.name}</div>
-                        <div className="font-mono text-[10.5px] text-sm-text-secondary truncate">@{contributor.login}</div>
-                    </div>
+                    {contributor ? <>
+                        <ContributorAvatar contributor={contributor} size={22} />
+                        <div className="min-w-0">
+                            <div className="text-[12px] font-medium text-sm-text truncate">{contributor.name}</div>
+                            <div data-testid="memory-attribution-handle" className="font-mono text-[10.5px] text-sm-text-secondary truncate">@{contributor.login}</div>
+                        </div>
+                    </> : (
+                        <div data-testid="memory-attribution-unattributed" className="text-[12px] font-medium text-sm-text-secondary">Unattributed</div>
+                    )}
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
                     {matchType && <span className="font-mono text-[10px] text-sm-text-secondary">{matchType}</span>}
