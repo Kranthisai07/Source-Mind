@@ -70,7 +70,7 @@ export default function ConflictDetail() {
             <>
                 <TopBar title="Conflict" subtitle="This conflict could not be loaded" />
                 <div className="flex-1 px-8 py-6">
-                    <PageLoadError error={resource.error} onRetry={resource.retry} testId="conflict-detail-error" />
+                    <PageLoadError error={resource.error} onRetry={resource.retry} testId="error-state" />
                 </div>
             </>
         );

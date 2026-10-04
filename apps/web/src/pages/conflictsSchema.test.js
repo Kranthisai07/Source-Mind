@@ -137,6 +137,26 @@ test("renders nullable conflict detail and submits the supported merged contract
     });
 });
 
+test("renders a neutral missing state for an unavailable conflict", async () => {
+    api.getConflict.mockRejectedValue({
+        status: 404,
+        body: { error: { code: "SM026", message: "Conflict not found." } },
+    });
+
+    render(
+        <MemoryRouter initialEntries={[`/conflicts/${detail.id}`]}>
+            <Routes>
+                <Route path="/conflicts/:id" element={<ConflictDetail />} />
+            </Routes>
+        </MemoryRouter>
+    );
+
+    const state = await screen.findByTestId("error-state");
+    expect(state.getAttribute("data-error-kind")).toBe("missing");
+    expect(state.textContent).toMatch(/not available/i);
+    expect(state.textContent).not.toMatch(/permission|forbidden|denied|exists/i);
+});
+
 test("mock conflict resolution preserves action-specific fields", async () => {
     const payload = {
         resolution_type: "split",

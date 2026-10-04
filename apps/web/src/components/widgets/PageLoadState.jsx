@@ -6,6 +6,7 @@ export function PageLoadError({ error, onRetry, testId = "page-load-error", comp
     return (
         <div
             data-testid={testId}
+            data-error-kind={error?.kind || undefined}
             role="alert"
             className={`sm-card ${compact ? "p-4" : "p-6"} border-sm-red/30`}
         >
