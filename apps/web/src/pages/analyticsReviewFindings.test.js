@@ -78,10 +78,25 @@ test("keeps successful analytics panels when another panel fails", async () => {
 
     fireEvent.mouseDown(screen.getByTestId("tab-contribution"), { button: 0, ctrlKey: false });
     expect(document.body.textContent).toContain("@synthetic-user");
+    expect(document.body.textContent).toContain("colors distinguish contributors");
+    expect(document.body.textContent).not.toContain("color intensity = recency");
+    expect(document.body.textContent).not.toContain("Top Category");
 
     fireEvent.mouseDown(screen.getByTestId("tab-gaps"), { button: 0, ctrlKey: false });
     expect((await screen.findByTestId("analytics-gaps-error")).textContent).toContain("Gap service unavailable");
     expect(document.body.textContent).not.toContain("6 pts vs last month");
+});
+
+test("keeps the dashboard overview when knowledge gaps fail", async () => {
+    render(
+        <MemoryRouter>
+            <Dashboard />
+        </MemoryRouter>
+    );
+
+    expect((await screen.findByTestId("health-gauge-score")).textContent).toContain("82");
+    expect(screen.queryByTestId("dashboard-error")).toBeNull();
+    expect((await screen.findByTestId("dashboard-gaps-error")).textContent).toContain("Gap service unavailable");
 });
 
 test("dashboard labels current metrics without unsupported trend claims", async () => {
@@ -94,7 +109,9 @@ test("dashboard labels current metrics without unsupported trend claims", async 
     );
 
     expect((await screen.findByTestId("metric-contributors")).textContent).toContain("Current workspace total");
-    expect(screen.getByTestId("metric-new-this-month").textContent).toContain("Rolling 30-day count");
+    expect(screen.getByTestId("metric-new-last-30-days").textContent).toContain("New Last 30 Days");
+    expect(screen.getByTestId("metric-new-last-30-days").textContent).toContain("Rolling 30-day count");
+    expect(document.body.textContent).not.toContain("New This Month");
     expect(document.body.textContent).not.toContain("All active this week");
     expect(document.body.textContent).not.toContain("18% vs. last 30d");
 });

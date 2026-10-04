@@ -146,7 +146,7 @@ export default function Analytics() {
                         ) : <>
                         <section className="sm-card p-6">
                             <h3 className="text-[15px] font-semibold text-sm-text mb-4">Contribution Map</h3>
-                            <p className="text-[12.5px] text-sm-text-secondary mb-5">Size = memory count · color intensity = recency</p>
+                            <p className="text-[12.5px] text-sm-text-secondary mb-5">Tile size = memory count · colors distinguish contributors</p>
                             <div className="h-[340px]">
                                 <ResponsiveContainer width="100%" height="100%">
                                     <Treemap
@@ -172,7 +172,6 @@ export default function Analytics() {
                                         <th className="py-2.5 text-right">Memories</th>
                                         <th className="py-2.5 text-right">Avg Score</th>
                                         <th className="py-2.5 text-right">Last Active</th>
-                                        <th className="py-2.5">Top Category</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -187,7 +186,6 @@ export default function Analytics() {
                                             <td className="py-3 text-right font-mono">{c.count}</td>
                                             <td className="py-3 text-right font-mono text-sm-text">{c.score.toFixed(2)}</td>
                                             <td className="py-3 text-right font-mono text-sm-text-secondary">{c.last_active}</td>
-                                            <td className="py-3 font-mono text-sm-text-secondary">{c.top_category}</td>
                                         </tr>
                                     ))}
                                 </tbody>

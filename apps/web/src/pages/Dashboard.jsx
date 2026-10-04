@@ -13,14 +13,21 @@ import { relativeTime } from "../lib/format";
 
 export default function Dashboard() {
     const resource = useApiResource(async () => {
-        const [overview, gapResponse] = await Promise.all([
+        const [overviewResult, gapsResult] = await Promise.allSettled([
             api.getAnalyticsOverview(),
             api.getKnowledgeGaps(),
         ]);
-        return { overview, gaps: gapResponse.gaps };
+        return {
+            overview: overviewResult.status === "fulfilled" ? overviewResult.value : null,
+            overviewError: overviewResult.status === "rejected" ? overviewResult.reason : null,
+            gaps: gapsResult.status === "fulfilled" ? gapsResult.value.gaps : [],
+            gapsError: gapsResult.status === "rejected" ? gapsResult.reason : null,
+        };
     });
     const data = resource.data?.overview ?? null;
-    const gaps = resource.data?.gaps ?? null;
+    const overviewError = resource.data?.overviewError ?? null;
+    const gaps = resource.data?.gaps ?? [];
+    const gapsError = resource.data?.gapsError ?? null;
 
     const subtitle = data
         ? `${data.total_memories.toLocaleString()} memories · ${data.total_contributors} contributors · health ${data.knowledge_health_score}/100`
@@ -29,7 +36,7 @@ export default function Dashboard() {
     const header = (
         <TopBar
             title="Dashboard"
-            subtitle={resource.error ? "Workspace overview unavailable" : subtitle}
+            subtitle={resource.error || overviewError ? "Workspace overview unavailable" : subtitle}
             actions={
                 <Link to="/memories">
                     <button data-testid="dashboard-browse-btn" className="h-9 px-3.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-sm-border text-[12.5px] font-medium text-sm-text transition-colors flex items-center gap-1.5">
@@ -46,6 +53,10 @@ export default function Dashboard() {
 
     if (resource.loading && !data) {
         return <>{header}<div className="flex-1 px-8 py-6"><PageLoading label="Loading dashboard" testId="dashboard-loading" /></div></>;
+    }
+
+    if (overviewError) {
+        return <>{header}<div className="flex-1 px-8 py-6"><PageLoadError error={panelError("Workspace overview unavailable", overviewError)} onRetry={resource.retry} testId="dashboard-error" /></div></>;
     }
 
     return (
@@ -71,9 +82,9 @@ export default function Dashboard() {
                         accent="#A78BFA"
                     />
                     <MetricCard
-                        testId="metric-new-this-month"
+                        testId="metric-new-last-30-days"
                         icon={TrendingUp}
-                        label="New This Month"
+                        label="New Last 30 Days"
                         value={data?.memories_created_last_30_days ?? "—"}
                         delta={<span>Rolling 30-day count</span>}
                         accent="#34D399"
@@ -173,8 +184,10 @@ export default function Dashboard() {
                             <h2 className="text-[15px] font-semibold text-sm-text">Knowledge Gaps</h2>
                             <Link to="/analytics" className="text-[12px] text-sm-blue hover:underline" data-testid="dashboard-view-all-gaps">View all →</Link>
                         </div>
-                        <div className="space-y-2.5">
-                            {(gaps ?? []).slice(0, 3).map((g, i) => (
+                        {gapsError ? (
+                            <PageLoadError error={panelError("Knowledge gaps unavailable", gapsError)} onRetry={resource.retry} testId="dashboard-gaps-error" compact />
+                        ) : <div className="space-y-2.5">
+                            {gaps.slice(0, 3).map((g, i) => (
                                 <div key={i} data-testid={`gap-card-${i}`} className="rounded-lg border border-sm-border bg-sm-bg/40 p-4 hover:border-sm-border-hover transition-colors">
                                     <div className="flex items-center justify-between mb-2">
                                         <RiskBadge level={g.risk_level} />
@@ -184,12 +197,20 @@ export default function Dashboard() {
                                     <p className="font-mono text-[10.5px] text-sm-text-secondary mt-2">{g.affected_count} affected memories</p>
                                 </div>
                             ))}
-                        </div>
+                        </div>}
                     </section>
                 </div>
             </div>
         </>
     );
+}
+
+function panelError(title, error) {
+    return {
+        title,
+        detail: error?.message || "This dashboard panel could not be loaded.",
+        retryable: ![401, 403, 404].includes(error?.status),
+    };
 }
 
 function HealthBar({ label, weight, value, color }) {
