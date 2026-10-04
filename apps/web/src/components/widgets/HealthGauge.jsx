@@ -2,28 +2,18 @@ import React, { useEffect, useState } from "react";
 
 // Circular SVG gauge (0-100). Color transitions red -> amber -> green.
 export default function HealthGauge({ score = 0, size = 160, strokeWidth = 10, label = "Knowledge Health" }) {
-    const [animated, setAnimated] = useState(0);
+    const [animated, setAnimated] = useState(() => Math.max(0, Math.min(100, Math.round(score))));
     useEffect(() => {
-        const start = performance.now();
-        const duration = 900;
-        let raf;
-        const step = (t) => {
-            const p = Math.min(1, (t - start) / duration);
-            // ease-out cubic
-            const eased = 1 - Math.pow(1 - p, 3);
-            setAnimated(Math.round(score * eased));
-            if (p < 1) raf = requestAnimationFrame(step);
-        };
-        raf = requestAnimationFrame(step);
-        return () => cancelAnimationFrame(raf);
+        setAnimated(Math.max(0, Math.min(100, Math.round(score))));
     }, [score]);
 
     const r = (size - strokeWidth) / 2;
     const c = 2 * Math.PI * r;
-    const pct = Math.max(0, Math.min(100, animated)) / 100;
+    const display = Math.max(0, Math.min(100, animated));
+    const pct = display / 100;
     const color =
-        animated < 50 ? "#EF4444" :
-        animated < 75 ? "#F59E0B" :
+        display < 50 ? "#EF4444" :
+        display < 75 ? "#F59E0B" :
         "#34D399";
     const rot = `rotate(-90 ${size / 2} ${size / 2})`;
 
@@ -32,7 +22,7 @@ export default function HealthGauge({ score = 0, size = 160, strokeWidth = 10, l
             <svg width={size} height={size} className="drop-shadow-[0_0_24px_rgba(79,126,255,0.08)]">
                 <circle
                     cx={size / 2} cy={size / 2} r={r}
-                    fill="none" stroke="#1E1E2E" strokeWidth={strokeWidth}
+                    fill="none" stroke="var(--sm-border)" strokeWidth={strokeWidth}
                 />
                 <circle
                     cx={size / 2} cy={size / 2} r={r}
@@ -44,17 +34,18 @@ export default function HealthGauge({ score = 0, size = 160, strokeWidth = 10, l
                     style={{ transition: "stroke 300ms ease" }}
                 />
                 <text
+                    data-testid="health-gauge-score"
                     x="50%" y="50%" dy="0.18em"
                     textAnchor="middle"
                     className="font-mono"
-                    style={{ fill: "#E8E8F0", fontSize: size * 0.28, fontWeight: 600 }}
+                    style={{ fill: "var(--sm-text)", fontSize: size * 0.28, fontWeight: 600 }}
                 >
-                    {animated}
+                    {display}
                 </text>
                 <text
                     x="50%" y={size / 2 + size * 0.19}
                     textAnchor="middle"
-                    style={{ fill: "#8888A8", fontSize: size * 0.085, letterSpacing: "0.08em" }}
+                    style={{ fill: "var(--sm-text-secondary)", fontSize: size * 0.085, letterSpacing: "0.08em" }}
                 >
                     / 100
                 </text>

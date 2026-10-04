@@ -19,6 +19,40 @@ async function request(fn, { min = 180, max = 420 } = {}) {
     return { ...data, __latency_ms: ms };
 }
 
+function conflictSummary(conflict) {
+    return {
+        id: conflict.id,
+        status: conflict.status,
+        conflict_type: conflict.conflict_type,
+        severity: conflict.severity === "high" ? "critical" : conflict.severity,
+        similarity_score: conflict.similarity_score ?? null,
+        explanation: conflict.explanation ?? null,
+        memory_a_id: conflict.memory_a_id ?? `${conflict.id}-memory-a`,
+        memory_a_content: conflict.memory_a_content ?? conflict.memory_a_excerpt,
+        memory_b_id: conflict.memory_b_id ?? `${conflict.id}-memory-b`,
+        memory_b_content: conflict.memory_b_content ?? conflict.memory_b_excerpt,
+        created_at: conflict.created_at ?? conflict.detected_at,
+    };
+}
+
+function conflictDetail(conflict) {
+    const summary = conflictSummary(conflict);
+    return {
+        id: summary.id,
+        status: summary.status,
+        conflict_type: summary.conflict_type,
+        severity: summary.severity,
+        similarity_score: summary.similarity_score,
+        explanation: summary.explanation,
+        memory_a: { id: summary.memory_a_id, content: summary.memory_a_content },
+        memory_b: { id: summary.memory_b_id, content: summary.memory_b_content },
+        reviewed_by: null,
+        reviewed_at: null,
+        revisit_at: null,
+        created_at: summary.created_at,
+    };
+}
+
 // ----- workspace -----
 export const mockApi = {
     getCurrentUser: () => request(() => CURRENT_USER),
@@ -129,19 +163,35 @@ export const mockApi = {
     },
 
     // GET /v1/workspaces/:id/conflicts
-    listConflicts: (_wsId, { status = "all" } = {}) => request(() => ({
-        conflicts: CONFLICTS.filter(c => status === "all" ? true : c.status === status),
-    })),
+    listConflicts: (_wsId, { status = "all" } = {}) => request(() => {
+        const conflicts = CONFLICTS
+            .filter((conflict) => !status || status === "all" || conflict.status === status)
+            .map(conflictSummary);
+        return { conflicts, total: conflicts.length, next_cursor: null };
+    }),
 
     // GET /v1/conflicts/:id
     getConflict: (id) => request(() => {
         const c = CONFLICTS.find(x => x.id === id);
-        return c || { error: "not_found" };
+        return c ? conflictDetail(c) : { error: "not_found" };
     }),
 
     // POST /v1/conflicts/:id/resolve
-    resolveConflict: (_id, { resolution_type, note }) => request(() => ({
-        ok: true, resolution_type, note,
+    resolveConflict: (_id, {
+        resolution_type,
+        note,
+        merged_content,
+        tag_a,
+        tag_b,
+        revisit_at,
+    }) => request(() => ({
+        status: "ok",
+        resolution_type,
+        note,
+        merged_content,
+        tag_a,
+        tag_b,
+        revisit_at,
     }), { min: 250, max: 500 }),
 
     // GET /v1/workspaces/:id/connectors

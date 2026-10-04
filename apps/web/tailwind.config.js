@@ -1,32 +1,4 @@
 /** @type {import('tailwindcss').Config} */
-
-/* ---------------------------------------------------------------------------
-   LAYER 1 — PRIMITIVE
-   The single source of truth for Tailwind utilities. Mirrored as CSS custom
-   properties in src/styles/tokens.css for the consumers Tailwind cannot reach
-   (component sizing, keyframes, non-utility CSS). Change a value here and in
-   tokens.css together - they are two views of one system.
-
-   These stay literal hex rather than var() because Tailwind's opacity
-   modifiers (bg-accent/10) cannot decompose a var holding a full colour.
-   ------------------------------------------------------------------------ */
-const primitive = {
-    neutral950: '#0A0A0F',
-    neutral900: '#12121A',
-    neutral850: '#16161F',
-    neutral800: '#1E1E2E',
-    neutral700: '#2A2A3E',
-    neutral500: '#4A4A6A',
-    neutral300: '#8888A8',
-    neutral50:  '#E8E8F0',
-    blue500:    '#4F7EFF',
-    blue600:    '#3D6BEE',
-    blue400:    '#7C9DFF',
-    green500:   '#34D399',
-    red500:     '#EF4444',
-    amber500:   '#F59E0B',
-};
-
 module.exports = {
     darkMode: ["class"],
     content: [
@@ -36,93 +8,34 @@ module.exports = {
     theme: {
         extend: {
             fontFamily: {
-                sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
+                sans: ['DM Sans', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
+                serif: ['Newsreader', 'Georgia', 'Cambria', 'Times New Roman', 'serif'],
                 mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
-            },
-            /* LAYER 3 — COMPONENT. §3's type scale, addressable as text-h1 etc.
-               so a component never hardcodes text-[28px]. */
-            fontSize: {
-                'h1':    ['28px', { lineHeight: '1.2',  fontWeight: '700' }],
-                'title': ['15px', { lineHeight: '1.35', fontWeight: '600' }],
-                'body':  ['13px', { lineHeight: '1.55' }],
-                'body-lg': ['14px', { lineHeight: '1.55' }],
-                'micro': ['11px', { lineHeight: '1.3',  letterSpacing: '0.08em' }],
-                'hero':  ['34px', { lineHeight: '1.1',  fontWeight: '600' }],
-            },
-            spacing: {
-                'sidebar':   '260px',   /* §1 "~260px" */
-                'topstrip':  '48px',    /* §1 "~48px"  */
-                'navitem':   '34px',
-                'tablerow':  '52px',
             },
             borderRadius: {
                 lg: 'var(--radius)',
                 md: 'calc(var(--radius) - 2px)',
-                sm: 'calc(var(--radius) - 4px)',
-                card: '12px',
+                sm: 'calc(var(--radius) - 4px)'
             },
             colors: {
-                /* LAYER 1 exposed for the rare case a primitive is genuinely
-                   what is meant. Prefer the semantic names below. */
+                // SourceMind brand palette — driven by CSS variables so the
+                // whole app themes (light default / dark) from one source.
                 sm: {
-                    bg: primitive.neutral950,
-                    surface: primitive.neutral900,
-                    'surface-2': '#17172160',
-                    border: primitive.neutral800,
-                    'border-hover': primitive.neutral700,
-                    text: primitive.neutral50,
-                    'text-secondary': primitive.neutral300,
-                    'text-muted': primitive.neutral500,
-                    blue: primitive.blue500,
-                    green: primitive.green500,
-                    amber: primitive.amber500,
-                    red: primitive.red500,
-                    /* DEPRECATED - do not use in new work. §2 permits
-                       exactly one accent hue, and purple was decorative
-                       (logo gradient, health bars, contributor palette).
-                       Handoff.jsx (page 6) no longer uses it. Still held by
-                       Settings.jsx (page 7, the Owner role pill) and by two
-                       screens outside the redesign scope, AuthPage.jsx (Clerk
-                       sign-in) and Landing.jsx. Deleting the token now emits
-                       no style at all rather than failing loudly, so it stays
-                       until page 7 lands and the two out-of-scope screens are
-                       migrated deliberately. */
+                    bg: 'var(--sm-bg)',
+                    surface: 'var(--sm-surface)',
+                    'surface-2': 'var(--sm-surface-2)',
+                    border: 'var(--sm-border)',
+                    'border-hover': 'var(--sm-border-hover)',
+                    text: 'var(--sm-text)',
+                    'text-secondary': 'var(--sm-text-secondary)',
+                    'text-muted': 'var(--sm-text-muted)',
+                    blue: '#4F7EFF',
+                    green: '#34D399',
+                    amber: '#F59E0B',
+                    red: '#EF4444',
                     purple: '#A78BFA',
                 },
-
-                /* LAYER 2 — SEMANTIC. What a component should reach for. */
-                surface: {
-                    DEFAULT: primitive.neutral900,
-                    page:    primitive.neutral950,
-                    hover:   primitive.neutral850,
-                },
-                hairline: {
-                    DEFAULT: primitive.neutral800,
-                    hover:   primitive.neutral700,
-                },
-                content: {
-                    DEFAULT:   primitive.neutral50,
-                    secondary: primitive.neutral300,
-                    /* label: readable micro-labels. NOT neutral500, which
-                       measures 2.20:1 and fails WCAG. See tokens.css. */
-                    label:     primitive.neutral300,
-                    muted:     primitive.neutral500,
-                },
-                /* Named `brand`, NOT `accent`. shadcn's own components use
-                   bg-accent / focus:bg-accent for neutral hover and focus
-                   surfaces; overriding that key would turn every dropdown
-                   item and menu highlight blue. */
-                brand: {
-                    DEFAULT: primitive.blue500,   /* links, active nav, bars   */
-                    fill:    primitive.blue600,   /* solid buttons: 4.63:1 AA  */
-                    hover:   primitive.blue400,
-                },
-                success: primitive.green500,
-                danger:  primitive.red500,
-                warning: primitive.amber500,
-
-                /* shadcn tokens — untouched, 46 vendored components depend on
-                   these resolving exactly as before. */
+                // shadcn tokens
                 background: 'hsl(var(--background))',
                 foreground: 'hsl(var(--foreground))',
                 card: {

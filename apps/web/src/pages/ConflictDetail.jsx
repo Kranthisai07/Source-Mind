@@ -1,76 +1,25 @@
 import React, { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, CheckCircle2 } from "lucide-react";
-import PageHeader from "../components/ui-kit/PageHeader";
-import InlineBar from "../components/ui-kit/InlineBar";
-import { Skeleton } from "../components/ui-kit/Skeleton";
-import ErrorState from "../components/ui-kit/ErrorState";
-import useApiResource from "../hooks/useApiResource";
+import TopBar from "../components/layout/TopBar";
 import StatusBadge from "../components/widgets/StatusBadge";
+import { PageLoadError } from "../components/widgets/PageLoadState";
+import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
 import { Button } from "../components/ui/button";
 import { toast } from "sonner";
+import useApiResource from "../hooks/useApiResource";
 import api from "../lib/api";
-import { relativeTime, severityColor } from "../lib/format";
 import { classifyApiError } from "../lib/apiError";
-import { validateResolution, buildResolutionPayload } from "../lib/conflictResolution";
-import { Input } from "../components/ui/input";
+import { buildResolutionPayload, validateResolution } from "../lib/conflictResolution";
+import { relativeTime, severityColor } from "../lib/format";
 
-/**
- * Page 5b of the Supermemory-console redesign.
- *
- * Verified against the authoritative response model (ConflictDetail in
- * apps/api/sourcemind/schemas/conflict.py) and a real populated response, not
- * against the empty corpus. Five defects, every one of which would fire the
- * moment a single conflict exists:
- *
- *   1. `c.contributors.map(...)` (old line 53) — `contributors` is not a field
- *      on ConflictDetail at all. Previously logged as "unreachable, zero
- *      conflicts exist"; unreachable is not fixed. It threw on the first
- *      conflict, and no re-pointing is possible because the API does not carry
- *      authorship here — so the contributor UI is removed rather than rewired.
- *   2. `c.memory_a_excerpt` / `c.memory_b_excerpt` — the fields are
- *      `memory_a.content` / `memory_b.content` (a nested MemoryRef).
- *   3. `c.detected_at` — the field is `created_at`.
- *   4. `c.severity.toUpperCase()` — severity is nullable
- *      (`ConflictSeverityLiteral | None`), so this threw on a null severity.
- *   5. "last edited 2d ago" was a hardcoded string rendered as fact.
- *
- * RESOLUTION VOCABULARY MISMATCH. resolve_conflict accepts exactly
- * kept_a | kept_b | merged | split | deferred. This page was sending
- * accept_a | accept_b | merge | mark_outdated | defer — none of which match,
- * so every button raised ValueError: Unknown resolution_type and returned 500.
- *
- * All five real actions are now wired. merged, split and deferred were never
- * a backend gap: resolve_conflict implements all three, they simply required
- * inputs this screen did not collect, which is frontend work. They now have a
- * merged-content editor, two tag fields and a datetime picker respectively,
- * each validated against the same condition the server raises ValueError on.
- *
- * mark_outdated is not offered. Its only origin is one line of demo narration
- * (docs/demo_script.md); it appears in no schema, route or decision record,
- * and kept_a/kept_b already retire the losing memory via
- * current_version = FALSE — so it would be a second label for an existing
- * action, implying an outcome that does not exist.
- */
-
-/**
- * Every action resolve_conflict accepts. All five are fully implemented
- * server-side; three simply needed inputs this screen never collected, which
- * is frontend work, not a backend gap.
- *
- * `mark_outdated` is deliberately absent. Its only origin is a line of demo
- * narration (docs/demo_script.md), it exists in no schema or route, and
- * kept_a/kept_b already retire the losing memory by setting
- * current_version = FALSE — so it would be a second label for an existing
- * action, implying an outcome that does not exist.
- */
 const OPTIONS = [
-    { key: "kept_a", label: "Accept A", hint: "Keeps memory A; retires memory B." },
-    { key: "kept_b", label: "Accept B", hint: "Keeps memory B; retires memory A." },
-    { key: "merged", label: "Merge both", hint: "Replaces both with one combined memory." },
-    { key: "split",  label: "Split by tag", hint: "Keeps both; adds a tag to each. Existing tags are preserved." },
-    { key: "deferred", label: "Defer", hint: "Revisit later; the conflict stays open." },
+    { key: "kept_a", label: "Accept A", hint: "Keeps memory A; retires memory B.", color: "#34D399" },
+    { key: "kept_b", label: "Accept B", hint: "Keeps memory B; retires memory A.", color: "#4F7EFF" },
+    { key: "merged", label: "Merge both", hint: "Replaces both with one combined memory.", color: "#A78BFA" },
+    { key: "split", label: "Split by tag", hint: "Keeps both and adds one tag to each.", color: "#F59E0B" },
+    { key: "deferred", label: "Defer", hint: "Revisit later; the conflict stays open.", color: "#8888A8" },
 ];
 
 const STAGES = ["open", "under_review", "resolved"];
@@ -87,154 +36,119 @@ export default function ConflictDetail() {
     const [fieldErrors, setFieldErrors] = useState({});
     const [submitting, setSubmitting] = useState(false);
 
-    // `.catch(() => setC(false))` collapsed 401, 403, 404, 429 and an offline
-    // browser into one "could not be loaded" line. resetKey = id so navigating
-    // between conflicts cannot show the previous one's data.
-    const { data: c, error, loading, retry } = useApiResource(
-        () => api.getConflict(id),
-        { resetKey: id }
-    );
-
+    const resource = useApiResource(() => api.getConflict(id), { resetKey: id });
+    const conflict = resource.data;
     const fields = { note, mergedContent, tagA, tagB, revisitAt };
 
     const submit = async () => {
-        // Guard against a double click and against a second submit while the
-        // first is still in flight. Resolution is not idempotent — merged
-        // creates a memory, split writes tags — so a duplicate is not harmless.
         if (!selected || submitting) return;
 
-        const { errors, ok } = validateResolution(selected, fields);
-        setFieldErrors(errors);
-        if (!ok) return;
+        const validation = validateResolution(selected, fields);
+        setFieldErrors(validation.errors);
+        if (!validation.ok) return;
 
         setSubmitting(true);
         try {
             await api.resolveConflict(id, buildResolutionPayload(selected, fields));
-            toast.success("Conflict resolved", {
-                description: `${OPTIONS.find(o => o.key === selected).label} · saved.`,
+            toast.success("Conflict updated", {
+                description: `${OPTIONS.find((option) => option.key === selected).label} · saved.`,
             });
-            // Refetch so the status badge and timeline reflect what the server
-            // actually stored, rather than navigating away on optimism.
-            await retry();
+            await resource.retry();
             setTimeout(() => navigate("/conflicts"), 600);
-        } catch (e) {
-            const classified = classifyApiError(e);
+        } catch (requestError) {
+            const classified = classifyApiError(requestError);
             toast.error(classified.title, {
-                description:
-                    e?.body?.error?.message || classified.detail,
+                description: requestError?.body?.error?.message || classified.detail,
             });
         } finally {
             setSubmitting(false);
         }
     };
 
-    if (error) {
+    if (resource.error) {
         return (
             <>
-                <PageHeader title="Conflict" subtitle="This conflict could not be loaded." />
-                <div className="sm-card">
-                    <ErrorState error={error} onRetry={retry} />
+                <TopBar title="Conflict" subtitle="This conflict could not be loaded" />
+                <div className="flex-1 px-8 py-6">
+                    <PageLoadError error={resource.error} onRetry={resource.retry} testId="error-state" />
                 </div>
             </>
         );
     }
 
-    if (loading || !c) {
+    if (resource.loading || !conflict) {
         return (
             <>
-                <PageHeader title="Conflict" subtitle="Loading…" />
-                <div
-                    className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-4"
-                    role="status"
-                    aria-busy="true"
-                    aria-label="Loading conflict"
-                >
-                    <div className="space-y-4">
-                        <div className="sm-card p-5 space-y-3">
-                            <Skeleton className="h-4 w-24" />
-                            <Skeleton className="h-[1em] w-full" />
-                            <Skeleton className="h-[1em] w-4/5" />
-                        </div>
-                        <Skeleton className="h-4 w-40 mx-auto" />
-                        <div className="sm-card p-5 space-y-3">
-                            <Skeleton className="h-4 w-24" />
-                            <Skeleton className="h-[1em] w-full" />
-                            <Skeleton className="h-[1em] w-3/5" />
-                        </div>
-                    </div>
-                    <div className="space-y-4">
-                        <Skeleton className="h-[112px] w-full rounded-card" />
-                        <Skeleton className="h-[280px] w-full rounded-card" />
-                    </div>
-                    <span className="sr-only">Loading conflict…</span>
+                <TopBar title="Conflict" subtitle="Loading…" />
+                <div className="flex-1 px-8 py-6 grid grid-cols-2 gap-4" role="status" aria-label="Loading conflict">
+                    <div className="sm-card h-[500px] shimmer" />
+                    <div className="sm-card h-[500px] shimmer" />
                 </div>
             </>
         );
     }
 
-    const severity = c.severity || null;
-    const currentStageIdx = STAGES.indexOf(c.status === "deferred" ? "open" : c.status);
-    const sim = typeof c.similarity_score === "number"
-        ? Math.round(c.similarity_score * 100)
+    const severity = conflict.severity || null;
+    const currentStageIdx = STAGES.indexOf(conflict.status === "deferred" ? "open" : conflict.status);
+    const similarity = typeof conflict.similarity_score === "number"
+        ? Math.round(conflict.similarity_score * 100)
         : null;
-
-    const subtitleParts = [
-        severity ? `${severity} severity` : null,
-        c.conflict_type,
-        c.created_at ? `detected ${relativeTime(c.created_at)}` : null,
-    ].filter(Boolean);
 
     return (
         <>
-            <PageHeader
-                title="Conflict"
-                subtitle={subtitleParts.join(" · ") || "No metadata recorded"}
-                action={
+            <TopBar
+                title={<span className="font-mono text-[14px]">{conflict.id}</span>}
+                subtitle={(
+                    <span className="inline-flex flex-wrap items-center gap-1.5">
+                        <StatusBadge status={conflict.status} />
+                        {severity && (
+                            <>
+                                <span>·</span>
+                                <span style={{ color: severityColor(severity) }}>{severity.toUpperCase()}</span>
+                            </>
+                        )}
+                        {conflict.conflict_type && <><span>·</span><span>{conflict.conflict_type}</span></>}
+                        {conflict.created_at && <><span>·</span><span>detected {relativeTime(conflict.created_at)}</span></>}
+                    </span>
+                )}
+                actions={(
                     <Button
                         variant="ghost"
                         size="sm"
                         onClick={() => navigate("/conflicts")}
-                        className="text-content-secondary"
+                        className="text-sm-text-secondary"
                         data-testid="conflict-back"
                     >
                         <ArrowLeft className="w-4 h-4" /> Back
                     </Button>
-                }
+                )}
             />
 
-            <div className="flex items-center gap-2.5 mb-5">
-                <StatusBadge status={c.status} />
-                {severity && (
-                    <span
-                        className="font-mono text-[10.5px] uppercase tracking-wider"
-                        style={{ color: severityColor(severity) }}
-                    >
-                        ● {severity}
-                    </span>
-                )}
-                <code className="font-mono text-[11px] text-content-secondary select-all">{c.id}</code>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-4">
+            <div className="flex-1 px-8 py-6 grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-4">
                 <section className="space-y-4">
-                    <ExcerptCard label="Memory A" memory={c.memory_a} />
+                    <ExcerptCard label="Memory A" memory={conflict.memory_a} color="#4F7EFF" />
                     <div className="flex items-center gap-3">
-                        <div className="flex-1 h-px bg-hairline" />
-                        <span className="sm-micro-label px-2 py-0.5 rounded-md border border-hairline bg-surface">
-                            {c.conflict_type || "conflict"}
+                        <div className="flex-1 h-px bg-sm-border" />
+                        <span className="font-mono text-[10.5px] uppercase tracking-wider text-sm-text-muted px-2 py-0.5 rounded-md border border-sm-border bg-sm-surface">
+                            {conflict.conflict_type || "conflict"}
                         </span>
-                        <div className="flex-1 h-px bg-hairline" />
+                        <div className="flex-1 h-px bg-sm-border" />
                     </div>
-                    <ExcerptCard label="Memory B" memory={c.memory_b} />
+                    <ExcerptCard label="Memory B" memory={conflict.memory_b} color="#A78BFA" />
 
-                    {c.explanation && (
+                    {conflict.explanation && (
                         <div className="sm-card p-5">
-                            <h2 className="sm-micro-label mb-2">Why this was flagged</h2>
-                            <p className="text-body text-content leading-relaxed">{c.explanation}</p>
-                            {sim !== null && (
-                                <div className="flex items-center gap-2 mt-4 pt-4 border-t border-hairline">
-                                    <span className="sm-micro-label">Similarity</span>
-                                    <InlineBar value={sim} width="96px" />
+                            <h2 className="font-mono text-[10.5px] uppercase tracking-wider text-sm-text-muted mb-2">Why this was flagged</h2>
+                            <p className="text-[13px] text-sm-text leading-relaxed">{conflict.explanation}</p>
+                            {similarity !== null && (
+                                <div className="mt-4 pt-4 border-t border-sm-border">
+                                    <div className="flex items-center justify-between font-mono text-[10.5px] uppercase tracking-wider text-sm-text-muted mb-2">
+                                        <span>Similarity</span>
+                                        <span>{similarity}%</span>
+                                    </div>
+                                    <div className="h-1.5 rounded-full bg-sm-border/60 overflow-hidden" role="progressbar" aria-valuenow={similarity} aria-valuemin="0" aria-valuemax="100">
+                                        <div className="h-full bg-sm-blue" style={{ width: `${similarity}%` }} />
+                                    </div>
                                 </div>
                             )}
                         </div>
@@ -243,27 +157,22 @@ export default function ConflictDetail() {
 
                 <aside className="space-y-4">
                     <section className="sm-card p-5">
-                        <h2 className="text-title text-content mb-4">Status</h2>
+                        <h3 className="text-[13px] font-semibold text-sm-text mb-4">Status Timeline</h3>
                         <div className="flex items-center">
-                            {STAGES.map((s, i) => {
-                                const active = i <= currentStageIdx;
+                            {STAGES.map((stage, index) => {
+                                const active = index <= currentStageIdx;
                                 return (
-                                    <React.Fragment key={s}>
+                                    <React.Fragment key={stage}>
                                         <div className="flex flex-col items-center flex-1">
-                                            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold font-mono ${
-                                                active ? "bg-brand-fill text-white" : "bg-surface-hover text-content-muted"
-                                            }`}>
-                                                {active ? <CheckCircle2 className="w-4 h-4" /> : i + 1}
+                                            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold font-mono ${active ? "bg-sm-blue text-white" : "bg-sm-border/50 text-sm-text-muted"}`}>
+                                                {active ? <CheckCircle2 className="w-4 h-4" /> : index + 1}
                                             </div>
-                                            <span
-                                                className="mt-2 sm-micro-label"
-                                                style={active ? { color: "var(--c-text-primary)" } : undefined}
-                                            >
-                                                {s.replace("_", " ")}
+                                            <span className={`mt-2 text-[10.5px] font-mono uppercase tracking-wider ${active ? "text-sm-text" : "text-sm-text-muted"}`}>
+                                                {stage.replace("_", " ")}
                                             </span>
                                         </div>
-                                        {i < STAGES.length - 1 && (
-                                            <div className={`h-0.5 flex-1 ${i < currentStageIdx ? "bg-brand" : "bg-hairline"}`} />
+                                        {index < STAGES.length - 1 && (
+                                            <div className={`h-0.5 flex-1 ${index < currentStageIdx ? "bg-sm-blue" : "bg-sm-border"}`} />
                                         )}
                                     </React.Fragment>
                                 );
@@ -272,46 +181,41 @@ export default function ConflictDetail() {
                     </section>
 
                     <section className="sm-card p-5">
-                        <h2 className="text-title text-content mb-4">Resolve</h2>
+                        <h3 className="text-[13px] font-semibold text-sm-text mb-4">Resolve</h3>
                         <div className="grid grid-cols-1 gap-2 mb-4">
-                            {OPTIONS.map((o) => (
+                            {OPTIONS.map((option) => (
                                 <button
-                                    key={o.key}
-                                    data-testid={`resolve-${o.key}`}
-                                    onClick={() => { setSelected(o.key); setFieldErrors({}); }}
-                                    title={o.hint}
-                                    /* §2: selection is the accent; no per-option hue. */
-                                    className={`h-10 px-4 rounded-md text-body font-medium transition-colors
-                                                flex items-center justify-between sm-focusable ${
-                                        selected === o.key
-                                            ? "bg-brand/10 border border-brand/40 text-content"
-                                            : "bg-surface border border-hairline text-content-secondary hover:text-content hover:border-hairline-hover"
+                                    key={option.key}
+                                    data-testid={`resolve-${option.key}`}
+                                    onClick={() => { setSelected(option.key); setFieldErrors({}); }}
+                                    title={option.hint}
+                                    className={`h-10 px-4 rounded-lg text-[12.5px] font-medium transition-all active:scale-[0.97] flex items-center justify-between ${
+                                        selected === option.key
+                                            ? "border text-sm-text"
+                                            : "bg-white/[0.03] border border-sm-border text-sm-text-secondary hover:text-sm-text"
                                     }`}
+                                    style={selected === option.key ? { borderColor: option.color, background: `${option.color}18` } : {}}
                                 >
-                                    <span>{o.label}</span>
-                                    {selected === o.key && (
-                                        <CheckCircle2 className="w-4 h-4 text-brand" />
-                                    )}
+                                    <span className="flex items-center gap-2.5">
+                                        <span className="w-2 h-2 rounded-full" style={{ background: option.color }} />
+                                        {option.label}
+                                    </span>
+                                    {selected === option.key && <CheckCircle2 className="w-4 h-4" style={{ color: option.color }} />}
                                 </button>
                             ))}
                         </div>
 
-                        {/* Only the chosen action's inputs are shown. Each is
-                            required by resolve_conflict, which raises
-                            ValueError without it. */}
                         {selected === "merged" && (
                             <div className="mb-4">
-                                <label htmlFor="merged-content" className="sm-micro-label block mb-2">
-                                    Merged content
-                                </label>
+                                <label htmlFor="merged-content" className="font-mono text-[10.5px] uppercase tracking-wider text-sm-text-muted block mb-2">Merged content</label>
                                 <Textarea
                                     id="merged-content"
                                     data-testid="merged-content"
                                     value={mergedContent}
-                                    onChange={(e) => setMergedContent(e.target.value)}
+                                    onChange={(event) => setMergedContent(event.target.value)}
                                     placeholder="The single statement that replaces both memories…"
                                     rows={5}
-                                    className="bg-surface-page border-hairline text-content placeholder:text-content-muted font-mono text-[12.5px] resize-none"
+                                    className="bg-sm-bg/60 border-sm-border text-sm-text placeholder:text-sm-text-muted font-mono text-[12.5px] resize-none"
                                 />
                                 <FieldError message={fieldErrors.mergedContent} />
                             </div>
@@ -320,27 +224,13 @@ export default function ConflictDetail() {
                         {selected === "split" && (
                             <div className="mb-4 grid grid-cols-2 gap-2">
                                 <div>
-                                    <label htmlFor="tag-a" className="sm-micro-label block mb-2">Tag for A</label>
-                                    <Input
-                                        id="tag-a"
-                                        data-testid="tag-a"
-                                        value={tagA}
-                                        onChange={(e) => setTagA(e.target.value)}
-                                        placeholder="tag to add to A"
-                                        className="bg-surface-page border-hairline text-content font-mono text-[12.5px] h-9"
-                                    />
+                                    <label htmlFor="tag-a" className="font-mono text-[10.5px] uppercase tracking-wider text-sm-text-muted block mb-2">Tag for A</label>
+                                    <Input id="tag-a" data-testid="tag-a" value={tagA} onChange={(event) => setTagA(event.target.value)} placeholder="tag to add to A" className="bg-sm-bg/60 border-sm-border text-sm-text font-mono text-[12.5px] h-9" />
                                     <FieldError message={fieldErrors.tagA} />
                                 </div>
                                 <div>
-                                    <label htmlFor="tag-b" className="sm-micro-label block mb-2">Tag for B</label>
-                                    <Input
-                                        id="tag-b"
-                                        data-testid="tag-b"
-                                        value={tagB}
-                                        onChange={(e) => setTagB(e.target.value)}
-                                        placeholder="tag to add to B"
-                                        className="bg-surface-page border-hairline text-content font-mono text-[12.5px] h-9"
-                                    />
+                                    <label htmlFor="tag-b" className="font-mono text-[10.5px] uppercase tracking-wider text-sm-text-muted block mb-2">Tag for B</label>
+                                    <Input id="tag-b" data-testid="tag-b" value={tagB} onChange={(event) => setTagB(event.target.value)} placeholder="tag to add to B" className="bg-sm-bg/60 border-sm-border text-sm-text font-mono text-[12.5px] h-9" />
                                     <FieldError message={fieldErrors.tagB} />
                                 </div>
                             </div>
@@ -348,52 +238,31 @@ export default function ConflictDetail() {
 
                         {selected === "deferred" && (
                             <div className="mb-4">
-                                <label htmlFor="revisit-at" className="sm-micro-label block mb-2">
-                                    Revisit at
-                                </label>
-                                <Input
-                                    id="revisit-at"
-                                    data-testid="revisit-at"
-                                    type="datetime-local"
-                                    value={revisitAt}
-                                    onChange={(e) => setRevisitAt(e.target.value)}
-                                    className="bg-surface-page border-hairline text-content font-mono text-[12.5px] h-9"
-                                />
-                                {/* datetime-local has no offset. It is converted
-                                    to a UTC instant before sending, because the
-                                    column is TIMESTAMP(timezone=True). */}
-                                <p className="text-[10.5px] text-content-muted mt-1.5">
-                                    Interpreted in your local timezone and stored as UTC.
-                                </p>
+                                <label htmlFor="revisit-at" className="font-mono text-[10.5px] uppercase tracking-wider text-sm-text-muted block mb-2">Revisit at</label>
+                                <Input id="revisit-at" data-testid="revisit-at" type="datetime-local" value={revisitAt} onChange={(event) => setRevisitAt(event.target.value)} className="bg-sm-bg/60 border-sm-border text-sm-text font-mono text-[12.5px] h-9" />
+                                <p className="text-[10.5px] text-sm-text-muted mt-1.5">Interpreted in your local timezone and stored as UTC.</p>
                                 <FieldError message={fieldErrors.revisitAt} />
                             </div>
                         )}
 
-                        <label htmlFor="resolve-note" className="sm-micro-label block mb-2">
-                            Resolution note
-                        </label>
-                        {/* Re-enabled. This was disabled because the client
-                            sent `note`, a key ResolveBody does not declare, so
-                            Pydantic dropped every note silently. The adapter
-                            now sends `resolution_note`, which reaches
-                            `resolution_note = :note` in resolver.py. */}
+                        <label htmlFor="resolve-note" className="font-mono text-[10.5px] uppercase tracking-wider text-sm-text-muted block mb-2">Resolution note</label>
                         <Textarea
                             id="resolve-note"
                             data-testid="resolve-note"
                             value={note}
-                            onChange={(e) => setNote(e.target.value)}
+                            onChange={(event) => setNote(event.target.value)}
                             placeholder="Why this resolution? (optional)"
                             rows={3}
-                            className="bg-surface-page border-hairline text-content placeholder:text-content-muted text-body resize-none mb-4"
+                            className="bg-sm-bg/60 border-sm-border text-sm-text placeholder:text-sm-text-muted text-[12.5px] resize-none mb-4"
                         />
 
                         <Button
                             data-testid="confirm-resolution"
                             onClick={submit}
                             disabled={!selected || submitting}
-                            className="w-full bg-brand-fill hover:bg-brand-fill-hover text-white disabled:opacity-40"
+                            className="w-full bg-sm-blue hover:bg-sm-blue/90 text-white disabled:opacity-40"
                         >
-                            {submitting ? "Saving…" : "Confirm resolution"}
+                            {submitting ? "Saving…" : "Confirm Resolution"}
                         </Button>
                     </section>
                 </aside>
@@ -402,33 +271,19 @@ export default function ConflictDetail() {
     );
 }
 
-function ExcerptCard({ label, memory }) {
-    // `memory` is a MemoryRef: { id, content }. The old code read a flat
-    // `memory_a_excerpt` string that the API never returned.
+function ExcerptCard({ label, memory, color }) {
     return (
         <div className="sm-card p-5">
             <div className="flex items-center justify-between gap-3 mb-3">
-                <span className="sm-micro-label">{label}</span>
-                {memory?.id && (
-                    <code className="font-mono text-[10.5px] text-content-muted truncate select-all">
-                        {memory.id}
-                    </code>
-                )}
+                <span className="font-mono text-[10.5px] uppercase tracking-wider" style={{ color }}>{label}</span>
+                {memory?.id && <code className="font-mono text-[10.5px] text-sm-text-muted truncate select-all">{memory.id}</code>}
             </div>
-            {/* §3: memory content is data → mono. */}
-            <p className="font-mono text-[12.5px] text-content leading-relaxed">
-                {memory?.content || "—"}
-            </p>
+            <p className="font-mono text-[12.5px] text-sm-text leading-relaxed">{memory?.content || "—"}</p>
         </div>
     );
 }
 
-/** Inline validation message. §2: red only where it is semantic. */
 function FieldError({ message }) {
     if (!message) return null;
-    return (
-        <p role="alert" className="text-[11px] text-danger mt-1.5">
-            {message}
-        </p>
-    );
+    return <p role="alert" className="text-[11px] text-red-400 mt-1.5">{message}</p>;
 }

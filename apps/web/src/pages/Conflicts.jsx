@@ -1,260 +1,197 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ShieldCheck } from "lucide-react";
-import PageHeader from "../components/ui-kit/PageHeader";
-import EmptyState from "../components/ui-kit/EmptyState";
-import InlineBar from "../components/ui-kit/InlineBar";
-import { Skeleton } from "../components/ui-kit/Skeleton";
-import ErrorState from "../components/ui-kit/ErrorState";
-import useApiResource from "../hooks/useApiResource";
+import { AlertTriangle } from "lucide-react";
+import TopBar from "../components/layout/TopBar";
 import StatusBadge from "../components/widgets/StatusBadge";
+import { PageLoadError } from "../components/widgets/PageLoadState";
+import useApiResource from "../hooks/useApiResource";
 import api from "../lib/api";
 import { relativeTime, severityColor } from "../lib/format";
 
-/**
- * Page 5 of the Supermemory-console redesign.
- *
- * The workspace currently holds zero conflicts, so nothing here throws today.
- * That is NOT the same as correct — WORKING_STANDARDS rule 7. Verified against
- * a real populated response (one conflict created in a disposable workspace)
- * and against the authoritative response model, ConflictSummary in
- * apps/api/sourcemind/schemas/conflict.py. Four field mismatches:
- *
- *   reads              actual                     effect once a conflict exists
- *   -----------------  -------------------------  ------------------------------
- *   c.contributors     (does not exist)           .map() throws — page crashes
- *   c.detected_at      created_at                 "Invalid Date"
- *   c.memory_a_excerpt memory_a_content           blank excerpt
- *   c.memory_b_excerpt memory_b_content           blank excerpt
- *
- * `contributors` is not a field the API can supply at all — ConflictSummary
- * exposes memory ids and contents, not authorship — so the ContributorStack is
- * removed rather than re-pointed. Deriving it would need a per-memory
- * attribution fetch, which is a data-layer change and out of scope here.
- *
- * The list response also carries `similarity_score` and `explanation`, both
- * previously unused; they are now shown, since they are what actually explains
- * why two memories were flagged.
- */
-
 const STATUS_TABS = [
-    { key: "all",          label: "All"          },
-    { key: "open",         label: "Open"         },
-    { key: "under_review", label: "Under review" },
-    { key: "resolved",     label: "Resolved"     },
-    { key: "deferred",     label: "Deferred"     },
+    { key: "all", label: "All" },
+    { key: "open", label: "Open" },
+    { key: "under_review", label: "Under Review" },
+    { key: "resolved", label: "Resolved" },
+    { key: "deferred", label: "Deferred" },
 ];
 
 export default function Conflicts() {
     const navigate = useNavigate();
     const [status, setStatus] = useState("all");
-    // `.catch(() => setConflicts([]))` previously turned 401/403/404/429 and
-    // an offline browser into "No conflicts yet" — indistinguishable from a
-    // genuinely clean workspace.
-    const { data, error, loading, retry } = useApiResource(
-        // "all" is a UI-only sentinel, not a status the API knows. The route
-        // does `if conflict_status:` and appends `mc.status = :status`, so the
-        // truthy string "all" filters for a literal status of 'all' and
-        // matches nothing. Passing null omits the parameter entirely, because
-        // realApi's request() skips null params while a destructuring default
-        // would substitute "all" back in for undefined.
-        () => api.listConflicts(undefined, { status: status === "all" ? null : status }),
-        { resetKey: status }
+    const [cursor, setCursor] = useState(null);
+    const [conflicts, setConflicts] = useState([]);
+    const [nextCursor, setNextCursor] = useState(null);
+    const selectedStatus = status === "all" ? null : status;
+    const resource = useApiResource(
+        async () => ({
+            ...(await api.listConflicts(undefined, {
+                status: selectedStatus,
+                ...(cursor ? { cursor } : {}),
+            })),
+            requestedStatus: status,
+            requestedCursor: cursor,
+        }),
+        { deps: [status, cursor], resetKey: `${status}:${cursor || "first"}` }
     );
 
-    const conflicts = Array.isArray(data?.conflicts) ? data.conflicts : null;
+    useEffect(() => {
+        if (!resource.data) return;
+        if (resource.data.requestedStatus !== status || resource.data.requestedCursor !== cursor) return;
 
-    const rows = conflicts ?? [];
-    const stateWord = status !== "all" ? `${status.replace("_", " ")} ` : "";
+        const page = Array.isArray(resource.data.conflicts) ? resource.data.conflicts : [];
+        setConflicts((current) => {
+            if (!cursor) return page;
+            const seen = new Set(current.map((conflict) => conflict.id));
+            return [...current, ...page.filter((conflict) => !seen.has(conflict.id))];
+        });
+        setNextCursor(resource.data.next_cursor || null);
+    }, [cursor, resource.data, status]);
+
+    const selectStatus = (nextStatus) => {
+        if (nextStatus === status) return;
+        setStatus(nextStatus);
+        setCursor(null);
+        setConflicts([]);
+        setNextCursor(null);
+    };
 
     return (
         <>
-            <PageHeader
+            <TopBar
                 title="Conflicts"
-                subtitle="Mutually exclusive claims detected between memories, and where each one stands."
+                subtitle={`${conflicts.length} ${status !== "all" ? `${status.replace("_", " ")} ` : ""}conflict${conflicts.length === 1 ? "" : "s"}`}
             />
-
-            <div
-                className="flex items-center gap-1 bg-surface border border-hairline rounded-md p-1 w-fit mb-5"
-                data-testid="conflicts-tabs"
-                role="group"
-                aria-label="Filter by status"
-            >
-                {STATUS_TABS.map((t) => (
-                    <button
-                        key={t.key}
-                        data-testid={`conflict-tab-${t.key}`}
-                        onClick={() => setStatus(t.key)}
-                        aria-pressed={status === t.key}
-                        /* §2: an active tab pill is on the accent's permitted list. */
-                        className={`h-8 px-3.5 rounded-md text-body font-medium transition-colors sm-focusable ${
-                            status === t.key
-                                ? "bg-brand/10 text-brand"
-                                : "text-content-secondary hover:text-content hover:bg-white/[0.03]"
-                        }`}
-                    >
-                        {t.label}
-                    </button>
-                ))}
-            </div>
-
-            {error ? (
-                <div className="sm-card">
-                    <ErrorState error={error} onRetry={retry} />
-                </div>
-            ) : loading ? (
-                /* §6: skeletons, never spinners, shaped like the real card. */
-                <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading conflicts">
-                    {Array.from({ length: 3 }).map((_, i) => (
-                        <div key={i} className="sm-card p-5 space-y-4">
-                            <div className="flex justify-between">
-                                <Skeleton className="h-5 w-40 rounded-md" />
-                                <Skeleton className="h-5 w-32 rounded-md" />
-                            </div>
-                            <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-3">
-                                <Skeleton className="h-[72px] rounded-md" />
-                                <Skeleton className="h-[72px] w-10 rounded-md" />
-                                <Skeleton className="h-[72px] rounded-md" />
-                            </div>
-                            <Skeleton className="h-4 w-48" />
-                        </div>
+            <div className="flex-1 px-8 py-6 space-y-5">
+                <div className="flex items-center gap-1 bg-sm-surface border border-sm-border rounded-lg p-1 w-fit" data-testid="conflicts-tabs" role="group" aria-label="Filter by status">
+                    {STATUS_TABS.map((tab) => (
+                        <button
+                            key={tab.key}
+                            data-testid={`conflict-tab-${tab.key}`}
+                            onClick={() => selectStatus(tab.key)}
+                            aria-pressed={status === tab.key}
+                            className={`h-8 px-3.5 rounded-md text-[12px] font-medium transition-colors ${
+                                status === tab.key
+                                    ? "bg-sm-blue/15 text-sm-blue"
+                                    : "text-sm-text-secondary hover:text-sm-text"
+                            }`}
+                        >
+                            {tab.label}
+                        </button>
                     ))}
-                    <span className="sr-only">Loading conflicts…</span>
                 </div>
-            ) : rows.length === 0 ? (
-                /* §5, exact template: centred outline icon -> bold "No ___ yet"
-                   headline -> one grey explanatory sentence. No action button:
-                   there is nothing to link to until a conflict is detected, and
-                   the reference marks the button optional. */
-                <div className="sm-card">
-                    <EmptyState
-                        testId="conflicts-empty"
-                        icon={ShieldCheck}
-                        headline={
-                            status === "all"
-                                ? "No conflicts yet"
-                                : `No ${status.replace("_", " ")} conflicts yet`
-                        }
-                        description={
-                            status === "all"
-                                ? "Conflicts are flagged when two contributors make mutually exclusive claims about the same decision. Nothing has been flagged in this workspace."
-                                : "Nothing sits in this state right now. Switch the filter to see conflicts at other stages."
-                        }
-                    />
-                </div>
-            ) : (
-                <>
+
+                {resource.error && conflicts.length === 0 ? (
+                    <PageLoadError error={resource.error} onRetry={resource.retry} testId="conflicts-error" />
+                ) : resource.loading && conflicts.length === 0 ? (
+                    <div className="space-y-3" role="status" aria-label="Loading conflicts">
+                        {Array.from({ length: 3 }).map((_, index) => <div key={index} className="sm-card h-[180px] shimmer" />)}
+                    </div>
+                ) : conflicts.length === 0 ? (
+                    <div className="sm-card py-20 text-center">
+                        <AlertTriangle className="w-10 h-10 text-sm-text-muted mx-auto mb-3" strokeWidth={1.5} />
+                        <p className="text-sm-text">No conflicts in this state.</p>
+                        <p className="text-[12px] text-sm-text-secondary mt-1">Nothing has been flagged for this filter.</p>
+                    </div>
+                ) : (
                     <div className="space-y-3">
-                        {rows.map((c) => (
-                            <ConflictRow key={c.id} c={c} onOpen={() => navigate(`/conflicts/${c.id}`)} />
+                        {conflicts.map((conflict) => (
+                            <ConflictRow
+                                key={conflict.id}
+                                conflict={conflict}
+                                onOpen={() => navigate(`/conflicts/${conflict.id}`)}
+                            />
                         ))}
+                        {resource.error && (
+                            <PageLoadError error={resource.error} onRetry={resource.retry} testId="conflicts-page-error" compact />
+                        )}
+                        {nextCursor && !resource.error && (
+                            <button
+                                type="button"
+                                data-testid="conflicts-load-more"
+                                disabled={resource.loading}
+                                onClick={() => setCursor(nextCursor)}
+                                className="w-full h-10 rounded-md border border-sm-border bg-sm-surface text-[12px] font-medium text-sm-text-secondary hover:text-sm-text hover:border-sm-border-hover disabled:opacity-50"
+                            >
+                                {resource.loading ? "Loading more conflicts…" : "Load more conflicts"}
+                            </button>
+                        )}
                     </div>
-                    <div className="flex items-center justify-between mt-5 pt-4 border-t border-hairline">
-                        <span className="font-mono text-[11px] text-content-secondary">
-                            {rows.length} {stateWord}conflict{rows.length === 1 ? "" : "s"}
-                        </span>
-                    </div>
-                </>
-            )}
+                )}
+            </div>
         </>
     );
 }
 
-function ConflictRow({ c, onOpen }) {
-    const severity = c.severity || null;
-    // similarity_score is 0–1 on the wire.
-    const sim = typeof c.similarity_score === "number"
-        ? Math.round(c.similarity_score * 100)
+function ConflictRow({ conflict, onOpen }) {
+    const severity = conflict.severity || null;
+    const similarity = typeof conflict.similarity_score === "number"
+        ? Math.round(conflict.similarity_score * 100)
         : null;
 
     return (
         <article
-            data-testid={`conflict-card-${c.id}`}
+            data-testid={`conflict-card-${conflict.id}`}
             onClick={onOpen}
-            onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); }
+            onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onOpen();
+                }
             }}
             role="link"
             tabIndex={0}
-            className="sm-card p-5 cursor-pointer hover:border-hairline-hover transition-colors sm-focusable"
+            className="sm-card p-5 cursor-pointer"
         >
-            <div className="flex items-center justify-between gap-4 mb-4">
+            <div className="flex items-center justify-between gap-4 mb-3">
                 <div className="flex items-center gap-2.5 min-w-0">
-                    <StatusBadge status={c.status} />
-                    <span className="font-mono text-[11px] text-content-secondary truncate">
-                        {c.id}
-                    </span>
+                    <StatusBadge status={conflict.status} />
+                    <span className="font-mono text-[11px] text-sm-text-secondary truncate">{conflict.id}</span>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
                     {severity && (
-                        /* §2: severity is semantic, so it is one of the three
-                           status tokens — low/medium/critical map to
-                           success/warning/danger. Never decorative. */
-                        <span
-                            data-testid={`conflict-severity-${severity}`}
-                            className="font-mono text-[10.5px] uppercase tracking-wider"
-                            style={{ color: severityColor(severity) }}
-                        >
-                            ● {severity}
+                        <span data-testid={`conflict-severity-${severity}`} className="font-mono text-[10.5px] uppercase tracking-wider" style={{ color: severityColor(severity) }}>
+                            ● {severity} severity
                         </span>
                     )}
-                    <span className="font-mono text-[11px] text-content-secondary">
-                        {c.created_at ? relativeTime(c.created_at) : "—"}
+                    <span className="font-mono text-[11px] text-sm-text-secondary">
+                        {conflict.created_at ? relativeTime(conflict.created_at) : "—"}
                     </span>
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-3 items-stretch mb-4">
-                <Excerpt label="Memory A" text={c.memory_a_content} />
+            <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-3 items-start mb-4">
+                <ConflictExcerpt text={conflict.memory_a_content} label="MEMORY A" color="#4F7EFF" />
                 <div className="flex items-center justify-center">
-                    <span className="sm-micro-label px-2 py-1 rounded bg-surface-page border border-hairline">
-                        vs
-                    </span>
+                    <span className="font-mono text-[10.5px] text-sm-text-muted uppercase tracking-wider px-2 py-1 rounded bg-sm-border/30">vs</span>
                 </div>
-                <Excerpt label="Memory B" text={c.memory_b_content} />
+                <ConflictExcerpt text={conflict.memory_b_content} label="MEMORY B" color="#A78BFA" />
             </div>
 
-            {c.explanation && (
-                <p className="text-body text-content-secondary leading-snug mb-4">
-                    {c.explanation}
-                </p>
-            )}
+            {conflict.explanation && <p className="text-[12.5px] text-sm-text-secondary leading-snug mb-4">{conflict.explanation}</p>}
 
-            <div className="flex items-center justify-between gap-4 pt-3 border-t border-hairline">
-                <div className="flex items-center gap-4 min-w-0">
-                    {c.conflict_type && (
-                        <span className="sm-micro-label">{c.conflict_type}</span>
-                    )}
-                    {sim !== null && (
-                        <div className="flex items-center gap-2">
-                            <span className="sm-micro-label">Similarity</span>
-                            {/* §4.5 — number and bar in one cell. */}
-                            <InlineBar value={sim} width="56px" />
-                        </div>
-                    )}
+            <div className="flex items-center justify-between pt-3 border-t border-sm-border">
+                <div className="flex items-center gap-3">
+                    {conflict.conflict_type && <span className="font-mono text-[11px] text-sm-text-secondary">{conflict.conflict_type}</span>}
+                    {similarity !== null && <span className="font-mono text-[10.5px] text-sm-text-muted">Similarity {similarity}%</span>}
                 </div>
                 <button
-                    data-testid={`start-review-${c.id}`}
-                    onClick={(e) => { e.stopPropagation(); onOpen(); }}
-                    className="h-8 px-3 rounded-md border border-hairline bg-surface
-                               hover:border-hairline-hover text-body font-medium text-content
-                               transition-colors shrink-0 sm-focusable"
+                    data-testid={`start-review-${conflict.id}`}
+                    className="h-8 px-3 rounded-md bg-sm-blue/15 border border-sm-blue/30 text-sm-blue text-[11.5px] font-medium hover:bg-sm-blue/25"
+                    onClick={(event) => { event.stopPropagation(); onOpen(); }}
                 >
-                    Review →
+                    Start Review →
                 </button>
             </div>
         </article>
     );
 }
 
-function Excerpt({ label, text }) {
+function ConflictExcerpt({ text, label, color }) {
     return (
-        <div className="rounded-md border border-hairline bg-surface-page p-3">
-            <div className="sm-micro-label mb-1.5">{label}</div>
-            {/* §3: memory content is data → mono. */}
-            <p className="font-mono text-[12px] text-content leading-snug line-clamp-3">
-                {text || "—"}
-            </p>
+        <div className="rounded-lg border border-sm-border bg-sm-bg/40 p-3">
+            <div className="font-mono text-[10px] uppercase tracking-wider mb-1.5" style={{ color }}>{label}</div>
+            <p className="text-[12.5px] text-sm-text leading-snug line-clamp-3">{text || "—"}</p>
         </div>
     );
 }

@@ -1,314 +1,153 @@
 import React from "react";
 import { KeyRound, Trash2, UserPlus } from "lucide-react";
-import PageHeader from "../components/ui-kit/PageHeader";
-import EmptyState from "../components/ui-kit/EmptyState";
-import { Skeleton } from "../components/ui-kit/Skeleton";
-import ErrorState from "../components/ui-kit/ErrorState";
-import useApiResource from "../hooks/useApiResource";
+import TopBar from "../components/layout/TopBar";
+import ContributorAvatar from "../components/widgets/ContributorAvatar";
+import { PageLoadError, PageLoading } from "../components/widgets/PageLoadState";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
 import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
+import useApiResource from "../hooks/useApiResource";
 import api from "../lib/api";
 import { formatDate } from "../lib/format";
 
-/**
- * Page 7, the final page of the Supermemory-console redesign.
- *
- * §4.13 is "stacked full-width cards, each a distinct concern ... Danger zone
- * visually distinguished with a red section title and a red-outlined button".
- * The tab strip is therefore gone: the reference's settings screen has no
- * tabs, and four concerns split across four tabs hid the danger zone behind a
- * click.
- *
- * §4.16 is the member table: MEMBER (avatar-less, name stacked over its
- * secondary line) / ROLE / ACCESS / JOINED, with the count in a footer line
- * and a primary Invite button in the page's top-right, outside the card.
- *
- * Verified against the real GET /v1/workspaces/{ws}/members. Every field the
- * old page read was wrong, because the response nests the user:
- *
- *   [{ user: { id, display_name, avatar_url }, role, joined_at }]
- *
- *   m.id / m.name / m.login   -> undefined (they live under m.user)
- *   m.email                   -> does not exist ANYWHERE; UserSummary carries
- *                                only id, display_name, avatar_url
- *   m.role                    -> 'admin', lowercase. The page compared against
- *                                "Owner" and "Admin", so both branches were
- *                                dead and every member got the fallback pill
- *   m.role !== "Owner"        -> always true, so the DELETE button rendered on
- *                                owners as well
- *   key={m.id}                -> undefined for every row (duplicate React keys)
- *
- * `joined_at` was available and unused; §4.16 wants it, so it is now a column.
- *
- * Role is rendered as plain text, per §4.16 ("ROLE ('Owner')"), not as a
- * coloured pill. That also removes the last sm-purple usage in the redesign
- * scope and sidesteps WORKING_STANDARDS rule 9 entirely — there is no
- * dynamically-constructed class left to mis-compile.
- */
-
-// The four roles WorkspaceRole defines, and what each can do. Access is
-// derived from the role's documented semantics in models/workspace.py; the
-// API does not send an access field.
 const ACCESS_BY_ROLE = {
-    owner:  "Full",
-    admin:  "Manage",
+    owner: "Full",
+    admin: "Manage",
     member: "Edit",
     viewer: "Read-only",
 };
 
 export default function Settings() {
-    // Both previously collapsed failures into an empty list / null workspace,
-    // so a revoked member saw an empty-but-plausible settings page.
-    const membersRes = useApiResource(() => api.listTeamMembers());
-    const workspaceRes = useApiResource(() => api.getWorkspace());
-
-    const members = membersRes.error
-        ? null
-        : (Array.isArray(membersRes.data?.members) ? membersRes.data.members : null);
-    const workspace = workspaceRes.data ?? null;
-    const wsName = workspace?.name ?? "";
-
-    const wsSlug = workspace?.slug ?? "";
-    const rows = members ?? [];
+    const workspaceResource = useApiResource(() => api.getWorkspace());
+    const membersResource = useApiResource(() => api.listTeamMembers());
+    const workspace = workspaceResource.data;
+    const members = Array.isArray(membersResource.data?.members) ? membersResource.data.members : [];
+    const workspaceName = workspace?.name ?? "";
+    const workspaceSlug = workspace?.slug ?? "";
 
     return (
         <>
-            <PageHeader
+            <TopBar
                 title="Settings"
-                subtitle={
-                    workspace
-                        ? `Workspace, members and access for ${workspace.name}.`
-                        : "Workspace, members and access."
-                }
+                subtitle={workspace ? `Workspace and access for ${workspace.name}` : "Workspace and access"}
             />
+            <div className="flex-1 px-8 py-6">
+                <Tabs defaultValue="workspace" className="w-full">
+                    <TabsList className="bg-sm-surface border border-sm-border p-1 h-10 mb-6" data-testid="settings-tabs">
+                        <TabsTrigger value="workspace" data-testid="tab-workspace" className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">Workspace</TabsTrigger>
+                        <TabsTrigger value="team" data-testid="tab-team" className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">Team</TabsTrigger>
+                        <TabsTrigger value="api" data-testid="tab-api" className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">API Keys</TabsTrigger>
+                        <TabsTrigger value="danger" data-testid="tab-danger" className="data-[state=active]:bg-sm-red/15 data-[state=active]:text-sm-red text-sm-text-secondary">Danger Zone</TabsTrigger>
+                    </TabsList>
 
-            {/* §4.13 — one card per concern, stacked full width. */}
-            <div className="space-y-4 max-w-3xl">
-
-                {/* ── Workspace ─────────────────────────────────────────── */}
-                <section className="sm-card p-6">
-                    <h2 className="text-title text-content mb-1">Workspace</h2>
-                    <p className="text-body text-content-secondary mb-5">
-                        Identity of this workspace across the product and the API.
-                    </p>
-
-                    <div className="space-y-4">
-                        <div>
-                            <label htmlFor="ws-name" className="sm-micro-label block mb-2">Name</label>
-                            <Input
-                                id="ws-name"
-                                data-testid="ws-name"
-                                value={wsName}
-                                onChange={(e) => setWsName(e.target.value)}
-                                disabled
-                                className="bg-surface-page border-hairline text-content h-10 disabled:opacity-70"
-                            />
-                        </div>
-
-                        <div>
-                            <label className="sm-micro-label block mb-2">Slug</label>
-                            {/* §3: a slug is a technical identifier → mono. The
-                                old field prefixed a hardcoded "sourcemind.dev/"
-                                that is not this deployment's domain. */}
-                            <div className="flex items-center h-10 px-3 rounded-md bg-surface-page border border-hairline">
-                                {workspace === null ? (
-                                    <Skeleton className="h-[1em] w-40" />
-                                ) : (
-                                    <span className="font-mono text-body text-content select-all">
-                                        {wsSlug || "—"}
-                                    </span>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* No PATCH /v1/workspaces/{id} route exists, so "Save
-                        changes" could only ever fire a success toast over a
-                        request that was never made. Disabled rather than
-                        left as a convincing no-op. */}
-                    <div className="mt-6 pt-5 border-t border-hairline flex items-center gap-3">
-                        <Button
-                            data-testid="save-workspace"
-                            disabled
-                            className="bg-brand-fill text-white disabled:opacity-40"
-                        >
-                            Save changes
-                        </Button>
-                        <p className="text-[11px] text-content-muted">
-                            Editing a workspace isn't exposed by the API yet.
-                        </p>
-                    </div>
-                </section>
-
-                {/* ── Members — §4.16 ───────────────────────────────────── */}
-                <section>
-                    <div className="flex items-center justify-between gap-4 mb-3">
-                        <h2 className="text-title text-content">Members</h2>
-                        {/* §4.16: primary button top-right, OUTSIDE the card. */}
-                        <Button
-                            data-testid="invite-btn"
-                            disabled
-                            title="No invite endpoint exists yet"
-                            className="h-9 bg-brand-fill text-white disabled:opacity-40"
-                        >
-                            <UserPlus className="w-4 h-4" /> Invite member
-                        </Button>
-                    </div>
-
-                    <div className="sm-card p-6">
-                        {membersRes.error ? (
-                            <ErrorState error={membersRes.error} onRetry={membersRes.retry} testId="members-error" />
-                        ) : members === null ? (
-                            <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading members">
-                                {Array.from({ length: 2 }).map((_, i) => (
-                                    <Skeleton key={i} className="h-tablerow w-full" />
-                                ))}
-                                <span className="sr-only">Loading members…</span>
-                            </div>
-                        ) : rows.length === 0 ? (
-                            <EmptyState
-                                testId="members-empty"
-                                icon={UserPlus}
-                                noun="members"
-                                description="Everyone with access to this workspace will be listed here."
-                            />
+                    <TabsContent value="workspace" className="mt-0">
+                        {workspaceResource.error ? (
+                            <PageLoadError error={workspaceResource.error} onRetry={workspaceResource.retry} testId="workspace-error" />
+                        ) : workspaceResource.loading && !workspace ? (
+                            <PageLoading label="Loading workspace" testId="workspace-loading" />
                         ) : (
-                            <>
-                                <table className="w-full">
-                                    <thead>
-                                        <tr className="text-left border-b border-hairline">
-                                            <th className="sm-micro-label font-semibold pb-2">Member</th>
-                                            <th className="sm-micro-label font-semibold pb-2">Role</th>
-                                            <th className="sm-micro-label font-semibold pb-2">Access</th>
-                                            <th className="sm-micro-label font-semibold pb-2 text-right">Joined</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {rows.map((m, i) => {
-                                            // The user is NESTED. Reading m.name
-                                            // or m.email off the row gives
-                                            // undefined — m.email does not exist
-                                            // at any level.
-                                            const u = m?.user ?? {};
-                                            const role = (m?.role || "").toLowerCase();
-                                            return (
-                                                <tr
-                                                    key={u.id || i}
-                                                    data-testid={`member-${u.id || i}`}
-                                                    className="border-b border-hairline last:border-0"
-                                                >
-                                                    {/* §4.16: avatar-less, name
-                                                        stacked over its
-                                                        secondary line. The
-                                                        reference stacks an
-                                                        email; this API carries
-                                                        none, so the user id —
-                                                        the only other identifier
-                                                        it returns — takes that
-                                                        line, in mono per §3. */}
-                                                    <td className="py-3.5 pr-4">
-                                                        <div className="text-body text-content truncate">
-                                                            {u.display_name || "Unnamed user"}
-                                                        </div>
-                                                        <div className="font-mono text-[10.5px] text-content-secondary truncate">
-                                                            {u.id || "—"}
-                                                        </div>
-                                                    </td>
-                                                    <td className="py-3.5 pr-4 text-body text-content capitalize">
-                                                        {role || "—"}
-                                                    </td>
-                                                    <td className="py-3.5 pr-4 text-body text-content-secondary">
-                                                        {ACCESS_BY_ROLE[role] || "—"}
-                                                    </td>
-                                                    <td className="py-3.5 text-right font-mono text-[11px] text-content-secondary">
-                                                        {m?.joined_at ? formatDate(m.joined_at) : "—"}
-                                                    </td>
-                                                </tr>
-                                            );
-                                        })}
-                                    </tbody>
-                                </table>
-
-                                {/* §4.16 footer line. The reference's right-hand
-                                    "1/1 seats used" is seat/plan messaging,
-                                    excluded from scope. */}
-                                <div className="flex items-center justify-between mt-4 pt-3 border-t border-hairline">
-                                    <span className="font-mono text-[11px] text-content-secondary">
-                                        {rows.length} member{rows.length === 1 ? "" : "s"}
-                                    </span>
+                            <section className="sm-card p-6 max-w-2xl">
+                                <h3 className="text-[15px] font-semibold text-sm-text mb-4">Workspace</h3>
+                                <div className="space-y-4">
+                                    <Field label="Workspace name" hint="Read-only on this screen">
+                                        <Input data-testid="ws-name" value={workspaceName} readOnly className="bg-sm-bg/60 border-sm-border text-sm-text h-10" />
+                                    </Field>
+                                    <Field label="Workspace slug" hint="Used by the API to scope workspace data">
+                                        <div className="h-10 px-3 rounded-md bg-sm-bg/40 border border-sm-border flex items-center">
+                                            <span className="font-mono text-[12.5px] text-sm-text select-all">{workspaceSlug || "—"}</span>
+                                        </div>
+                                    </Field>
+                                    {workspace?.plan && (
+                                        <Field label="Plan">
+                                            <span className="font-mono text-[11px] font-semibold px-2 py-1 rounded-md bg-sm-blue/15 border border-sm-blue/30 text-sm-blue">
+                                                {String(workspace.plan).toUpperCase()}
+                                            </span>
+                                        </Field>
+                                    )}
                                 </div>
-                            </>
+                                <div className="mt-6 pt-5 border-t border-sm-border">
+                                    <Button disabled data-testid="save-workspace" title="Workspace editing isn't exposed by the API yet" className="bg-sm-blue text-white disabled:opacity-40 disabled:cursor-not-allowed">Save changes</Button>
+                                </div>
+                            </section>
                         )}
-                    </div>
-                </section>
+                    </TabsContent>
 
-                {/* ── API keys ──────────────────────────────────────────── */}
-                <section className="sm-card p-6">
-                    <h2 className="text-title text-content mb-1">API keys</h2>
-                    <p className="text-body text-content-secondary mb-5">
-                        Keys for server-to-server access to this workspace.
-                    </p>
+                    <TabsContent value="team" className="mt-0">
+                        <section className="sm-card p-6">
+                            <div className="flex items-center justify-between mb-5">
+                                <div>
+                                    <h3 className="text-[15px] font-semibold text-sm-text">Team Members</h3>
+                                    <p className="text-[12.5px] text-sm-text-secondary mt-0.5">
+                                        {membersResource.loading ? "Loading members…" : `${members.length} member${members.length === 1 ? "" : "s"} in this workspace`}
+                                    </p>
+                                </div>
+                                <Button disabled data-testid="invite-btn" title="No invitation endpoint exists yet" className="bg-sm-blue text-white h-9 disabled:opacity-40 disabled:cursor-not-allowed">
+                                    <UserPlus className="w-4 h-4" /> Invite Member
+                                </Button>
+                            </div>
+                            {membersResource.error ? (
+                                <PageLoadError error={membersResource.error} onRetry={membersResource.retry} testId="members-error" compact />
+                            ) : membersResource.loading ? (
+                                <PageLoading label="Loading members" testId="members-loading" />
+                            ) : members.length === 0 ? (
+                                <div data-testid="members-empty" className="py-12 text-center text-[12.5px] text-sm-text-secondary">No members are recorded for this workspace.</div>
+                            ) : (
+                                <div className="space-y-2">
+                                    {members.map((membership) => {
+                                        const member = membership.user || membership;
+                                        const role = String(membership.role || "member").toLowerCase();
+                                        const displayName = member.display_name || member.name || member.id;
+                                        return (
+                                            <div key={member.id} data-testid={`member-${member.id}`} className="grid grid-cols-[auto_minmax(0,1fr)_100px_100px_110px] items-center gap-3 p-3 rounded-lg border border-sm-border bg-sm-bg/40">
+                                                {member.avatar_url ? <img src={member.avatar_url} alt="" className="w-9 h-9 rounded-full object-cover" /> : <ContributorAvatar contributor={{ name: displayName }} size={36} />}
+                                                <div className="min-w-0">
+                                                    <div className="text-[13px] text-sm-text font-medium truncate">{displayName}</div>
+                                                    <div className="font-mono text-[11px] text-sm-text-secondary truncate">{member.id}</div>
+                                                </div>
+                                                <span className="font-mono text-[10.5px] uppercase text-sm-text">{role}</span>
+                                                <span className="text-[12px] text-sm-text-secondary">{ACCESS_BY_ROLE[role] || "—"}</span>
+                                                <span className="font-mono text-[10.5px] text-sm-text-secondary text-right">{membership.joined_at ? formatDate(membership.joined_at) : "—"}</span>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </section>
+                    </TabsContent>
 
-                    {/*
-                      REMOVED: a hardcoded constant
-                      "sm_live_4f7eff_a78bfa_34d399_b22c_k9qe2m3p6n8x1", rendered
-                      in a credential field with a reveal toggle and a
-                      copy-to-clipboard button, plus a "Rotate key" flow that
-                      only fired a success toast.
+                    <TabsContent value="api" className="mt-0">
+                        <section className="sm-card p-8 max-w-2xl text-center" data-testid="api-keys-empty">
+                            <KeyRound className="w-9 h-9 text-sm-text-muted mx-auto mb-3" />
+                            <h3 className="text-[15px] font-semibold text-sm-text">API keys aren't available yet</h3>
+                            <p className="mt-1 text-[12.5px] text-sm-text-secondary">
+                                The backend exposes no API-key endpoints. Browser requests use a Clerk session token.
+                            </p>
+                        </section>
+                    </TabsContent>
 
-                      It was not a real key and could never become one — there
-                      is no API-key route anywhere in the backend. A fake
-                      credential that presents as live is worse than an absent
-                      one: it invites someone to copy it into an integration, or
-                      to treat a leaked-looking `sm_live_` string as a real
-                      secret. Replaced with the §5 template stating the truth.
-                    */}
-                    <EmptyState
-                        testId="api-keys-empty"
-                        icon={KeyRound}
-                        noun="API keys"
-                        description="Key issuance isn't available yet — the backend exposes no API-key endpoints. Requests are authenticated with a Clerk session token."
-                    />
-                </section>
-
-                {/* ── Danger zone — §4.13 ───────────────────────────────── */}
-                <section
-                    data-testid="danger-zone"
-                    className="rounded-card border p-6"
-                    style={{
-                        borderColor: "var(--c-status-danger-border)",
-                        background: "var(--c-status-danger-subtle)",
-                    }}
-                >
-                    {/* §4.13: "visually distinguished with a red section title
-                        and a red-outlined button". */}
-                    <h2 className="text-title text-danger mb-1">Danger zone</h2>
-                    <p className="text-body text-content-secondary mb-5">
-                        Permanently delete{" "}
-                        <span className="font-mono text-content">{wsSlug || "this workspace"}</span>
-                        {" "}and every memory, conflict and connector in it. This cannot be undone.
-                    </p>
-
-                    {/* The delete flow previously ended in
-                        toast.error("Workspace deleted (demo)") — a confirmation
-                        that nothing had happened, behind a type-the-slug
-                        confirmation that made it look real. There is no
-                        DELETE /v1/workspaces/{id} route, so the control is
-                        disabled and says so. */}
-                    <Button
-                        data-testid="delete-workspace-btn"
-                        disabled
-                        title="No workspace-deletion endpoint exists yet"
-                        className="bg-transparent border text-danger disabled:opacity-50"
-                        style={{ borderColor: "var(--c-status-danger-border)" }}
-                    >
-                        <Trash2 className="w-4 h-4" /> Delete workspace
-                    </Button>
-                    <p className="text-[11px] text-content-muted mt-2">
-                        Workspace deletion isn't exposed by the API yet.
-                    </p>
-                </section>
+                    <TabsContent value="danger" className="mt-0">
+                        <section data-testid="danger-zone" className="rounded-xl border border-sm-red/40 bg-sm-red/5 p-6 max-w-2xl">
+                            <h3 className="text-[15px] font-semibold text-sm-red mb-2">Delete Workspace</h3>
+                            <p className="text-[13px] text-sm-text-secondary mb-4">
+                                Workspace deletion isn't exposed by the API yet. No deletion will be simulated.
+                            </p>
+                            <Button disabled data-testid="delete-workspace-btn" title="No workspace-deletion endpoint exists yet" className="bg-sm-red text-white disabled:opacity-40 disabled:cursor-not-allowed">
+                                <Trash2 className="w-4 h-4" /> Delete Workspace
+                            </Button>
+                        </section>
+                    </TabsContent>
+                </Tabs>
             </div>
         </>
+    );
+}
+
+function Field({ label, hint, children }) {
+    return (
+        <div>
+            <label className="block text-[12px] text-sm-text-secondary mb-2 font-medium">{label}</label>
+            {children}
+            {hint && <p className="text-[11.5px] text-sm-text-muted mt-1.5">{hint}</p>}
+        </div>
     );
 }

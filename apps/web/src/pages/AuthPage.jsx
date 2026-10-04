@@ -25,13 +25,13 @@ import { appUrl } from "@/lib/appUrl";
 const clerkAppearance = {
     variables: {
         colorPrimary: "#4F7EFF",
-        colorBackground: "#12121A",
-        colorText: "#E8E8F0",
-        colorTextSecondary: "#9494A8",
-        colorInputBackground: "#0A0A0F",
-        colorInputText: "#E8E8F0",
+        colorBackground: "var(--sm-surface)",
+        colorText: "var(--sm-text)",
+        colorTextSecondary: "var(--sm-text-secondary)",
+        colorInputBackground: "var(--sm-surface-2)",
+        colorInputText: "var(--sm-text)",
         borderRadius: "0.75rem",
-        fontFamily: "Inter, sans-serif",
+        fontFamily: "'DM Sans', sans-serif",
     },
     elements: {
         rootBox: "w-full",
