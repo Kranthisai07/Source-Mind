@@ -67,7 +67,7 @@ export default function Handoff() {
                         <div className="text-[11px] uppercase tracking-[0.18em] text-sm-blue font-semibold mb-2">Knowledge Transfer Center</div>
                         <h2 className="text-[20px] font-semibold text-sm-text mb-1">Prevent knowledge loss on day one, not day zero.</h2>
                         <p className="text-[13px] text-sm-text-secondary max-w-2xl">
-                            SourceMind classifies a departing member's memories into three tiers and suggests the best-fit successor for every CRITICAL item. Transfer CRITICAL tier before departure.
+                            SourceMind classifies a departing member's memories into three tiers and suggests a best-fit successor for a CRITICAL item when an eligible related contributor is available. Transfer CRITICAL tier before departure.
                         </p>
                     </div>
                 </div>
@@ -246,8 +246,7 @@ function CriticalRow({ mem, byId }) {
 
 function ActiveHandoffCard({ handoff, byId }) {
     const departing = byId[handoff.departing_user_id] || {
-        name: handoff.departing_user_name || handoff.departing_user_id,
-        login: handoff.departing_user_id,
+        name: handoff.departing_user_name || "Unknown member",
         avatarColor: "#4F7EFF",
     };
     // Backend returns receiving_user_name directly; may be null on freshly-initiated
@@ -257,7 +256,7 @@ function ActiveHandoffCard({ handoff, byId }) {
     const receiving = hasReceiver
         ? {
             name: handoff.receiving_user_name,
-            login: receivingContrib?.login || handoff.receiving_user_id,
+            login: receivingContrib?.login,
             avatarColor: receivingContrib?.avatarColor || "#A78BFA",
         }
         : null;
