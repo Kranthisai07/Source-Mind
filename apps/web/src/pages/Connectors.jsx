@@ -17,6 +17,10 @@ const SOURCE_ICON = {
     discord: MessageSquare,
 };
 
+// Only the demo connectors carry `total_artifacts_synced`; the real API's
+// ConnectorResponse has no artifact count. A missing count is unknown, not 0.
+const artifactCount = (c) => (Number.isFinite(c.total_artifacts_synced) ? c.total_artifacts_synced : null);
+
 export default function Connectors() {
     const [list, setList] = useState([]);
     const [open, setOpen] = useState(false);
@@ -56,13 +60,17 @@ export default function Connectors() {
         toast.success("Sync started", { description: "Check logs for progress." });
     };
 
+    // A total is only honest when every connector has a count.
+    const counts = list.map(artifactCount);
+    const knownTotal = counts.every((n) => n !== null) ? counts.reduce((a, n) => a + n, 0) : null;
+
     return (
         <>
             <TopBar
                 title="Connectors"
                 subtitle={error
                     ? "Connector list unavailable"
-                    : `${list.length} connected sources · ${list.reduce((a, c) => a + c.total_artifacts_synced, 0).toLocaleString()} artifacts synced`}
+                    : `${list.length} connected sources${knownTotal === null ? "" : ` · ${knownTotal.toLocaleString()} artifacts synced`}`}
                 actions={
                     <Button
                         data-testid="add-connector-btn"
@@ -96,6 +104,7 @@ export default function Connectors() {
                         const connectorName = c.name || c.display_name;
                         const Icon = SOURCE_ICON[sourceType] || FileText;
                         const iconColor = sourceType === "github" ? "#E8E8F0" : "#5865F2";
+                        const count = artifactCount(c);
                         return (
                             <div key={c.id} data-testid={`connector-${c.id}`} className="sm-card p-5">
                                 <div className="flex items-start justify-between mb-4">
@@ -120,7 +129,7 @@ export default function Connectors() {
                                     </div>
                                     <div>
                                         <div className="font-mono text-[10px] text-sm-text-secondary uppercase mb-1">Artifacts synced</div>
-                                        <div className="font-mono text-[12.5px] text-sm-text">{c.total_artifacts_synced.toLocaleString()}</div>
+                                        <div className="font-mono text-[12.5px] text-sm-text">{count === null ? "unavailable" : count.toLocaleString()}</div>
                                     </div>
                                 </div>
 
