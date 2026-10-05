@@ -13,7 +13,7 @@ jest.mock("../lib/api", () => ({
     },
 }));
 
-import Handoff from "./Handoff";
+import Handoff, { CriticalRow } from "./Handoff";
 
 beforeEach(() => {
     jest.clearAllMocks();
@@ -52,4 +52,23 @@ test("does not expose handoff user UUIDs as contributor handles", async () => {
     expect(avatarTitles).toEqual(["Departing Member", "Receiving Member"]);
     expect(avatarTitles.join(" ")).not.toContain("@");
     expect(avatarTitles.join(" ")).not.toContain("00000000-0000-4000-8000");
+});
+
+test("renders absent successor confidence explicitly", () => {
+    render(
+        <CriticalRow
+            mem={{
+                memory_id: "memory-1",
+                content: "Synthetic critical memory.",
+                importance_score: 0.92,
+                suggested_successor_id: null,
+                suggested_successor_name: null,
+                successor_confidence: null,
+            }}
+            byId={{}}
+        />
+    );
+
+    expect(document.body.textContent).toContain("confidence unavailable");
+    expect(document.body.textContent).not.toContain("confidence undefined");
 });

@@ -138,6 +138,7 @@ test("dashboard labels current metrics without unsupported trend claims", async 
     expect(document.body.textContent).not.toContain("All active this week");
     expect(document.body.textContent).not.toContain("18% vs. last 30d");
     expect(document.body.textContent).not.toContain("refreshed hourly");
+    expect(document.body.textContent).not.toContain("LIVE");
     expect(document.body.textContent).toContain("cached up to 5 minutes");
 });
 

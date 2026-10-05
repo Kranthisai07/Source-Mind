@@ -111,7 +111,6 @@ export default function Dashboard() {
                     <section className="sm-card p-6 lg:col-span-2">
                         <div className="flex items-center justify-between mb-4">
                             <h2 className="text-[15px] font-semibold text-sm-text">Recent Activity</h2>
-                            <span className="font-mono text-[10.5px] text-sm-text-secondary">LIVE</span>
                         </div>
                         <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1">
                             {(data?.recent_activity ?? []).map((a, i) => (

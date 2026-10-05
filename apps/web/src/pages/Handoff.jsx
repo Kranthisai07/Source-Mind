@@ -216,7 +216,7 @@ function TierCount({ label, count, tier }) {
     );
 }
 
-function CriticalRow({ mem, byId }) {
+export function CriticalRow({ mem, byId }) {
     const successor = byId[mem.suggested_successor_id];
     return (
         <div className="rounded-md border border-sm-border bg-sm-bg/40 p-3">
@@ -235,7 +235,7 @@ function CriticalRow({ mem, byId }) {
                         )}
                         <span className="text-sm-text">{mem.suggested_successor_name || "—"}</span>
                         <span className="ml-auto">
-                            importance {mem.importance_score?.toFixed(2)} · confidence {mem.successor_confidence?.toFixed(2)}
+                            importance {mem.importance_score?.toFixed(2)} · confidence {mem.successor_confidence == null ? "unavailable" : mem.successor_confidence.toFixed(2)}
                         </span>
                     </div>
                 </div>
