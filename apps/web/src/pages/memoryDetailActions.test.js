@@ -124,3 +124,83 @@ describe("the supported control is untouched", () => {
         expect(screen.getByTestId("mem-back").disabled).toBe(false);
     });
 });
+
+describe("version timeline contract", () => {
+    test("keeps the version timeline loading until the request settles", async () => {
+        let finishVersions;
+        mockGetVersions.mockImplementation(() => new Promise((resolve) => { finishVersions = resolve; }));
+
+        renderPage();
+
+        expect(await screen.findByTestId("mem-edit")).toBeTruthy();
+        expect(screen.getByTestId("memory-versions-loading")).toBeTruthy();
+        expect(screen.queryByText("No version history is available.")).toBeNull();
+
+        await act(async () => { finishVersions({ versions: [], total: 0 }); });
+        expect(await screen.findByText("No version history is available.")).toBeTruthy();
+    });
+
+    test("renders the backend version fields without inventing an editor", async () => {
+        mockGetVersions.mockResolvedValue({
+            versions: [
+                {
+                    id: "v-2",
+                    version: 2,
+                    is_current: true,
+                    content: "Use the versioned backend contract.",
+                    created_at: "2026-09-30T12:00:00Z",
+                },
+                {
+                    id: "v-1",
+                    version: 1,
+                    is_current: false,
+                    content: "Earlier contract content.",
+                    created_at: "2026-09-29T12:00:00Z",
+                },
+            ],
+            total: 2,
+        });
+
+        renderPage();
+
+        const row = await screen.findByTestId("memory-version-2");
+        expect(row.textContent).toContain("v2");
+        expect(row.textContent).toContain("Current");
+        expect(row.textContent).toContain("Use the versioned backend contract.");
+        expect(row.querySelector("time")?.getAttribute("datetime")).toBe("2026-09-30T12:00:00Z");
+        expect(row.textContent).not.toContain("@undefined");
+
+        const historical = screen.getByTestId("memory-version-1");
+        expect(historical.textContent).toContain("Historical");
+        expect(historical.textContent).toContain("Earlier contract content.");
+    });
+});
+
+describe("production attribution contract", () => {
+    test("uses the production avatar shape without inventing a login", async () => {
+        mockGetMemory.mockResolvedValue({
+            id: "m-1",
+            content: "Attributed production memory.",
+            tags: [],
+            created_at: "2026-09-01T00:00:00Z",
+            attribution: [{
+                author: "Jane Doe",
+                name: "Jane Doe",
+                avatar_url: "https://example.invalid/avatar.png",
+                color: "#34D399",
+                score: 1,
+                percentage: 100,
+                is_primary: true,
+                signals: null,
+            }],
+        });
+
+        renderPage();
+
+        const avatar = await screen.findByTestId("contributor-avatar");
+        expect(avatar.getAttribute("title")).toBe("Jane Doe");
+        expect(avatar.getAttribute("title")).not.toContain("[object Object]");
+        expect(avatar.getAttribute("title")).not.toContain("@");
+        expect(screen.getByTestId("contributor-avatar-image").getAttribute("src")).toBe("https://example.invalid/avatar.png");
+    });
+});

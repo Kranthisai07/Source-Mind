@@ -398,6 +398,14 @@ function adaptAttribution(list) {
     }));
 }
 
+function adaptKnowledgeGap(gap) {
+    return {
+        ...gap,
+        affected_count: gap.affected_count ?? gap.affected_memories ?? 0,
+        recommended_action: gap.recommended_action ?? gap.recommendation ?? "",
+    };
+}
+
 function adaptContributor(c, i) {
     // Backend shape:
     //   {user_id, login, name, total_memories_created, total_memories_influenced,
@@ -433,8 +441,13 @@ export const realApi = {
         const r = await request(`/v1/workspaces/${ws}/analytics/overview`);
         return adaptOverview(r);
     },
-    getKnowledgeGaps: async (wsId) =>
-        request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/analytics/knowledge-gaps`),
+    getKnowledgeGaps: async (wsId) => {
+        const response = await request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/analytics/knowledge-gaps`);
+        return {
+            ...response,
+            gaps: Array.isArray(response.gaps) ? response.gaps.map(adaptKnowledgeGap) : [],
+        };
+    },
     getContributionMap: async (wsId) => {
         const ws = await resolveWorkspaceId(wsId);
         const r = await request(`/v1/workspaces/${ws}/analytics/contribution-map`);
@@ -527,9 +540,9 @@ export const realApi = {
     //   GET    /v1/memories/{id}/versions, /attribution, /edits
 
     // ----- conflicts -----
-    listConflicts: async (wsId, { status = "all" } = {}) =>
+    listConflicts: async (wsId, { status = "all", cursor = null } = {}) =>
         request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/conflicts`, {
-            params: { status },
+            params: { status, cursor },
         }),
     // GET /v1/memories/{id}/versions -> MemoryVersionsResponse
     //   { versions: [{id, version, is_current, content, created_at}], total }

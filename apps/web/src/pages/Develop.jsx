@@ -16,7 +16,7 @@ export default function Develop() {
                     <p className="eyebrow" data-testid="developer-eyebrow">Developer guide / Getting started</p>
                     <h1 className="text-4xl sm:text-5xl lg:text-6xl" data-testid="developer-title">Develop with<br /><em>SourceMind.</em></h1>
                     <p className="hero-description" data-testid="developer-description">Give your project a shared memory of the decisions, knowledge, and sources behind it.</p>
-                    <div className="development-notice" role="note" data-testid="developer-status"><span className="status-label">In development</span><p>The API, SDK, and connectors aren’t available yet. This guide outlines the planned memory flow; the examples run locally without sending data.</p></div>
+                    <div className="development-notice" role="note" data-testid="developer-status"><span className="status-label">Available now</span><p>The signed-in console uses the workspace-scoped API for memories, conflicts, handoffs, and supported connectors. Public SDK guidance and some connector setup remain in development; the examples below are conceptual and do not submit data.</p></div>
                 </div>
                 <div className="developer-layout">
                     <nav className="guide-navigation" aria-label="On this page" data-testid="guide-navigation"><p className="eyebrow" data-testid="guide-nav-label">On this page</p><a href="#mental-model" data-testid="guide-nav-model">01 <span>The mental model</span></a><a href="#memory-flow" data-testid="guide-nav-flow">02 <span>The memory flow</span></a><a href="#project-plan" data-testid="guide-nav-plan">03 <span>Plan your project</span></a></nav>

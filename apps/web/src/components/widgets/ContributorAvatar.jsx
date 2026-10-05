@@ -3,11 +3,14 @@ import { initials } from "../../lib/format";
 
 export default function ContributorAvatar({ contributor, size = 28, showTooltip = true }) {
     if (!contributor) return null;
-    const name = contributor.name || contributor.login || contributor;
-    const login = contributor.login || contributor;
-    const color = contributor.avatarColor || "#4F7EFF";
+    const fields = typeof contributor === "object" ? contributor : {};
+    const name = fields.name || fields.login || String(contributor);
+    const login = fields.login || null;
+    const color = fields.avatarColor || fields.color || "#4F7EFF";
+    const avatarUrl = fields.avatarUrl || fields.avatar_url || null;
     return (
         <div
+            data-testid="contributor-avatar"
             className="rounded-full flex items-center justify-center text-white font-semibold shrink-0 select-none"
             style={{
                 width: size, height: size,
@@ -15,9 +18,11 @@ export default function ContributorAvatar({ contributor, size = 28, showTooltip 
                 fontSize: size * 0.4,
                 boxShadow: `0 0 0 2px #12121A`,
             }}
-            title={showTooltip ? `${name} · @${login}` : undefined}
+            title={showTooltip ? (login ? `${name} · @${login}` : name) : undefined}
         >
-            {initials(name)}
+            {avatarUrl ? (
+                <img data-testid="contributor-avatar-image" src={avatarUrl} alt="" className="w-full h-full rounded-full object-cover" />
+            ) : initials(name)}
         </div>
     );
 }
