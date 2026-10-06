@@ -316,7 +316,13 @@ PATCH  /v1/connectors/{id}
 DELETE /v1/connectors/{id}
 POST   /v1/connectors/{id}/sync        Trigger sync (202)
 GET    /v1/connectors/{id}/sync-logs
+GET    /v1/workspaces/{id}/github-author-links                    Admin-asserted links (D-021)
+PUT    /v1/workspaces/{id}/github-author-links/{github_user_id}   Create or correct
+DELETE /v1/workspaces/{id}/github-author-links/{github_user_id}
+GET    /v1/workspaces/{id}/github-authors                         Authors seen + link state
 ```
+
+The four GitHub author-link routes require workspace ADMINISTER.
 
 ### Other
 ```
@@ -605,42 +611,55 @@ if the variable is unset or names a role that does not exist.
 
 ### Releasing D-021 (`20261005_0010`): drain before the new worker starts
 
-This release changes what a queued ingestion task means. The new worker
-treats a document with **no** `pipeline_data["attribution"]` record as a
-direct upload and credits its submitter, so a GitHub document queued by the
-old API (which writes no record) would be credited to whoever clicked
-"sync". An old worker, conversely, ignores the record and credits the
-submitter for documents queued by the new API. Neither may overlap the new
-code. Required order; **abort and stop if any check is non-zero**:
+This release changes what a queued ingestion task means, so old-format and
+new-format work must never meet the wrong code.
 
-1. **Freeze producers**: stop GitHub sync (connector schedules and manual
-   syncs) and API writes (stop the API, or keep its public route blocked).
-2. **Stop the old workers.**
-3. **Drain**, using the method of the c413d15 rollout (D-020): the Celery
-   queues `default`, `ingestion`, `connectors` and `attribution` are at 0;
-   the Redis `unacked` structures are empty; `celery inspect active`,
-   `reserved` and `scheduled` are empty on every worker node. Take two
-   samples at least 15 seconds apart; both must be empty.
-4. **Read-only database check**: no `documents` row is `pending` or
-   `processing`, for any origin (the join below isolates GitHub-origin rows;
-   checking all rows also covers enqueue recovery republishing an old task):
+**D-021 compatibility sequence** (identical in `ARCHITECTURE.md` §13,
+`docs/architecture/SECURITY_FOUNDATION_ROLLOUT.md` and D-021 in
+`docs/architecture/DECISIONS.md`). **Abort and stop on any non-zero count.**
 
-   ```sql
-   SELECT count(*) FROM documents
-   WHERE ingestion_status IN ('pending', 'processing') AND deleted_at IS NULL;
-
-   SELECT count(*) FROM documents AS d
-   JOIN artifact_links AS al ON al.document_id = d.id
-   WHERE al.source_tool = 'github'
-     AND d.ingestion_status IN ('pending', 'processing')
-     AND d.deleted_at IS NULL;
-   ```
-
+1. **Freeze producers**: GitHub sync (manual and scheduled), connector
+   schedules, and API writes (stop the API or keep its public route blocked).
+2. **Drain with the OLD workers still running.** They consume the old-format
+   tasks that are already queued.
+3. **Verify drained**, two samples at least 15 seconds apart, every value zero
+   or empty in both: `celery inspect active`, `reserved` and `scheduled` on
+   every worker node; queued messages (`LLEN` of `default`, `ingestion`,
+   `connectors` and `attribution`); the Redis `unacked` structures; and no
+   `pending`/`processing` documents (read-only SQL below, including the
+   GitHub-origin join).
+4. **Stop the old workers and verify they are gone**: no node answers
+   `celery inspect ping` and no old worker instance is running. Then re-check
+   that every count from step 3 is still zero.
 5. **Owner-run migration**:
    `SOURCEMIND_RUNTIME_ROLE=sourcemind_runtime alembic upgrade head` with the
    migration-owner connection.
-6. **Deploy the worker first, then the API** (D-020 order and validation).
-7. **Unfreeze** producers.
+6. **Deploy and validate the new worker**: exactly one node answers ping, the
+   reviewed tasks are registered, the database (restricted runtime role) and
+   Redis are reachable, and the queues are still empty.
+7. **Deploy the API**, validate it, then reopen producers.
+
+```sql
+SELECT count(*) FROM documents
+WHERE ingestion_status IN ('pending', 'processing') AND deleted_at IS NULL;
+
+SELECT count(*) FROM documents AS d
+JOIN artifact_links AS al ON al.document_id = d.id
+WHERE al.source_tool = 'github'
+  AND d.ingestion_status IN ('pending', 'processing')
+  AND d.deleted_at IS NULL;
+```
+
+Stopping a worker does **not** drain a queue: its messages stay in Redis, and
+the next worker to start (the new one) would consume them as new-format
+tasks. "Drained" means the counts are zero, checked before and after step 4.
+The old workers must drain old-format tasks because a document queued by the
+old API has no `pipeline_data["attribution"]` record; the new worker treats
+such a document as a direct upload and credits its submitter, so a GitHub
+document would be credited to the sync initiator. Such documents are only safe
+on the old code path. Conversely, an old worker ignores the record on
+documents queued by the new API, which is why the new worker starts before the
+new API and no old worker may remain.
 
 Historical recovery instructions are version-specific. A retained-image
 rollback does not rebuild and does not change `build.dockerfilePath`. Rebuilding

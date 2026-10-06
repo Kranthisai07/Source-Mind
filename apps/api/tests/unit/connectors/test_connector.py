@@ -30,6 +30,7 @@ def mock_session():
     # Dedup check: return no existing ArtifactLink
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = None
+    mock_result.all.return_value = []  # dedup reads link state with .all()
     session.execute.return_value = mock_result
     return session
 
@@ -99,6 +100,9 @@ async def test_ingest_skips_duplicate(mock_session, mock_auth):
     existing = MagicMock()
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = existing
+    mock_result.all.return_value = [
+        MagicMock(document_id=uuid.uuid4(), ingestion_status="completed", deleted_at=None)
+    ]
     mock_session.execute.return_value = mock_result
 
     doc = ConnectorDocument(
@@ -133,6 +137,7 @@ async def test_ingest_new_artifact_returns_true(mock_session, mock_auth):
     # No existing ArtifactLink
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = None
+    mock_result.all.return_value = []
     mock_session.execute.return_value = mock_result
 
     doc = ConnectorDocument(

@@ -345,6 +345,29 @@ async def _receive_reserved(
     )
 
 
+async def recover_pending_dispatch(
+    session: AsyncSession,
+    document_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+) -> dict[str, Any]:
+    """Re-dispatch an already-committed document by id, without re-receiving it.
+
+    For connectors (D-021): the ArtifactLink commits with its Document before
+    the task is published, so a publication failure leaves a committed link
+    over a document that may never have been queued. Recovery goes through the
+    same row-locked dispatch state machine as receive(): the original
+    ``ingestion_job_id`` is reused as the task id, a ``queued`` document is not
+    republished, and a broker error marks it ``uncertain`` and re-raises.
+    It never re-reads content, so it cannot create a second Document or a
+    second attribution decision.
+    """
+    return await _dispatch_or_return_document(
+        session=session,
+        document_id=document_id,
+        workspace_id=workspace_id,
+    )
+
+
 async def _dispatch_or_return_document(
     *,
     session: AsyncSession,

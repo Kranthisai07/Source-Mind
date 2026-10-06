@@ -994,3 +994,180 @@ async def test_unresolved_author_stays_reported_and_missing_after_an_edit(
     assert overview["total_memories"] == 3
     assert overview["unattributed_memories"] == 3
     assert overview["health_breakdown"]["coverage"] == 0.0
+
+
+# ── 8. round 3: a committed link never hides an undispatched document ───────
+
+
+def _commit_doc(sha: str, message: str, github_user_id: int | None):
+    return GitHubMapper.from_commit(
+        "acme",
+        "repo",
+        {
+            "sha": sha,
+            "html_url": f"https://github.com/acme/repo/commit/{sha}",
+            "commit": {
+                "author": {"name": "Some Author", "date": "2026-10-01T00:00:00Z"},
+                "message": message,
+            },
+            "author": {"login": "alice", "id": github_user_id} if github_user_id else None,
+        },
+    )
+
+
+async def _ingest_doc(
+    engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    data: SecurityTenantData,
+    doc: Any,
+    publish: Any,
+) -> list[dict[str, Any]]:
+    """One real connector _ingest as the admin initiator; returns publish calls.
+
+    Raises whatever the connector raises (a broker failure propagates).
+    """
+    from sourcemind.workers import ingestion as worker
+
+    calls: list[dict[str, Any]] = []
+
+    def apply_async(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return publish(**kwargs)
+
+    monkeypatch.setattr(worker.process_document, "apply_async", apply_async)
+    await init_redis()
+    session = await _session(engine, data.admin_id, None)
+    async with session:
+        await require_workspace_permission(
+            session, data.admin_id, data.target_workspace_id, WorkspacePermission.ADMINISTER
+        )
+        connector = GitHubConnector(
+            config=SimpleNamespace(id=uuid.uuid4(), config={}, last_sync_at=None),
+            auth=SimpleNamespace(),
+            session=session,
+            workspace_id=data.target_workspace_id,
+            user_id=data.admin_id,
+        )
+        result = await connector._ingest(doc)
+        await session.commit()
+    calls.append({"_result": result})
+    return calls
+
+
+async def _documents_and_links(
+    engine: AsyncEngine, data: SecurityTenantData, source_id: str
+) -> tuple[list[Any], int]:
+    owner = await _session(engine, data.owner_id, data.target_workspace_id)
+    async with owner:
+        documents = (
+            await owner.execute(
+                text(
+                    "SELECT id, ingestion_status, ingestion_job_id, "
+                    "       metadata ->> 'dispatch_state' AS dispatch_state "
+                    "FROM documents WHERE workspace_id = CAST(:ws AS uuid)"
+                ),
+                {"ws": str(data.target_workspace_id)},
+            )
+        ).fetchall()
+        links = await owner.scalar(
+            text("SELECT count(*) FROM artifact_links WHERE source_id = :sid"),
+            {"sid": source_id},
+        )
+    return documents, int(links or 0)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_failed_publication_is_recovered_by_document_id_on_the_next_sync(
+    ingestion_worker_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_harness: WorkerHarness,
+) -> None:
+    engine = ingestion_worker_engine
+    data = await _seed_security_tenants(engine)
+    _two_facts(worker_harness)
+    gid = _gid()
+    await _put_link(engine, data, data.admin_id, data.target_workspace_id, gid, data.member_id)
+    sha = uuid.uuid4().hex + uuid.uuid4().hex[:8]
+    first = _commit_doc(sha, f"Original message {sha}", gid)
+
+    def broker_rejects(**_kwargs: Any) -> Any:
+        raise RuntimeError("synthetic broker rejection")
+
+    with pytest.raises(RuntimeError, match="synthetic broker rejection"):
+        await _ingest_doc(engine, monkeypatch, data, first, broker_rejects)
+
+    documents, links = await _documents_and_links(engine, data, first.source_id)
+    assert links == 1, "the link is committed with the Document before publication"
+    assert len(documents) == 1
+    stranded = documents[0]
+    assert stranded.ingestion_status == "pending"
+    assert stranded.dispatch_state == "uncertain"
+
+    # Next sync, broker healthy, artifact EDITED since: recovery by id, not by
+    # content, so no second Document or link can appear.
+    edited = _commit_doc(sha, f"Edited message {sha}", gid)
+    assert edited.source_id == first.source_id and edited.content != first.content
+    calls = await _ingest_doc(
+        engine, monkeypatch, data, edited, lambda **k: SimpleNamespace(id=k["task_id"])
+    )
+    publishes = [c for c in calls if "_result" not in c]
+    assert calls[-1]["_result"] is False
+    assert len(publishes) == 1
+    assert publishes[0]["task_id"] == stranded.ingestion_job_id
+    assert publishes[0]["kwargs"]["document_id"] == str(stranded.id)
+    documents, links = await _documents_and_links(engine, data, first.source_id)
+    assert (len(documents), links) == (1, 1)
+    assert documents[0].dispatch_state == "queued"
+
+    result = await _run_worker(data, stranded.id, data.admin_id)
+    assert result["status"] == "completed"
+    outcome = await _outcome(engine, data, stranded.id)
+    assert outcome["attributed"] == {data.member_id}
+    assert outcome["final"] == {"status": "credited", "user_id": str(data.member_id)}
+    owner = await _session(engine, data.owner_id, data.target_workspace_id)
+    async with owner:
+        attribution_rows = await owner.scalar(
+            text(
+                "SELECT count(*) FROM attributions WHERE memory_id = ANY(CAST(:ids AS uuid[]))"
+            ),
+            {"ids": [str(m) for m in outcome["memory_ids"]]},
+        )
+    assert int(attribution_rows or 0) == len(outcome["memory_ids"]) == 2
+
+    # A third sync finds a completed document: nothing is published.
+    calls = await _ingest_doc(
+        engine, monkeypatch, data, edited, lambda **k: SimpleNamespace(id=k["task_id"])
+    )
+    assert calls == [{"_result": False}]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_resync_of_a_two_memory_artifact_skips_without_multiple_results(
+    ingestion_worker_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_harness: WorkerHarness,
+) -> None:
+    engine = ingestion_worker_engine
+    data = await _seed_security_tenants(engine)
+    _two_facts(worker_harness)
+    document_id, source_id = await _sync_commit(
+        engine, monkeypatch, data, initiator=data.admin_id, github_user_id=_gid()
+    )
+    await _run_worker(data, document_id, data.admin_id)
+    _documents, links = await _documents_and_links(engine, data, source_id)
+    assert links == 2  # anchor + clone after the two-memory backfill
+
+    sha = source_id.rsplit("/", 1)[1]
+    calls = await _ingest_doc(
+        engine,
+        monkeypatch,
+        data,
+        _commit_doc(sha, f"Synced change {sha}", None),
+        lambda **k: SimpleNamespace(id=k["task_id"]),
+    )
+
+    assert calls == [{"_result": False}]
+    documents, links = await _documents_and_links(engine, data, source_id)
+    assert (len(documents), links) == (1, 2)

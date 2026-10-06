@@ -2090,11 +2090,11 @@ separately and are not changed by this entry.
 
 ## D-021 — GitHub sync credits the admin-linked author, never the sync initiator
 
-**Status:** Implemented on branch `fix/github-sync-attribution-claude` on
-2026-10-05, with round-2 corrections the same day; unit-verified locally; real
-PostgreSQL/RLS tests written but not run locally (no Docker); local compose
-role changes validated by `docker compose config` only; not committed, not
-migrated anywhere, not deployed.
+**Status:** On branch `fix/github-sync-attribution-claude` (draft PR #12),
+with round-2 and round-3 corrections; unit-verified locally; the real
+PostgreSQL/RLS tests run only in CI (no Docker locally); local compose role
+changes validated by `docker compose config` only; not merged, not migrated
+anywhere, not deployed.
 
 **Defect.** `workers/ingestion.py` credited `user_id` — the document submitter —
 for every memory it created. For GitHub sync the submitter is whoever clicked
@@ -2106,8 +2106,11 @@ the task, so the worker could run before it existed.
 
 **Identity: admin-asserted links keyed by GitHub's numeric user id.** New table
 `github_author_links (workspace_id, github_user_id bigint) -> user_id`, managed
-by workspace admins through `/v1/workspaces/:id/github-author-links`
-(ADMINISTER), stamping who created and who last corrected each link. It is an
+by workspace admins (ADMINISTER) through `GET` and
+`PUT`/`DELETE /v1/workspaces/:id/github-author-links[/:github_user_id]`
+(create or correct, remove), with `GET /v1/workspaces/:id/github-authors`
+listing the authors seen in synced artifacts and their current link;
+each create or correction stamps who did it and when. It is an
 admin ASSERTION, not verified account ownership; Clerk/GitHub OAuth proof can
 replace it later. Resolution never matches a login, display name or e-mail:
 those are spoofable labels and a wrong match silently credits someone else,
@@ -2133,6 +2136,26 @@ the document (anchor and clones) and `pipeline_data.attribution.final`, in the
 same transaction as the attribution. Invariant: `resolved_user_id IS NOT NULL`
 exactly when the creation attribution credits that user. Every lookup runs in a
 SAVEPOINT and fails closed with `github_link_lookup_failed`.
+
+**A committed link never hides an undispatched document.** The link
+commits with its Document before publication, so a broker failure leaves a
+committed link over a `pending` document. The connector's dedup therefore
+reads link STATE (`artifact_links LEFT JOIN documents`, `.all()`): no rows →
+ingest; otherwise every distinct linked document that is `pending`, not
+deleted and whose `dispatch_state` is `orphaned`, `publishing` or `uncertain`
+(publication not confirmed) is re-dispatched once by id through
+`recover_pending_dispatch` (same row lock, same `ingestion_job_id` task id,
+same dispatch state machine, same stored attribution decision) and the
+artifact is skipped. A `queued` document is left alone on purpose: the worker
+holds a document's row lock for its whole pipeline while the committed status
+still reads `pending`, and recovery begins with a blocking `FOR UPDATE`, so
+touching it would stall a re-sync behind every in-flight document.
+Recovery never calls `receive(content)`: an artifact edited since the first
+sync would otherwise create a second Document and a second pending link. A
+broker that is still down fails the sync like any ingest failure. The same
+query fixes a defect that predates D-021: `scalar_one_or_none()` raised
+`MultipleResultsFound` once `backfill_artifact_links` had cloned the link for
+a second memory, so any re-sync of a multi-memory artifact failed.
 
 **The link lock never spans a provider call.** Relation detection calls the
 model per candidate, and conflict creation reads each memory's attribution
@@ -2209,19 +2232,55 @@ worker; NOSUPERUSER, NOBYPASSRLS, default DML privileges), with env-overridable
 local passwords. Existing local volumes keep the old single role and must be
 recreated with `docker compose -f infra/docker-compose.yml down -v`.
 
-**Deployment prerequisite: drain before the new worker starts.** The new
-worker treats a document with no `pipeline_data["attribution"]` record as a
-direct upload and credits its submitter, so a GitHub document queued by the old
-API would be credited to the sync initiator; an old worker ignores the record.
-Required order, aborting if any check is non-zero: freeze producers (GitHub
-sync, API writes) → stop old workers → drain (Celery queues `default`,
-`ingestion`, `connectors`, `attribution` at 0; Redis `unacked` structures
-empty; `inspect active/reserved/scheduled` empty on every node; two samples at
-least 15 s apart, as in the c413d15 rollout) → read-only check that no
-`documents` row is `pending`/`processing` (with an `artifact_links` join for
-GitHub origin; this also covers enqueue recovery republishing) → owner-run
-migration with `SOURCEMIND_RUNTIME_ROLE=sourcemind_runtime` → worker first, then
-API (D-020 order) → unfreeze. Spelled out in ARCHITECTURE.md §13.
+**Deployment prerequisite: drain with the old workers, then worker before
+API.**
+
+**D-021 compatibility sequence** (identical in `ARCHITECTURE.md` §13,
+`docs/architecture/SECURITY_FOUNDATION_ROLLOUT.md` and D-021 in
+`docs/architecture/DECISIONS.md`). **Abort and stop on any non-zero count.**
+
+1. **Freeze producers**: GitHub sync (manual and scheduled), connector
+   schedules, and API writes (stop the API or keep its public route blocked).
+2. **Drain with the OLD workers still running.** They consume the old-format
+   tasks that are already queued.
+3. **Verify drained**, two samples at least 15 seconds apart, every value zero
+   or empty in both: `celery inspect active`, `reserved` and `scheduled` on
+   every worker node; queued messages (`LLEN` of `default`, `ingestion`,
+   `connectors` and `attribution`); the Redis `unacked` structures; and no
+   `pending`/`processing` documents (read-only SQL below, including the
+   GitHub-origin join).
+4. **Stop the old workers and verify they are gone**: no node answers
+   `celery inspect ping` and no old worker instance is running. Then re-check
+   that every count from step 3 is still zero.
+5. **Owner-run migration**:
+   `SOURCEMIND_RUNTIME_ROLE=sourcemind_runtime alembic upgrade head` with the
+   migration-owner connection.
+6. **Deploy and validate the new worker**: exactly one node answers ping, the
+   reviewed tasks are registered, the database (restricted runtime role) and
+   Redis are reachable, and the queues are still empty.
+7. **Deploy the API**, validate it, then reopen producers.
+
+```sql
+SELECT count(*) FROM documents
+WHERE ingestion_status IN ('pending', 'processing') AND deleted_at IS NULL;
+
+SELECT count(*) FROM documents AS d
+JOIN artifact_links AS al ON al.document_id = d.id
+WHERE al.source_tool = 'github'
+  AND d.ingestion_status IN ('pending', 'processing')
+  AND d.deleted_at IS NULL;
+```
+
+Stopping a worker does **not** drain a queue: its messages stay in Redis, and
+the next worker to start (the new one) would consume them as new-format
+tasks. "Drained" means the counts are zero, checked before and after step 4.
+The old workers must drain old-format tasks because a document queued by the
+old API has no `pipeline_data["attribution"]` record; the new worker treats
+such a document as a direct upload and credits its submitter, so a GitHub
+document would be credited to the sync initiator. Such documents are only safe
+on the old code path. Conversely, an old worker ignores the record on
+documents queued by the new API, which is why the new worker starts before the
+new API and no old worker may remain.
 
 **Known limitations.** Existing synced memories are not back-filled. Link
 history keeps only the latest created/updated stamps. A same-content duplicate

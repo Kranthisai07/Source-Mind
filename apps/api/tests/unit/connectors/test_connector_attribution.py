@@ -30,6 +30,7 @@ def _session() -> AsyncMock:
     session.add = MagicMock()
     no_existing = MagicMock()
     no_existing.scalar_one_or_none.return_value = None
+    no_existing.all.return_value = []  # dedup reads link state with .all()
     session.execute = AsyncMock(return_value=no_existing)
     return session
 
@@ -195,6 +196,9 @@ async def test_duplicate_artifact_is_not_reingested() -> None:
     session = _session()
     existing = MagicMock()
     existing.scalar_one_or_none.return_value = MagicMock()
+    existing.all.return_value = [
+        MagicMock(document_id=uuid.uuid4(), ingestion_status="completed", deleted_at=None)
+    ]
     session.execute = AsyncMock(return_value=existing)
     connector = _connector(session, uuid.uuid4(), uuid.uuid4())
     receive = AsyncMock()

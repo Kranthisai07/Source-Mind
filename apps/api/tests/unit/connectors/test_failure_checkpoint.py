@@ -37,8 +37,12 @@ async def test_failed_artifact_preserves_checkpoint_and_is_retried() -> None:
     session.flush = AsyncMock()
     duplicate_result = MagicMock()
     duplicate_result.scalar_one_or_none.return_value = MagicMock()
+    duplicate_result.all.return_value = [
+        MagicMock(document_id=uuid.uuid4(), ingestion_status="completed", deleted_at=None)
+    ]
     new_result = MagicMock()
     new_result.scalar_one_or_none.return_value = None
+    new_result.all.return_value = []
     session.execute = AsyncMock(
         side_effect=[new_result, new_result, duplicate_result, new_result]
     )

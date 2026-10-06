@@ -263,10 +263,12 @@ row and receive the resource 404; A sees no row after revocation.
 1. Keep API and worker autodeploy disabled. Record the currently deployed
    revisions, startup commands, database bindings, and effective configuration
    before changing either service.
-2. Block new public API writes and every other producer, including connector
-   schedules. Drain queued ingestion and connector work, then stop the old API
-   before running any migration. A drained worker does not make a still-running
-   API read-only.
+2. Run steps 1-4 of the D-021 compatibility sequence below: freeze every
+   producer (GitHub sync, connector schedules, API writes; stop the old API),
+   drain with the OLD workers still running, verify the counts are zero, then
+   stop the old workers, verify they are gone and re-check the counts. A
+   drained worker does not make a still-running API read-only, and a stopped
+   worker does not drain a queue.
 3. After writes stop, create the fresh encrypted logical backup. Preserve the
    existing restore-verified recovery archive. Label the fresh archive as
    encrypted/readable only until it has completed an isolated restore.
@@ -298,16 +300,19 @@ WHERE c.relname IN (
 ORDER BY c.relname;
 ```
 
-7. Deploy the new API while public traffic remains blocked. Reach it through an
-   operator-only service path or isolated canary binding, not by reopening the
-   public route. Verify health and the authorization matrix before starting the
-   new worker.
-8. Deploy the new worker only after the API checks pass, using the same reviewed
-   restricted runtime role and application-table grant allowlist. Keep internal
-   bootstrap/access-grant tables inaccessible.
+7. Deploy and validate the new worker first (sequence step 6), using the
+   reviewed restricted runtime role and application-table grant allowlist:
+   exactly one node answers ping, the reviewed tasks are registered, the
+   database and Redis are reachable and the queues are still empty. Keep
+   internal bootstrap/access-grant tables inaccessible.
+8. Only after the worker checks pass, deploy the new API (sequence step 7)
+   while public traffic remains blocked. Reach it through an operator-only
+   service path or isolated canary binding, not by reopening the public
+   route, and verify health and the authorization matrix.
 9. Before sending application traffic, call `/health`, record a new
    `process_instance_id` and the observed `requests_since_start`, and
-   independently confirm every old API/worker instance is gone. The counter is
+   independently confirm every old API/worker instance is gone (the old
+   workers were already stopped and verified gone in step 2). The counter is
    an observation, not a requirement to equal zero after startup. With multiple
    replicas, inspect each instance directly; one load-balanced response cannot
    prove all replicas are fresh.
@@ -330,6 +335,57 @@ ORDER BY c.relname;
     order.
 16. Monitor 401/403/404/429/503 rates, RLS policy errors, worker revocation
      rejections, Redis failures, and connector redaction before widening traffic.
+
+### D-021 compatibility sequence
+
+Steps 2, 5, 7, 8 and 15 above follow this sequence.
+
+**D-021 compatibility sequence** (identical in `ARCHITECTURE.md` §13,
+`docs/architecture/SECURITY_FOUNDATION_ROLLOUT.md` and D-021 in
+`docs/architecture/DECISIONS.md`). **Abort and stop on any non-zero count.**
+
+1. **Freeze producers**: GitHub sync (manual and scheduled), connector
+   schedules, and API writes (stop the API or keep its public route blocked).
+2. **Drain with the OLD workers still running.** They consume the old-format
+   tasks that are already queued.
+3. **Verify drained**, two samples at least 15 seconds apart, every value zero
+   or empty in both: `celery inspect active`, `reserved` and `scheduled` on
+   every worker node; queued messages (`LLEN` of `default`, `ingestion`,
+   `connectors` and `attribution`); the Redis `unacked` structures; and no
+   `pending`/`processing` documents (read-only SQL below, including the
+   GitHub-origin join).
+4. **Stop the old workers and verify they are gone**: no node answers
+   `celery inspect ping` and no old worker instance is running. Then re-check
+   that every count from step 3 is still zero.
+5. **Owner-run migration**:
+   `SOURCEMIND_RUNTIME_ROLE=sourcemind_runtime alembic upgrade head` with the
+   migration-owner connection.
+6. **Deploy and validate the new worker**: exactly one node answers ping, the
+   reviewed tasks are registered, the database (restricted runtime role) and
+   Redis are reachable, and the queues are still empty.
+7. **Deploy the API**, validate it, then reopen producers.
+
+```sql
+SELECT count(*) FROM documents
+WHERE ingestion_status IN ('pending', 'processing') AND deleted_at IS NULL;
+
+SELECT count(*) FROM documents AS d
+JOIN artifact_links AS al ON al.document_id = d.id
+WHERE al.source_tool = 'github'
+  AND d.ingestion_status IN ('pending', 'processing')
+  AND d.deleted_at IS NULL;
+```
+
+Stopping a worker does **not** drain a queue: its messages stay in Redis, and
+the next worker to start (the new one) would consume them as new-format
+tasks. "Drained" means the counts are zero, checked before and after step 4.
+The old workers must drain old-format tasks because a document queued by the
+old API has no `pipeline_data["attribution"]` record; the new worker treats
+such a document as a direct upload and credits its submitter, so a GitHub
+document would be credited to the sync initiator. Such documents are only safe
+on the old code path. Conversely, an old worker ignores the record on
+documents queued by the new API, which is why the new worker starts before the
+new API and no old worker may remain.
 
 ## Rollback
 

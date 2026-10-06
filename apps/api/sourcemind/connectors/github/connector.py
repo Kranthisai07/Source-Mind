@@ -27,15 +27,21 @@ from sourcemind.connectors.github.app_auth import GitHubAppAuth
 from sourcemind.connectors.github.client import GitHubClient
 from sourcemind.connectors.github.mapper import ConnectorDocument, GitHubMapper
 from sourcemind.models.connector import ArtifactLink, ConnectorConfig, ConnectorSyncLog
-from sourcemind.models.document import DocumentSourceType
+from sourcemind.models.document import Document, DocumentSourceType, IngestionStatus
 from sourcemind.services.attribution.github_links import (
     NO_GITHUB_ACCOUNT,
     resolve_github_link,
     valid_github_user_id,
 )
-from sourcemind.services.ingestion.receiver import receive
+from sourcemind.services.ingestion.receiver import receive, recover_pending_dispatch
 
 log = structlog.get_logger(__name__)
+
+# Document.pipeline_data["dispatch_state"] values for which task publication is
+# not confirmed (receiver.py's dispatch state machine). Only these need
+# recovery; "queued"/"work_started"/"not_required" mean the broker accepted the
+# task or no dispatch is needed.
+_UNCONFIRMED_DISPATCH_STATES = frozenset({"orphaned", "publishing", "uncertain"})
 
 
 class GitHubConnector:
@@ -46,7 +52,9 @@ class GitHubConnector:
         auth: Configured :class:`GitHubAppAuth` for token management.
         session: Active async database session.
         workspace_id: Workspace UUID that owns this connector.
-        user_id: Service/system user UUID used as the ingestion actor.
+        user_id: The sync initiator (the operator who triggered the sync). It is
+            recorded only as ``Document.submitter_id`` (the worker's
+            authorization principal) and is never credited as an author.
     """
 
     def __init__(
@@ -203,19 +211,77 @@ class GitHubConnector:
     async def _ingest(self, doc: ConnectorDocument) -> bool:
         """Ingest one artifact, skipping if already ingested (via ArtifactLink).
 
+        An existing link is checked for the STATE of its document, not just
+        its existence. The link commits with the Document before the task is
+        published (D-021), so a publication failure leaves a committed link
+        over a ``pending`` document; that document is re-dispatched by id
+        (same task id, same stored attribution decision), never re-received
+        by content. ``.all()`` because ``backfill_artifact_links`` clones the
+        link once per memory; ``scalar_one_or_none()`` raised
+        ``MultipleResultsFound`` on any multi-memory artifact.
+
+        Only a document whose publication is NOT confirmed is touched
+        (``dispatch_state`` orphaned/publishing/uncertain). A broker-accepted
+        document stays ``pending`` in committed state while the worker
+        processes it and the worker holds that row's lock for its whole
+        pipeline, whereas recovery starts with a blocking ``FOR UPDATE``, so
+        touching it would stall a re-sync behind every in-flight document.
+
         Returns:
-            ``True`` if the artifact was newly ingested, ``False`` if skipped.
+            ``True`` if the artifact was newly ingested, ``False`` if skipped
+            (including when an existing pending document was re-dispatched).
         """
-        # Dedup check — ArtifactLink unique constraint covers workspace+tool+type+id
-        existing = await self._session.execute(
-            select(ArtifactLink).where(
-                ArtifactLink.workspace_id == self._workspace_id,
-                ArtifactLink.source_tool == doc.source_tool,
-                ArtifactLink.source_type == doc.source_type,
-                ArtifactLink.source_id == doc.source_id,
+        links = (
+            await self._session.execute(
+                select(
+                    ArtifactLink.document_id,
+                    Document.ingestion_status,
+                    Document.deleted_at,
+                    Document.pipeline_data["dispatch_state"]
+                    .as_string()
+                    .label("dispatch_state"),
+                )
+                .select_from(ArtifactLink)
+                .outerjoin(Document, Document.id == ArtifactLink.document_id)
+                .where(
+                    ArtifactLink.workspace_id == self._workspace_id,
+                    ArtifactLink.source_tool == doc.source_tool,
+                    ArtifactLink.source_type == doc.source_type,
+                    ArtifactLink.source_id == doc.source_id,
+                )
             )
-        )
-        if existing.scalar_one_or_none() is not None:
+        ).all()
+        if links:
+            # Legacy rows without a document count as existing; deleted,
+            # already-dispatched and broker-accepted documents are left alone.
+            pending = sorted(
+                {
+                    row.document_id
+                    for row in links
+                    if row.document_id is not None
+                    and row.ingestion_status == IngestionStatus.PENDING
+                    and row.deleted_at is None
+                    and row.dispatch_state in _UNCONFIRMED_DISPATCH_STATES
+                },
+                key=str,
+            )
+            for document_id in pending:
+                try:
+                    await recover_pending_dispatch(
+                        self._session, document_id, self._workspace_id
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "github_connector_ingest_failed",
+                        source_id=doc.source_id,
+                        error_type=type(exc).__name__,
+                    )
+                    raise
+                log.info(
+                    "github_connector_recovered_dispatch",
+                    source_id=doc.source_id,
+                    document_id=str(document_id),
+                )
             return False
 
         attribution = await self._attribution_decision(doc)
