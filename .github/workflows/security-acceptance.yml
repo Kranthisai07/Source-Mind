@@ -151,6 +151,10 @@ jobs:
           # Scoped to THIS step deliberately. It must not reach the acceptance step,
           # which runs with the bypass disabled on purpose.
           AUTH_DEV_BYPASS_ENABLED: "true"
+          # 20261005_0010 grants github_author_links explicitly to this role and
+          # aborts when the variable is unset (D-021). The role name is not a
+          # secret; sourcemind_test is the disposable runtime role.
+          SOURCEMIND_RUNTIME_ROLE: sourcemind_test
         run: DATABASE_URL="$MIGRATION_DATABASE_URL" alembic upgrade head
 
       - name: Record applied revision
@@ -165,7 +169,7 @@ jobs:
       # pyproject so the collected count is the raw test count. Asserting the
       # exact node IDs means a rename cannot silently shrink the gate, which a
       # bare count would not catch.
-      - name: Verify exact test selection (27 nodes)
+      - name: Verify exact test selection (38 nodes)
         working-directory: apps/api
         # SECURITY_TEST_ALLOW_DISPOSABLE / TEST_DATABASE_URL / TEST_REDIS_URL
         # are already in the environment via GITHUB_ENV.
@@ -181,6 +185,17 @@ jobs:
           tests/integration/test_backend_review_real_services.py::test_real_redis_429_exposes_positive_retry_after
           tests/integration/test_backend_review_real_services.py::test_recovered_job_id_is_pollable_through_real_route
           tests/integration/test_backend_review_real_services.py::test_same_key_with_different_payload_conflicts_atomically
+          tests/integration/test_github_author_links_real_db.py::test_admin_api_manages_links_under_rls_without_crossing_workspaces
+          tests/integration/test_github_author_links_real_db.py::test_concurrent_correction_waits_for_the_credit_time_share_lock
+          tests/integration/test_github_author_links_real_db.py::test_db_layer_allows_writes_only_for_declared_owner_or_admin
+          tests/integration/test_github_author_links_real_db.py::test_link_change_after_queueing_leaves_author_unresolved[corrected]
+          tests/integration/test_github_author_links_real_db.py::test_link_change_after_queueing_leaves_author_unresolved[deleted]
+          tests/integration/test_github_author_links_real_db.py::test_link_change_after_queueing_leaves_author_unresolved[departed]
+          tests/integration/test_github_author_links_real_db.py::test_link_never_resolves_for_a_document_in_another_workspace
+          tests/integration/test_github_author_links_real_db.py::test_rls_hides_links_from_other_workspaces_non_members_and_departed
+          tests/integration/test_github_author_links_real_db.py::test_runtime_grant_is_explicit_exact_and_not_from_default_privileges
+          tests/integration/test_github_author_links_real_db.py::test_sync_credits_linked_author_not_initiator_and_finalizes_all_links
+          tests/integration/test_github_author_links_real_db.py::test_unresolved_author_stays_reported_and_missing_after_an_edit
           tests/integration/test_handoff_assignment_real_db.py::test_handoff_assignment_is_atomic_and_limited_to_seeded_memories
           tests/integration/test_ingestion_worker_contract.py::test_ambiguous_publication_redelivery_preserves_committed_output
           tests/integration/test_ingestion_worker_contract.py::test_concurrent_duplicate_deliveries_commit_output_once
@@ -207,10 +222,11 @@ jobs:
             tests/integration/test_handoff_assignment_real_db.py \
             tests/integration/test_ingestion_worker_contract.py \
             tests/integration/test_backend_review_real_services.py \
+            tests/integration/test_github_author_links_real_db.py \
             | grep '::' | sort > "$actual"
           echo "collected $(wc -l < "$actual") node(s)"
           diff -u "$expected" "$actual" || {
-            echo "::error::collected node IDs differ from the expected twenty-seven"
+            echo "::error::collected node IDs differ from the expected thirty-eight"
             exit 1
           }
 
@@ -220,7 +236,7 @@ jobs:
       # never reported as an acceptance timeout.
       #
       # A JUnit report is emitted so the next step can prove the tests RAN.
-      # `pytest` exits 0 on "27 skipped", and every one of these is guarded by
+      # `pytest` exits 0 on "38 skipped", and every one of these is guarded by
       # the disposable-DB check — so a silent skip is the realistic failure and
       # exit status alone cannot detect it.
       - name: Security acceptance tests
@@ -239,9 +255,10 @@ jobs:
             tests/integration/test_security_acceptance_real_services.py \
             tests/integration/test_handoff_assignment_real_db.py \
             tests/integration/test_ingestion_worker_contract.py \
-            tests/integration/test_backend_review_real_services.py
+            tests/integration/test_backend_review_real_services.py \
+            tests/integration/test_github_author_links_real_db.py
 
-      - name: Assert all twenty-seven tests executed and passed
+      - name: Assert all thirty-eight tests executed and passed
         if: always() && steps.acceptance.outcome != 'skipped'
         working-directory: apps/api
         run: |
@@ -269,11 +286,11 @@ jobs:
               else:
                   bad.append(f"{node} -> {state}")
           print(f"executed {total}, passed {passed}")
-          if total != 27:
-              print(f"::error::expected 27 test cases, report contains {total}")
+          if total != 38:
+              print(f"::error::expected 38 test cases, report contains {total}")
           for b in bad:
               print(f"::error::{b}")
-          sys.exit(0 if (total == 27 and passed == 27) else 1)
+          sys.exit(0 if (total == 38 and passed == 38) else 1)
           PY
 
       - name: Upload acceptance report

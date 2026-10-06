@@ -11,6 +11,7 @@ from sourcemind.api.v1 import (
     analytics,
     conflicts,
     connectors,
+    github_author_links,
     health,
     memories,
     search,
@@ -35,4 +36,5 @@ api_router.include_router(team.handoff_router, prefix=_v1_prefix)
 api_router.include_router(conflicts.router, prefix=_v1_prefix)
 api_router.include_router(analytics.router, prefix=_v1_prefix)
 api_router.include_router(connectors.router, prefix=_v1_prefix)
+api_router.include_router(github_author_links.router, prefix=_v1_prefix)
 api_router.include_router(slack.router, prefix=_v1_prefix)

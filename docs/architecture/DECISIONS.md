@@ -1711,8 +1711,12 @@ rows when no tenant context is set. An incompatible row raises an actionable
 error and the transaction removes the temporary constraint automatically.
 
 That early refusal is guaranteed only for the supported command: start exactly
-at `20260916_0009` and run one explicit
-`alembic downgrade 20250817_0005`. Alembic is configured with
+at the head and run one explicit
+`alembic downgrade 20250817_0005`. Since D-021 the head is `20261005_0010`,
+whose downgrade repeats this preflight before dropping `github_author_links`,
+so a refusal leaves the database at `20261005_0010` with that table intact;
+`20260916_0009` remains the supported start only for a database that never
+applied D-021. Alembic is configured with
 `transaction_per_migration=True`, so each successful revision and its version
 stamp commits independently. Relative arguments remain strings such as `-4`
 when `0009` inspects the destination; repeated `-1` commands have the same
@@ -2081,3 +2085,152 @@ not for use.
 provider keys are not established as revoked, no alerting or Railway healthcheck
 exists, and no backup of the new database has been taken. These are tracked
 separately and are not changed by this entry.
+
+---
+
+## D-021 — GitHub sync credits the admin-linked author, never the sync initiator
+
+**Status:** Implemented on branch `fix/github-sync-attribution-claude` on
+2026-10-05, with round-2 corrections the same day; unit-verified locally; real
+PostgreSQL/RLS tests written but not run locally (no Docker); local compose
+role changes validated by `docker compose config` only; not committed, not
+migrated anywhere, not deployed.
+
+**Defect.** `workers/ingestion.py` credited `user_id` — the document submitter —
+for every memory it created. For GitHub sync the submitter is whoever clicked
+"sync", so every synced memory belonged to that one person in search,
+analytics, contributors and handoff. The real author sat unused on
+`ArtifactLink.source_author` and `resolved_user_id` was never written. The link
+itself was inserted after `receive()` had committed the Document and published
+the task, so the worker could run before it existed.
+
+**Identity: admin-asserted links keyed by GitHub's numeric user id.** New table
+`github_author_links (workspace_id, github_user_id bigint) -> user_id`, managed
+by workspace admins through `/v1/workspaces/:id/github-author-links`
+(ADMINISTER), stamping who created and who last corrected each link. It is an
+admin ASSERTION, not verified account ownership; Clerk/GitHub OAuth proof can
+replace it later. Resolution never matches a login, display name or e-mail:
+those are spoofable labels and a wrong match silently credits someone else,
+which is worse than reporting "unresolved". Only an explicit link in the same
+workspace to an active, non-departed member with a live user row resolves.
+Commits whose author has no GitHub account (git display-name fallback),
+discussions (GraphQL returns only a login), bots, and co-authors stay
+unresolved.
+
+**Flow.** The mapper records `metadata.author = {github_user_id, login, kind}`.
+The connector looks the link up at sync time and passes the ArtifactLink and a
+decision (`pipeline_data.attribution = {mode: external, github_user_id,
+source_author, link_user_id, resolution}`) to `receive()`, which inserts the
+link in the Document's transaction before publication; `resolved_user_id` is
+always NULL then. The worker rechecks at credit time with `SELECT … FOR SHARE`
+on the link row and credits only if the CURRENT link still maps the id to the
+SAME user recorded at sync time and that user is still an active member. A
+deleted or corrected link, a departed member or a lookup error leaves the
+document unresolved: no attribution row. A corrected link is not followed —
+corrections apply to future syncs, with no back-fill. After
+`backfill_artifact_links` the worker writes `resolved_user_id` on every link of
+the document (anchor and clones) and `pipeline_data.attribution.final`, in the
+same transaction as the attribution. Invariant: `resolved_user_id IS NOT NULL`
+exactly when the creation attribution credits that user. Every lookup runs in a
+SAVEPOINT and fails closed with `github_link_lookup_failed`.
+
+**The link lock never spans a provider call.** Relation detection calls the
+model per candidate, and conflict creation reads each memory's attribution
+rows, so the worker cannot simply attribute after `detect()`. `RelationDetector`
+is split into `plan()` (candidate vector query + classification; writes nothing)
+and `apply()` (conflicts with the precomputed verdict, relation inserts,
+retire-superseded, importance/severity recompute; uses a provider stand-in that
+raises if touched). `detect()` keeps its interleaved behaviour and DB-call
+order for existing callers. `plan()` excludes candidates that an earlier memory
+of the same batch will retire, which `detect()` achieves by writing the
+retirement first. Worker order, for every document: extract/chunk/facts/embed →
+`store_memories` → `plan` → DB-only tail: recheck (`FOR SHARE`) → attribution →
+`backfill_artifact_links` → finalize → `apply` → `COMPLETED` → commit. An
+unresolved GitHub memory has no attribution row, so — as before — it raises no
+conflict.
+
+**Unresolved status comes from the document-level link, not from missing rows.**
+Editing any memory creates a new version that copies no attribution history,
+so the editor becomes its sole 100% contributor (pre-existing behaviour, not
+changed here; it also drops earlier resolved contributors and deserves its own
+fix). "No attribution row" would therefore stop reporting an unresolved author
+after the first edit. `unresolved_author` on memory/search responses and the new
+`unattributed_memories` count are derived from the document's artifact link
+(`resolved_user_id IS NULL AND source_author IS NOT NULL`, joined by
+`document_id`), which every version shares. Coverage is now
+`1 − (single_contributor + unattributed) / total`, each memory counted once;
+health scores drop for workspaces with unresolved GitHub memories.
+
+**Grants: explicit, to a role named by a required variable.** No earlier
+migration granted to a runtime role; CI hid that behind `ALTER DEFAULT
+PRIVILEGES` while production uses an exact table allowlist (`sourcemind_runtime`).
+Migration `20261005_0010` reads `SOURCEMIND_RUNTIME_ROLE`, aborts before any DDL
+if it is unset, malformed or names a missing role, and leaves the ACL exactly
+SELECT/INSERT/UPDATE/DELETE for that role and nothing for PUBLIC (revoke, then
+grant; no sequence, TRUNCATE, REFERENCES or TRIGGER). Making it optional with a
+post-migration check was rejected: a forgotten variable would ship a table the
+runtime cannot read, and every lookup would then fail closed as "unresolved"
+without an error anyone sees. Every `alembic upgrade` site sets it
+(`sourcemind_test` in CI and disposable databases, `sourcemind_runtime` in
+local compose and for the production operator). If the named role
+owns the table (a single-role setup), its revoke/grant is skipped, because
+revoking from the owner strips its own TRUNCATE/REFERENCES/TRIGGER. Because
+`transaction_per_migration=True`, the 0010 downgrade repeats the D-013 connector
+preflight before dropping the table, so a refused head→0005 rollback stops at
+`20261005_0010` with the table intact; the supported rollback start is now that
+head (`20260916_0009` only for databases that never applied D-021), still with
+one explicit `alembic downgrade 20250817_0005` and no relative/stepwise
+commands. The PostgreSQL 18 round-trip gate's head-revision pins move from
+`0009` to `0010`.
+
+**Row-level security: member reads, admin writes — for the declared identity.**
+Per-command policies replace a single FOR ALL policy: SELECT uses the 0006
+active-membership expression; INSERT WITH CHECK and DELETE USING add
+`role IN ('owner', 'admin')`; UPDATE uses the member-level expression for USING
+and the admin one for WITH CHECK. UPDATE USING stays member-level on purpose:
+`SELECT … FOR SHARE` evaluates the UPDATE policy's USING, and the worker runs as
+the document submitter (a contributor), so it can lock a link it cannot change.
+**Exact limit:** the database trusts the application-declared user id.
+`app.current_user_id` is a transaction-local `set_config` setting, not
+authentication, so writes are admin-only *for the declared identity*: any
+process that holds the runtime role's credentials and can run arbitrary SQL can
+declare an admin's id and write. Reads stay member-level at the database. The
+API's ADMINISTER check is unchanged and remains the primary control; the table
+is not "admin-only" in any stronger sense.
+
+**Distinct owner and runtime roles.** The CI lanes already use separate
+`sourcemind_owner` and `sourcemind_test` roles, and the real-DB test now asserts
+it (runtime role ≠ `pg_tables.tableowner`, neither superuser nor BYPASSRLS).
+Local compose used one bootstrap superuser for Postgres, migrations and the
+app, which owns the tables and bypasses RLS. `infra/postgres/local-roles.sql`
+now creates `sourcemind_owner` (owns the database and `public`; migrations run
+with `DATABASE_URL=$MIGRATION_DATABASE_URL`) and `sourcemind_runtime` (api and
+worker; NOSUPERUSER, NOBYPASSRLS, default DML privileges), with env-overridable
+local passwords. Existing local volumes keep the old single role and must be
+recreated with `docker compose -f infra/docker-compose.yml down -v`.
+
+**Deployment prerequisite: drain before the new worker starts.** The new
+worker treats a document with no `pipeline_data["attribution"]` record as a
+direct upload and credits its submitter, so a GitHub document queued by the old
+API would be credited to the sync initiator; an old worker ignores the record.
+Required order, aborting if any check is non-zero: freeze producers (GitHub
+sync, API writes) → stop old workers → drain (Celery queues `default`,
+`ingestion`, `connectors`, `attribution` at 0; Redis `unacked` structures
+empty; `inspect active/reserved/scheduled` empty on every node; two samples at
+least 15 s apart, as in the c413d15 rollout) → read-only check that no
+`documents` row is `pending`/`processing` (with an `artifact_links` join for
+GitHub origin; this also covers enqueue recovery republishing) → owner-run
+migration with `SOURCEMIND_RUNTIME_ROLE=sourcemind_runtime` → worker first, then
+API (D-020 order) → unfreeze. Spelled out in ARCHITECTURE.md §13.
+
+**Known limitations.** Existing synced memories are not back-filled. Link
+history keeps only the latest created/updated stamps. A same-content duplicate
+returns `already_exists` and writes no link (pre-existing). The web UI does not
+yet render "unresolved". An admin correction waits on the FOR SHARE lock only
+for the worker's database tail, not for any provider call.
+
+**Follow-ups, deliberately not done here.** (a) Memory-edit attribution:
+`create_new_version` copies no attribution history, so an edit drops every
+earlier contributor and the editor becomes the sole 100% contributor. (b)
+Historical back-fill of memories synced before this change (they stay credited
+to the sync initiator until re-attributed by a separate, reviewed procedure).

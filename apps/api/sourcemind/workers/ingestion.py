@@ -65,6 +65,10 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
     from sourcemind.core.redis_client import close_redis, init_redis
     from sourcemind.models.document import Document, IngestionStatus
     from sourcemind.services.attribution.engine import create_initial_attribution
+    from sourcemind.services.attribution.github_links import (
+        finalize_external_attribution,
+        recheck_external_credit,
+    )
     from sourcemind.services.ingestion.chunker import chunk
     from sourcemind.services.ingestion.embedder import EmbeddingService
     from sourcemind.services.ingestion.extractor import extract
@@ -306,16 +310,47 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                     session, ws_uuid, doc_uuid, embedding_results, source_metadata
                 )
 
-                for memory in memories:
-                    await create_initial_attribution(
-                        session, memory.id, user_uuid, memory.content, doc.source_type
+                # Relation classification is the LAST provider work. It runs
+                # before the link lock below so the FOR SHARE lock is held only
+                # across database statements, never across a model call
+                # (D-021). plan() writes nothing; apply() further down writes
+                # conflicts/relations after attribution exists, because
+                # conflict creation reads each memory's attribution rows.
+                relation_plan = await relation_detector.plan(session, memories, ws_uuid)
+
+                # ── DB-only tail: no provider call from here to commit ──
+                # Who is credited. A direct upload credits its submitter. A
+                # connector document (D-021) credits ONLY the admin-linked
+                # author, rechecked now under FOR SHARE; the submitter is the
+                # sync initiator and is never credited for it. Unresolved
+                # authors get no attribution row. Any attribution record at
+                # all marks a connector document; a malformed one fails closed
+                # (no numeric id -> unresolved), never to the submitter.
+                external = (doc.pipeline_data or {}).get("attribution")
+                decision = None
+                credit_user: uuid.UUID | None = user_uuid
+                if external is not None:
+                    decision = await recheck_external_credit(
+                        session, ws_uuid, external if isinstance(external, dict) else {}
                     )
+                    credit_user = decision.user_id
+
+                if credit_user is not None:
+                    for memory in memories:
+                        await create_initial_attribution(
+                            session, memory.id, credit_user, memory.content, doc.source_type
+                        )
 
                 # Connector-sourced documents have a pending ArtifactLink whose
                 # memory_id could not be set at sync time — fill it in now.
                 await backfill_artifact_links(session, doc_uuid, memories)
 
-                await relation_detector.detect(session, memories, ws_uuid)
+                if decision is not None:
+                    # After the backfill, so the anchor AND its clones carry
+                    # the final resolved_user_id, in this same transaction.
+                    await finalize_external_attribution(session, doc_uuid, decision)
+
+                await relation_detector.apply(session, memories, relation_plan)
 
                 await update_document_status(
                     session,

@@ -21,6 +21,11 @@ Thresholds (see ADR-006):
 Usage:
   detector = RelationDetector(anthropic_client)
   await detector.detect(session, new_memories, workspace_id)
+
+  # Or in two phases, so no database lock is held across a provider call
+  # (the ingestion worker, D-021):
+  planned = await detector.plan(session, new_memories, workspace_id)  # LLM only
+  await detector.apply(session, new_memories, planned)               # DB only
 """
 
 from __future__ import annotations
@@ -90,6 +95,33 @@ class Classification(NamedTuple):
     confidence: float
     is_conflict: bool = False
     conflict_summary: str = ""
+
+
+class PlannedPair(NamedTuple):
+    """A (new memory, existing candidate) pair classified during plan()."""
+
+    memory: Memory
+    cand_id: uuid.UUID
+    cand_content: str
+    distance: float
+    verdict: Classification
+
+
+class _NoProvider:
+    """Stands in for the provider client during apply().
+
+    Every pair apply() sees already carries its verdict (_CONFLICT_RADIUS is
+    inside _LLM_RADIUS), so _maybe_create_conflict never needs the client.
+    If that ever changes, this fails loudly instead of calling the provider
+    while the caller holds database locks.
+    """
+
+    @property
+    def messages(self) -> Any:
+        raise RuntimeError("relation apply phase must not call the model provider")
+
+
+_NO_PROVIDER = _NoProvider()
 
 
 def _extract_json_object(raw: str) -> dict[str, Any]:
@@ -308,6 +340,175 @@ class RelationDetector:
     def __init__(self, client: object) -> None:
         self._client = client
 
+    async def _candidates(
+        self,
+        session: AsyncSession,
+        memory: Memory,
+        workspace_id: uuid.UUID,
+        excluded: list[str] | None = None,
+    ) -> list[Any]:
+        """Nearest current memories in the workspace (read-only).
+
+        ``excluded`` is only passed by plan(): it removes candidates an
+        earlier memory in the same batch will retire, which detect() achieves
+        by having already written the retirement. Without it the SQL and
+        parameters are exactly what detect() always issued.
+        """
+        embedding_str = "[" + ",".join(str(f) for f in memory.embedding) + "]"
+        exclusion = ""
+        params: dict[str, Any] = {
+            "emb": embedding_str,
+            "ws_id": str(workspace_id),
+            "mem_id": str(memory.id),
+        }
+        if excluded:
+            exclusion = "AND NOT (id::text = ANY(CAST(:excluded AS text[])))"
+            params["excluded"] = list(excluded)
+        result = await session.execute(
+            text(f"""
+                SELECT
+                    id::text,
+                    content,
+                    embedding <=> CAST(:emb AS vector) AS dist
+                FROM memories
+                WHERE workspace_id = CAST(:ws_id AS uuid)
+                  AND current_version = TRUE
+                  AND deleted_at IS NULL
+                  AND embedding IS NOT NULL
+                  AND id::text != :mem_id
+                  {exclusion}
+                ORDER BY embedding <=> CAST(:emb AS vector)
+                LIMIT 10
+            """),  # noqa: S608 - `exclusion` is a literal fragment
+            params,
+        )
+        return list(result.fetchall())
+
+    async def _apply_pair(
+        self,
+        session: AsyncSession,
+        pair: PlannedPair,
+        related_targets: set[uuid.UUID],
+    ) -> None:
+        """Write the conflict and/or relation for one classified pair (DB only)."""
+        memory, cand_id, cand_content, distance, verdict = pair
+        cand_id_str = str(cand_id)
+        relation_type = verdict.relation
+        confidence = verdict.confidence
+
+        # Conflict check runs BEFORE the relation write.
+        #
+        # _maybe_create_conflict skips any pair that is already
+        # related, which is meant to catch pairs related in an
+        # EARLIER run. Writing the relation first made that guard
+        # fire on the edge written moments earlier in this same
+        # loop, so a conflict could only ever be created when the
+        # relation insert happened to fail. Since _CONFLICT_RADIUS
+        # (0.15) is inside _LLM_RADIUS (0.20), every conflict
+        # candidate took that path — conflict detection was
+        # unreachable on the real ingestion path.
+        #
+        # The classification is passed through so the pair is not
+        # sent to the model a second time; the provider is never reachable
+        # from here.
+        if distance <= _CONFLICT_RADIUS:
+            await _maybe_create_conflict(
+                session,
+                _NO_PROVIDER,
+                memory,
+                cand_id,
+                cand_content,
+                distance,
+                verdict=verdict,
+            )
+
+        if relation_type != "unrelated" and confidence >= _MIN_CONFIDENCE:
+            # Savepoint isolates the duplicate-edge case so we don't
+            # roll back unrelated rows already flushed in this transaction.
+            try:
+                async with session.begin_nested():
+                    relation = MemoryRelation(
+                        source_memory_id=memory.id,
+                        target_memory_id=cand_id,
+                        relation_type=relation_type,
+                        confidence=confidence,
+                        similarity_score=1.0 - distance,
+                        detected_by="pipeline",
+                    )
+                    session.add(relation)
+                    await session.flush()
+
+                    # If new memory supersedes existing: retire existing
+                    if relation_type == RelationType.UPDATES:
+                        await session.execute(
+                            text(
+                                "UPDATE memories SET current_version = FALSE "
+                                "WHERE id = CAST(:id AS uuid)"
+                            ),
+                            {"id": cand_id_str},
+                        )
+
+                related_targets.add(cand_id)
+
+                log.info(
+                    "relation_detected",
+                    from_id=str(memory.id),
+                    to_id=cand_id_str,
+                    type=relation_type,
+                    confidence=confidence,
+                    distance=distance,
+                )
+            except IntegrityError as exc:
+                # Duplicate edge (UniqueConstraint) — savepoint already rolled back.
+                log.debug("relation_insert_skipped", error=str(exc))
+
+    async def plan(
+        self,
+        session: AsyncSession,
+        new_memories: list[Memory],
+        workspace_id: uuid.UUID,
+    ) -> list[PlannedPair]:
+        """Phase 1: candidate queries and LLM classification. Writes nothing."""
+        new_ids = {str(m.id) for m in new_memories}
+        planned: list[PlannedPair] = []
+        # Candidates apply() will retire (an 'updates' edge at or above
+        # _MIN_CONFIDENCE). detect() writes that retirement before querying
+        # for the next memory, so later memories must not see them here.
+        retiring: list[str] = []
+
+        for memory in new_memories:
+            if memory.embedding is None:
+                continue
+            candidates = await self._candidates(session, memory, workspace_id, retiring)
+            for cand_id_str, cand_content, distance in candidates:
+                if cand_id_str in new_ids:
+                    continue
+                if distance > _SCAN_RADIUS or distance > _LLM_RADIUS:
+                    continue
+                verdict = await _classify_relation(self._client, cand_content, memory.content)
+                planned.append(
+                    PlannedPair(memory, uuid.UUID(cand_id_str), cand_content, distance, verdict)
+                )
+                if (
+                    verdict.relation == RelationType.UPDATES
+                    and verdict.confidence >= _MIN_CONFIDENCE
+                    and cand_id_str not in retiring
+                ):
+                    retiring.append(cand_id_str)
+        return planned
+
+    async def apply(
+        self,
+        session: AsyncSession,
+        new_memories: list[Memory],
+        planned: list[PlannedPair],
+    ) -> None:
+        """Phase 2: conflicts, relations, retirement, rescoring. DB only."""
+        related_targets: set[uuid.UUID] = set()
+        for pair in planned:
+            await self._apply_pair(session, pair, related_targets)
+        await self._finish(session, new_memories, related_targets)
+
     async def detect(
         self,
         session: AsyncSession,
@@ -319,6 +520,10 @@ class RelationDetector:
 
         For each new memory with a valid embedding, finds candidate existing memories
         and runs LLM classification. Writes MemoryRelation and MemoryConflict rows.
+
+        Classification and writes stay interleaved here exactly as before;
+        plan()/apply() are the same steps split so that a caller can keep
+        provider calls outside a database lock.
         """
         new_ids = {str(m.id) for m in new_memories}
 
@@ -334,30 +539,7 @@ class RelationDetector:
             if memory.embedding is None:
                 continue
 
-            embedding_str = "[" + ",".join(str(f) for f in memory.embedding) + "]"
-
-            result = await session.execute(
-                text("""
-                    SELECT
-                        id::text,
-                        content,
-                        embedding <=> CAST(:emb AS vector) AS dist
-                    FROM memories
-                    WHERE workspace_id = CAST(:ws_id AS uuid)
-                      AND current_version = TRUE
-                      AND deleted_at IS NULL
-                      AND embedding IS NOT NULL
-                      AND id::text != :mem_id
-                    ORDER BY embedding <=> CAST(:emb AS vector)
-                    LIMIT 10
-                """),
-                {
-                    "emb": embedding_str,
-                    "ws_id": str(workspace_id),
-                    "mem_id": str(memory.id),
-                },
-            )
-            candidates = result.fetchall()
+            candidates = await self._candidates(session, memory, workspace_id)
 
             for cand_id_str, cand_content, distance in candidates:
                 # Skip other memories in this same batch
@@ -372,77 +554,21 @@ class RelationDetector:
                     verdict = await _classify_relation(
                         self._client, cand_content, memory.content
                     )
-                    relation_type = verdict.relation
-                    confidence = verdict.confidence
+                    await self._apply_pair(
+                        session,
+                        PlannedPair(memory, cand_id, cand_content, distance, verdict),
+                        related_targets,
+                    )
 
-                    # Conflict check runs BEFORE the relation write.
-                    #
-                    # _maybe_create_conflict skips any pair that is already
-                    # related, which is meant to catch pairs related in an
-                    # EARLIER run. Writing the relation first made that guard
-                    # fire on the edge written moments earlier in this same
-                    # loop, so a conflict could only ever be created when the
-                    # relation insert happened to fail. Since _CONFLICT_RADIUS
-                    # (0.15) is inside _LLM_RADIUS (0.20), every conflict
-                    # candidate took that path — conflict detection was
-                    # unreachable on the real ingestion path.
-                    #
-                    # The classification is passed through so the pair is not
-                    # sent to the model a second time.
-                    if distance <= _CONFLICT_RADIUS:
-                        await _maybe_create_conflict(
-                            session,
-                            self._client,
-                            memory,
-                            cand_id,
-                            cand_content,
-                            distance,
-                            verdict=verdict,
-                        )
+        await self._finish(session, new_memories, related_targets)
 
-                    if relation_type != "unrelated" and confidence >= _MIN_CONFIDENCE:
-                        # Savepoint isolates the duplicate-edge case so we don't
-                        # roll back unrelated rows already flushed in this transaction.
-                        try:
-                            async with session.begin_nested():
-                                relation = MemoryRelation(
-                                    source_memory_id=memory.id,
-                                    target_memory_id=cand_id,
-                                    relation_type=relation_type,
-                                    confidence=confidence,
-                                    similarity_score=1.0 - distance,
-                                    detected_by="pipeline",
-                                )
-                                session.add(relation)
-                                await session.flush()
-
-                                # If new memory supersedes existing: retire existing
-                                if relation_type == RelationType.UPDATES:
-                                    await session.execute(
-                                        text(
-                                            "UPDATE memories SET current_version = FALSE "
-                                            "WHERE id = CAST(:id AS uuid)"
-                                        ),
-                                        {"id": cand_id_str},
-                                    )
-
-                            related_targets.add(cand_id)
-
-                            log.info(
-                                "relation_detected",
-                                from_id=str(memory.id),
-                                to_id=cand_id_str,
-                                type=relation_type,
-                                confidence=confidence,
-                                distance=distance,
-                            )
-                        except IntegrityError as exc:
-                            # Duplicate edge (UniqueConstraint) — savepoint already rolled back.
-                            log.debug("relation_insert_skipped", error=str(exc))
-
-
+    async def _finish(
+        self,
+        session: AsyncSession,
+        new_memories: list[Memory],
+        related_targets: set[uuid.UUID],
+    ) -> None:
         await session.flush()
-
         # Post-processing lives HERE, not in a wrapper.
         #
         # Relations and conflicts have just been written, which changes both

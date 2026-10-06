@@ -7,11 +7,18 @@ Endpoints it serves:
   GET /v1/workspaces/:id/analytics/knowledge-gaps
 
 Knowledge Health Score formula:
-  coverage_score    = 1 - (single_contributor_memories / total_memories)
+  coverage_score    = 1 - ((single_contributor_memories + unattributed_memories)
+                           / total_memories)
   freshness_score   = updated_in_90_days / total_important_memories
   conflict_score    = 1 - clamp(open_conflicts / total_memories, 0, 1)
   attribution_score = multi_contributor_memories / total_memories
   health = 0.30*coverage + 0.30*freshness + 0.25*conflict + 0.15*attribution
+
+unattributed_memories (D-021) are current-version memories with no attribution
+row OR an unresolved originating author (their document's artifact link has
+source_author set and resolved_user_id NULL). The link is per document, so the
+status survives an edit that gives the editor a row. A memory is counted once:
+single_contributor_memories excludes unattributed ones.
 """
 
 from __future__ import annotations
@@ -38,12 +45,19 @@ def _compute_health_score(
     total_important: int,
     open_conflicts: int,
     multi_contributor_count: int,
+    unattributed_count: int = 0,
 ) -> float:
-    """Compute the composite health score [0.0–1.0]."""
+    """Compute the composite health score [0.0–1.0].
+
+    ``single_contributor_count`` must not include memories already counted in
+    ``unattributed_count``.
+    """
     if total_memories == 0:
         return 1.0
 
-    coverage = 1.0 - (single_contributor_count / total_memories)
+    coverage = 1.0 - _clamp(
+        (single_contributor_count + unattributed_count) / total_memories, 0.0, 1.0
+    )
     freshness = updated_in_90_days / max(total_important, 1)
     conflict = 1.0 - _clamp(open_conflicts / total_memories, 0.0, 1.0)
     attribution = multi_contributor_count / total_memories
@@ -117,22 +131,41 @@ async def get_overview(
     )
     open_conflicts = conflicts.scalar() or 0
 
-    # Single-contributor memories
-    single_contrib = await session.execute(
+    # Single-contributor and unattributed memories, each memory counted once.
+    # Unattributed = no attribution row OR an unresolved originating author on
+    # the document-level artifact link (D-021).
+    coverage_gaps = await session.execute(
         text("""
-            SELECT COUNT(*) FROM (
-                SELECT m.id FROM memories m
-                JOIN attributions a ON a.memory_id = m.id
+            SELECT
+                COUNT(*) FILTER (WHERE NOT sub.unattributed AND sub.contributors = 1)
+                    AS single_only,
+                COUNT(*) FILTER (WHERE sub.unattributed) AS unattributed
+            FROM (
+                SELECT
+                    m.id,
+                    COUNT(DISTINCT a.user_id) AS contributors,
+                    (
+                        COUNT(DISTINCT a.user_id) = 0
+                        OR EXISTS (
+                            SELECT 1 FROM artifact_links al
+                            WHERE al.document_id = m.document_id
+                              AND al.resolved_user_id IS NULL
+                              AND al.source_author IS NOT NULL
+                        )
+                    ) AS unattributed
+                FROM memories m
+                LEFT JOIN attributions a ON a.memory_id = m.id
                 WHERE m.workspace_id = CAST(:ws AS uuid)
                   AND m.current_version = TRUE
                   AND m.deleted_at IS NULL
-                GROUP BY m.id
-                HAVING COUNT(DISTINCT a.user_id) = 1
+                GROUP BY m.id, m.document_id
             ) sub
         """),
         {"ws": ws},
     )
-    single_contributor_count = single_contrib.scalar() or 0
+    gaps_row = coverage_gaps.fetchone()
+    single_contributor_count = int(gaps_row.single_only or 0) if gaps_row else 0
+    unattributed_count = int(gaps_row.unattributed or 0) if gaps_row else 0
 
     # Multi-contributor memories
     multi_contrib = await session.execute(
@@ -177,6 +210,7 @@ async def get_overview(
         total_important=total_important,
         open_conflicts=open_conflicts,
         multi_contributor_count=multi_contributor_count,
+        unattributed_count=unattributed_count,
     )
 
     # Top contributors
@@ -252,7 +286,15 @@ async def get_overview(
     ]
 
     # Compute individual breakdown scores for the UI health gauge
-    coverage_score = round(1.0 - (single_contributor_count / max(total_memories, 1)), 4)
+    coverage_score = round(
+        1.0
+        - _clamp(
+            (single_contributor_count + unattributed_count) / max(total_memories, 1),
+            0.0,
+            1.0,
+        ),
+        4,
+    )
     freshness_score = round(updated_in_90 / max(total_important, 1), 4)
     conflict_score = round(1.0 - _clamp(open_conflicts / max(total_memories, 1), 0.0, 1.0), 4)
     attribution_score = round(multi_contributor_count / max(total_memories, 1), 4)
@@ -265,12 +307,14 @@ async def get_overview(
         ),
         "memories_created_last_30_days": memories_last_30,
         "open_conflicts": open_conflicts,
+        "unattributed_memories": unattributed_count,
         "knowledge_health_score": health_score,
         "health_breakdown": {
             "coverage": coverage_score,
             "freshness": freshness_score,
             "conflict_ratio": conflict_score,
             "attribution": attribution_score,
+            "unattributed_memories": unattributed_count,
         },
         "top_contributors": top_contributors,
         "recent_activity": recent_activity,

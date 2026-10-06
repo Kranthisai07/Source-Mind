@@ -5,7 +5,16 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Text, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -153,3 +162,48 @@ class ArtifactLink(Base):
 
     def __repr__(self) -> str:
         return f"<ArtifactLink {self.source_tool}:{self.source_type}:{self.source_id}>"
+
+
+class GitHubAuthorLink(Base):
+    """Admin-asserted link from a GitHub numeric user id to a workspace member.
+
+    D-021. Asserted by a workspace admin, NOT proof of account ownership. The
+    numeric id is the only key; ``github_login`` is a display label and is
+    never matched. Created by migration 20261005_0010.
+    """
+
+    __tablename__ = "github_author_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "github_user_id", name="uq_github_author_links_ws_github_user"
+        ),
+        CheckConstraint("github_user_id > 0", name="ck_github_author_links_positive_id"),
+        Index("ix_github_author_links_ws_user", "workspace_id", "user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default="gen_random_uuid()",
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    github_user_id: Mapped[int] = mapped_column(BigInteger(), nullable=False)
+    github_login: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default="NOW()",
+    )
+    updated_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True,
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<GitHubAuthorLink {self.workspace_id}:{self.github_user_id}>"

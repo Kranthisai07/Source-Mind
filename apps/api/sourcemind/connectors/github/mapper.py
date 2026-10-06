@@ -62,7 +62,13 @@ class GitHubMapper:
         sha = raw["sha"]
         commit = raw.get("commit", {})
         author = commit.get("author") or {}
-        committer_login = (raw.get("author") or {}).get("login") or author.get("name")
+        account = raw.get("author") or {}
+        committer_login = account.get("login") or author.get("name")
+        author_ref = _author_ref(account)
+        if author_ref["kind"] != "github_account" and author.get("name"):
+            # A git display name is a label only. It is never resolvable to a
+            # SourceMind user (D-021), so no id and no login are recorded.
+            author_ref = {"github_user_id": None, "login": None, "kind": "git_name"}
 
         message: str = commit.get("message", "")
         title_line = message.split("\n")[0][:200]
@@ -94,6 +100,7 @@ class GitHubMapper:
                 "sha": sha,
                 "repo": f"{owner}/{repo}",
                 "files_changed": len(raw.get("files", [])),
+                "author": author_ref,
             },
         )
 
@@ -148,6 +155,7 @@ class GitHubMapper:
                 "state": state,
                 "merged": merged,
                 "labels": [lbl["name"] for lbl in raw.get("labels", [])],
+                "author": _author_ref(raw.get("user")),
             },
         )
 
@@ -285,6 +293,7 @@ class GitHubMapper:
                 "comment_count": len(comments),
                 "review_comment_count": len(review_comments),
                 "approvals": sum(1 for r in reviews if r.get("state") == "APPROVED"),
+                "author": _author_ref(raw.get("user")),
             },
         )
 
@@ -335,6 +344,7 @@ class GitHubMapper:
                 "repo": f"{owner}/{repo}",
                 "state": state,
                 "labels": [lbl["name"] for lbl in raw.get("labels", [])],
+                "author": _author_ref(raw.get("user")),
             },
         )
 
@@ -393,6 +403,22 @@ class GitHubMapper:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _author_ref(account: dict[str, Any] | None) -> dict[str, Any]:
+    """Record a REST author object by GitHub's numeric user id (D-021).
+
+    The numeric id is the only value attribution ever resolves on, and only
+    through an admin-asserted workspace link. The login is kept as a display
+    label and is never matched. A missing, non-integer or non-positive id
+    (bool included) is not recorded, so such an author stays unresolved.
+    """
+    account = account or {}
+    raw_id = account.get("id")
+    login = account.get("login")
+    if isinstance(raw_id, int) and not isinstance(raw_id, bool) and raw_id > 0:
+        return {"github_user_id": raw_id, "login": login, "kind": "github_account"}
+    return {"github_user_id": None, "login": login, "kind": "unknown"}
+
 
 def _parse_dt(value: str | None) -> datetime | None:
     """Parse an ISO 8601 string to a timezone-aware datetime, or return None."""

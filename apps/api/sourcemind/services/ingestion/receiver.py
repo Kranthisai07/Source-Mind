@@ -32,6 +32,7 @@ from sourcemind.core.exceptions import (
 )
 from sourcemind.core.redis_client import get_redis
 from sourcemind.core.url_security import validate_public_url, validate_url_syntax
+from sourcemind.models.connector import ArtifactLink
 from sourcemind.models.document import Document, DocumentSourceType, IngestionStatus
 from sourcemind.models.workspace import Workspace
 
@@ -42,6 +43,22 @@ _IDEM_TTL = 60 * 60 * 24  # 24 hours
 _IDEM_RESERVATION_TTL_MS = 30_000
 _IDEM_WAIT_SECONDS = 2.0
 _IDEM_POLL_SECONDS = 0.05
+
+# Columns a connector may supply for the ArtifactLink written with the
+# Document. Scope (workspace/document), the memory pointer and any identity
+# resolution are set here or by the worker, never by the caller: the sync-time
+# link always has resolved_user_id NULL (D-021).
+_ARTIFACT_LINK_FIELDS = frozenset(
+    {
+        "source_tool",
+        "source_type",
+        "source_id",
+        "source_url",
+        "source_author",
+        "source_timestamp",
+        "artifact_metadata",
+    }
+)
 
 _RESERVE_IDEMPOTENCY = """
 local key = KEYS[1]
@@ -110,9 +127,17 @@ async def receive(
     tags: list[str] | None = None,
     category: str | None = None,
     idempotency_key: str,
+    artifact_link: dict[str, Any] | None = None,
+    attribution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Stage 1 entry point.
+
+    ``artifact_link`` (connectors only) is inserted in the SAME transaction as
+    the new Document, so it is durable before the ingestion task is published.
+    ``attribution`` is the connector's sync-time attribution decision, stored
+    as ``pipeline_data["attribution"]`` for the worker's credit-time recheck.
+    Neither is written when an existing document is returned.
 
     Returns a dict compatible with IngestionJobResponse:
       job_id, document_id (UUID), status, message, already_exists
@@ -120,6 +145,13 @@ async def receive(
     # ── Input validation ──────────────────────────────────────────
     if not content and not url:
         raise ValidationError("Either 'content' or 'url' must be provided.")
+
+    if artifact_link is not None:
+        unexpected = set(artifact_link) - _ARTIFACT_LINK_FIELDS
+        if unexpected:
+            raise ValidationError(
+                "artifact_link may not set: " + ", ".join(sorted(unexpected))
+            )
 
     if content and len(content) > _MAX_CONTENT_CHARS:
         raise ContentTooLargeError(
@@ -176,6 +208,8 @@ async def receive(
             tags=tags,
             category=category,
             idempotency_key=idempotency_key,
+            artifact_link=artifact_link,
+            attribution=attribution,
         )
         completed = await redis.eval(
             _COMPLETE_IDEMPOTENCY,
@@ -221,6 +255,8 @@ async def _receive_reserved(
     tags: list[str] | None,
     category: str | None,
     idempotency_key: str,
+    artifact_link: dict[str, Any] | None = None,
+    attribution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     raw_for_hash = url if url else content
     assert raw_for_hash is not None
@@ -248,6 +284,20 @@ async def _receive_reserved(
         )
 
     job_id = str(uuid.uuid4())
+    pipeline_data: dict[str, Any] = {
+        "raw_content": content,
+        "idempotency_key": idempotency_key,
+        "current_stage": "queued",
+        # Carried to store_memories via the worker. Tags supplied on
+        # the ingest request used to be dropped here, so every memory
+        # was stored with tags=NULL.
+        "tags": tags or [],
+        "category": category,
+        "dispatch_state": "orphaned",
+        "dispatch_attempts": 0,
+    }
+    if attribution is not None:
+        pipeline_data["attribution"] = dict(attribution)
     doc = Document(
         workspace_id=workspace_id,
         submitter_id=user_id,
@@ -256,22 +306,27 @@ async def _receive_reserved(
         source_url=url,
         sha256_hash=sha256,
         ingestion_status=IngestionStatus.PENDING,
-        pipeline_data={
-            "raw_content": content,
-            "idempotency_key": idempotency_key,
-            "current_stage": "queued",
-            # Carried to store_memories via the worker. Tags supplied on
-            # the ingest request used to be dropped here, so every memory
-            # was stored with tags=NULL.
-            "tags": tags or [],
-            "category": category,
-            "dispatch_state": "orphaned",
-            "dispatch_attempts": 0,
-        },
+        pipeline_data=pipeline_data,
         ingestion_job_id=job_id,
     )
     session.add(doc)
     await session.flush()
+
+    if artifact_link is not None:
+        # Same transaction as the Document and committed before publication,
+        # so the worker can never run before the link exists. memory_id is
+        # backfilled by the worker; resolved_user_id is written only by the
+        # worker's attribution finalization (D-021).
+        session.add(
+            ArtifactLink(
+                workspace_id=workspace_id,
+                document_id=doc.id,
+                memory_id=None,
+                resolved_user_id=None,
+                **artifact_link,
+            )
+        )
+        await session.flush()
 
     # The worker is a different process on a different connection, and it
     # picks the task up within milliseconds. Until this transaction commits,

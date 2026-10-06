@@ -228,11 +228,18 @@ async def get_memory(
     # returning one row per recomputation and inflating the percentages past
     # 100. One implementation of that subtlety is safer than two.
     attribution = None
+    unresolved_author = None
     if include_attribution:
-        from sourcemind.services.search.hybrid import _fetch_attributions
+        from sourcemind.services.search.hybrid import (
+            _fetch_attributions,
+            _fetch_unresolved_authors,
+        )
 
         by_memory = await _fetch_attributions(db, [str(memory_id)])
         attribution = by_memory.get(str(memory_id)) or []
+        unresolved_author = (
+            await _fetch_unresolved_authors(db, [str(memory_id)])
+        ).get(str(memory_id))
 
     mem_resp = MemoryResponse(
         id=memory.id,
@@ -247,6 +254,7 @@ async def get_memory(
         updated_at=memory.updated_at,
         relation_count=relation_count,
         attribution=attribution,
+        unresolved_author=unresolved_author,
     )
 
     return APIResponse(data=mem_resp, meta=_make_meta(request_id, start))

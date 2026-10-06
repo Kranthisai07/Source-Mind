@@ -139,6 +139,19 @@ class IngestionJobResponse(BaseModel):
     )
 
 
+class UnresolvedAuthor(BaseModel):
+    """An external author that is not linked to a SourceMind user (D-021).
+
+    Present when the memory's originating artifact (e.g. a GitHub commit) has
+    an author that no admin-asserted link resolves. Such a memory has no
+    creation attribution and counts as missing attribution coverage.
+    """
+
+    status: Literal["unresolved"] = "unresolved"
+    source_author: str
+    source_tool: str
+
+
 class MemoryResponse(BaseModel):
     """
     Full memory representation.
@@ -163,6 +176,13 @@ class MemoryResponse(BaseModel):
     attribution: list[ContributionBreakdown] | None = Field(
         default=None,
         description="Contributor breakdown. Null unless include_attribution=true.",
+    )
+    unresolved_author: UnresolvedAuthor | None = Field(
+        default=None,
+        description=(
+            "Originating external author that is not linked to a workspace "
+            "member. Null unless include_attribution=true and unresolved."
+        ),
     )
     # Relationship summary
     relation_count: int = Field(default=0, description="Number of related memories")

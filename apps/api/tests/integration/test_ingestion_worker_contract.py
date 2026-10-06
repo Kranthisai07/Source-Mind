@@ -256,7 +256,12 @@ def worker_harness(monkeypatch: pytest.MonkeyPatch) -> WorkerHarness:
     monkeypatch.setattr(
         relations,
         "RelationDetector",
-        lambda _client: SimpleNamespace(detect=harness.detect_relations),
+        lambda _client: SimpleNamespace(
+            detect=harness.detect_relations,
+            # The worker uses the plan/apply split (D-021 round 2).
+            plan=harness.detect_relations,
+            apply=harness.detect_relations,
+        ),
     )
     monkeypatch.setattr(
         attribution_engine,

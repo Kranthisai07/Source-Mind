@@ -110,8 +110,13 @@ to make it a decision rather than a guess.
    ```bash
    cd apps/api
    DATABASE_URL=postgresql+asyncpg://sourcemind_owner:PW@127.0.0.1:<port>/sourcemind_e2e \
+   SOURCEMIND_RUNTIME_ROLE=sourcemind_test \
      python -m alembic upgrade head
    ```
+
+   `SOURCEMIND_RUNTIME_ROLE` is required from revision `20261005_0010`
+   (D-021): it explicitly grants `github_author_links` to that role and
+   aborts if the variable is unset or the role does not exist.
 
 4. **Seed.** `seed_base.sql` once (organization, dev-bypass identity,
    workspace, active membership), then `seed_conflicts.sql`, which is

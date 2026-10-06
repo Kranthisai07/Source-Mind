@@ -18,6 +18,7 @@ from sourcemind.models.connector import (
     ArtifactLink,
     ConnectorConfig,
     ConnectorSyncLog,
+    GitHubAuthorLink,
 )
 from sourcemind.models.document import Document, DocumentSourceType, IngestionStatus
 from sourcemind.models.memory import Memory
@@ -58,4 +59,5 @@ __all__ = [
     "ConnectorConfig",
     "ConnectorSyncLog",
     "ArtifactLink",
+    "GitHubAuthorLink",
 ]

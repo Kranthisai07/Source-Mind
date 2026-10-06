@@ -594,10 +594,53 @@ schema changes, an operator runs the following separately from `apps/api`
 using the migration-owner connection before deploying the API or worker:
 
 ```sh
-alembic upgrade head
+SOURCEMIND_RUNTIME_ROLE=sourcemind_runtime alembic upgrade head
 ```
 
 The runtime connection remains the restricted, non-owner role.
+`SOURCEMIND_RUNTIME_ROLE` must name it: from `20261005_0010` (D-021)
+migrations grant new tables to that role explicitly, matching the
+production exact-table allowlist, and the upgrade aborts before any DDL
+if the variable is unset or names a role that does not exist.
+
+### Releasing D-021 (`20261005_0010`): drain before the new worker starts
+
+This release changes what a queued ingestion task means. The new worker
+treats a document with **no** `pipeline_data["attribution"]` record as a
+direct upload and credits its submitter, so a GitHub document queued by the
+old API (which writes no record) would be credited to whoever clicked
+"sync". An old worker, conversely, ignores the record and credits the
+submitter for documents queued by the new API. Neither may overlap the new
+code. Required order; **abort and stop if any check is non-zero**:
+
+1. **Freeze producers**: stop GitHub sync (connector schedules and manual
+   syncs) and API writes (stop the API, or keep its public route blocked).
+2. **Stop the old workers.**
+3. **Drain**, using the method of the c413d15 rollout (D-020): the Celery
+   queues `default`, `ingestion`, `connectors` and `attribution` are at 0;
+   the Redis `unacked` structures are empty; `celery inspect active`,
+   `reserved` and `scheduled` are empty on every worker node. Take two
+   samples at least 15 seconds apart; both must be empty.
+4. **Read-only database check**: no `documents` row is `pending` or
+   `processing`, for any origin (the join below isolates GitHub-origin rows;
+   checking all rows also covers enqueue recovery republishing an old task):
+
+   ```sql
+   SELECT count(*) FROM documents
+   WHERE ingestion_status IN ('pending', 'processing') AND deleted_at IS NULL;
+
+   SELECT count(*) FROM documents AS d
+   JOIN artifact_links AS al ON al.document_id = d.id
+   WHERE al.source_tool = 'github'
+     AND d.ingestion_status IN ('pending', 'processing')
+     AND d.deleted_at IS NULL;
+   ```
+
+5. **Owner-run migration**:
+   `SOURCEMIND_RUNTIME_ROLE=sourcemind_runtime alembic upgrade head` with the
+   migration-owner connection.
+6. **Deploy the worker first, then the API** (D-020 order and validation).
+7. **Unfreeze** producers.
 
 Historical recovery instructions are version-specific. A retained-image
 rollback does not rebuild and does not change `build.dockerfilePath`. Rebuilding

@@ -4,13 +4,23 @@ version: "3.9"
 # SourceMind — Local Development Environment
 # Services: PostgreSQL 16 + pgvector, Redis 7.2, Neo4j 5,
 #            Redpanda (Kafka-compatible), SourceMind API
+#
+# Database roles (D-021): the bootstrap superuser `sourcemind` only
+# initializes the container. infra/postgres/local-roles.sql creates
+# `sourcemind_owner` (owns the database/schema, runs migrations) and
+# `sourcemind_runtime` (NOSUPERUSER, NOBYPASSRLS; what the api and worker use),
+# so row-level security is actually enforced locally. Passwords are local
+# defaults, overridable through SOURCEMIND_LOCAL_OWNER_PASSWORD and
+# SOURCEMIND_LOCAL_RUNTIME_PASSWORD. A volume created before this change still
+# has only the old single role: recreate it with
+# `docker compose -f infra/docker-compose.yml down -v` (deletes local data).
 # ─────────────────────────────────────────────────────────────
 
 x-common-env: &common-env
   ENVIRONMENT: development
   AUTH_DEV_BYPASS_ENABLED: "true"
   DEBUG: "false"
-  DATABASE_URL: postgresql+asyncpg://sourcemind:sourcemind@postgres:5432/sourcemind
+  DATABASE_URL: postgresql+asyncpg://sourcemind_runtime:${SOURCEMIND_LOCAL_RUNTIME_PASSWORD:-sourcemind_runtime_dev}@postgres:5432/sourcemind
   REDIS_URL: redis://redis:6379/0
   NEO4J_URI: bolt://neo4j:7687
   NEO4J_AUTH: neo4j/sourcemind_dev
@@ -25,11 +35,15 @@ services:
       POSTGRES_USER: sourcemind
       POSTGRES_PASSWORD: sourcemind
       POSTGRES_DB: sourcemind
+      # Read by 02_local_roles.sql through psql \getenv.
+      SOURCEMIND_LOCAL_OWNER_PASSWORD: ${SOURCEMIND_LOCAL_OWNER_PASSWORD:-sourcemind_owner_dev}
+      SOURCEMIND_LOCAL_RUNTIME_PASSWORD: ${SOURCEMIND_LOCAL_RUNTIME_PASSWORD:-sourcemind_runtime_dev}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      - ./postgres/local-roles.sql:/docker-entrypoint-initdb.d/02_local_roles.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sourcemind -d sourcemind"]
       interval: 5s
@@ -145,6 +159,10 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       URL_INGESTION_ENABLED: "false"
       SLACK_MEMORY_COMMANDS_ENABLED: "false"
+      # Migrations run as the owner; the app keeps the runtime DATABASE_URL.
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://sourcemind_owner:${SOURCEMIND_LOCAL_OWNER_PASSWORD:-sourcemind_owner_dev}@postgres:5432/sourcemind
+      # Read by migration 20261005_0010 (D-021): explicit grants go to this role.
+      SOURCEMIND_RUNTIME_ROLE: sourcemind_runtime
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       S3_BUCKET_NAME: ${S3_BUCKET_NAME:-sourcemind-dev}
@@ -162,7 +180,8 @@ services:
       neo4j:
         condition: service_healthy
     command: >
-      sh -c "alembic upgrade head && uvicorn sourcemind.main:app
+      sh -c "DATABASE_URL=$$MIGRATION_DATABASE_URL alembic upgrade head
+      && uvicorn sourcemind.main:app
       --host 0.0.0.0 --port 8000 --reload --reload-dir /app/sourcemind"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]

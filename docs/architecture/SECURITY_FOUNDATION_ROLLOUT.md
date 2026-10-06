@@ -274,8 +274,10 @@ row and receive the resource 404; A sees no row after revocation.
    a migration-compatibility repair: `0008` preserves legitimate active-member
    access while leaving unknown creator provenance unchanged. Any future owner
    assignment is a separate governance decision.
-5. Run Alembic through `20260916_0009` as the existing migration/table-owner
-   credential, never as the long-lived API/worker runtime credential.
+5. Run Alembic through the current head (`20261005_0010` since D-021; that
+   revision also requires `SOURCEMIND_RUNTIME_ROLE`) as the existing
+   migration/table-owner credential, never as the long-lived API/worker
+   runtime credential.
 6. Confirm the API and worker runtime role is not superuser, cannot bypass RLS,
    and does not own protected tables:
 
@@ -334,24 +336,31 @@ ORDER BY c.relname;
 - Keep autodeploy and public writes disabled. Stop all producers, drain and stop
   workers, and stop the new API before changing schema or database bindings.
 - The supported in-place procedure has a hard command boundary. From
-  `apps/api`, first require `alembic current` to report exactly
-  `20260916_0009`, then run exactly one
+  `apps/api`, first require `alembic current` to report exactly the head,
+  `20261005_0010`, then run exactly one
   `alembic downgrade 20250817_0005` invocation as the migration owner. Do not
   use `-1`, `-N`, repeated/stepwise downgrade commands, or start this procedure
-  from any revision below `0009`.
+  from any other revision. `20260916_0009` is the supported start only for a
+  database that never applied D-021 (`20261005_0010`).
+- `20261005_0010` repeats the `0005` connector preflight in its own
+  downgrade, before it drops `github_author_links`. Because each revision
+  commits separately, a refusal therefore leaves the database at
+  `20261005_0010` with `github_author_links` intact rather than committing
+  the drop first.
 - This boundary is required by the actual Alembic configuration:
   `transaction_per_migration=True` commits each completed revision and its
   version-table update separately. A relative destination remains relative when
   `0009` evaluates it, so `alembic downgrade -4` or repeated `-1` commands can
   commit `0009 -> 0008 -> 0007 -> 0006` before the `0006` guard refuses the
   final step. If an operator reaches an intermediate revision, stop; do not
-  continue toward `0005`. Preserve evidence, re-upgrade to `0009`, verify the
+  continue toward `0005`. Preserve evidence, re-upgrade to the head, verify the
   revision and data, and restart the rollback decision from the supported
   boundary.
-- Under the supported explicit command, the `0009` guard validates the old
+- Under the supported explicit command, the guard in the starting revision
+  (`20261005_0010`, or `0009` for a database without D-021) validates the old
   `0005` connector constraint before any downgrade revision commits. If Slack,
   Notion, or another unsupported connector exists, the database remains at
-  `0009` with those rows intact. That outcome is a refused rollback, not a
+  that starting revision with those rows intact. That outcome is a refused rollback, not a
   completed rollback; keep services stopped and do not restore the old
   application.
 - If the guard passes, verify the completed `0005` revision, row counts, RLS
