@@ -286,6 +286,9 @@ jobs:
           # Scoped to THIS step deliberately. It must not reach the acceptance step,
           # which runs with the bypass disabled on purpose.
           AUTH_DEV_BYPASS_ENABLED: "true"
+          # 20261005_0010 grants github_author_links explicitly to the runtime
+          # role and aborts when this is unset (D-021).
+          SOURCEMIND_RUNTIME_ROLE: sourcemind_test
         run: |
           DATABASE_URL="postgresql+asyncpg://sourcemind_owner:${E2E_DB_OWNER_PASSWORD}@127.0.0.1:5432/sourcemind_e2e" \
             alembic upgrade head

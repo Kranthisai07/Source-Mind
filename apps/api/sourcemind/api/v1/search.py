@@ -114,6 +114,7 @@ async def search_memories(
             # passed it through. The flag was accepted and its extra query
             # paid for, then the result dropped on the floor here.
             attribution=item.get("attribution"),
+            unresolved_author=item.get("unresolved_author"),
             relation_count=0,
         )
         results.append(

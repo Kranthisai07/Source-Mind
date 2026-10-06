@@ -345,6 +345,50 @@ async def _fetch_attributions(
     return attr
 
 
+async def _fetch_unresolved_authors(
+    session: AsyncSession,
+    memory_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Report memories whose originating external author is unresolved (D-021).
+
+    Derived from the DOCUMENT-level artifact link, joined by document_id, not
+    from the absence of attribution rows: an edit gives the editor a row on
+    the new version, but every version shares the document and its link.
+    """
+    if not memory_ids:
+        return {}
+    result = await session.execute(
+        text("""
+            SELECT
+                m.id::text AS memory_id,
+                link.source_author,
+                link.source_tool
+            FROM memories m
+            JOIN LATERAL (
+                -- One link per document (anchor and clones agree after
+                -- finalization); indexed by artifact_links.document_id.
+                SELECT al.source_author, al.source_tool, al.resolved_user_id
+                FROM artifact_links al
+                WHERE al.document_id = m.document_id
+                ORDER BY al.created_at, al.id
+                LIMIT 1
+            ) link ON TRUE
+            WHERE m.id = ANY((:ids)::uuid[])
+              AND link.resolved_user_id IS NULL
+              AND link.source_author IS NOT NULL
+        """),
+        {"ids": memory_ids},
+    )
+    return {
+        row.memory_id: {
+            "status": "unresolved",
+            "source_author": row.source_author,
+            "source_tool": row.source_tool,
+        }
+        for row in result.fetchall()
+    }
+
+
 async def hybrid_search(
     session: AsyncSession,
     query: str,
@@ -415,9 +459,12 @@ async def hybrid_search(
 
     # Step 5: Attribution enrichment
     if include_attribution and top:
-        attr_data = await _fetch_attributions(session, [item["id"] for item in top])
+        top_ids = [item["id"] for item in top]
+        attr_data = await _fetch_attributions(session, top_ids)
+        unresolved = await _fetch_unresolved_authors(session, top_ids)
         for item in top:
             item["attribution"] = attr_data.get(item["id"])
+            item["unresolved_author"] = unresolved.get(item["id"])
 
     latency_ms = int((time.monotonic() - t0) * 1000)
     log.info(

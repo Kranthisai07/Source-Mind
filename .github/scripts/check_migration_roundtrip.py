@@ -55,14 +55,16 @@ REGRESSION_PHASES = {
     "reupgrade": ("passed", "and it must survive the full round trip"),
 }
 
+# Head is 20261005_0010 (github_author_links, D-021). It changes no table
+# these phases measure; it only moves the revision every head phase reaches.
 EXPECTED_REVISIONS = {
     "prev": "20260909_0007",
-    "head": "20260916_0009",
-    "reupgrade": "20260916_0009",
+    "head": "20261005_0010",
+    "reupgrade": "20261005_0010",
     # The owner-race track, which runs after every snapshot.
-    "race_head": "20260916_0009",
+    "race_head": "20261005_0010",
     "race_prefix": "20260916_0008",
-    "race_restored": "20260916_0009",
+    "race_restored": "20261005_0010",
 }
 
 # Per-phase expectations for the concurrent owner-revocation regression.
@@ -87,13 +89,13 @@ EXPECTED_REVISIONS = {
 CONNECTOR_ROLLBACK = {
     "fixture_rows_inserted": "1|1",
     "guard_message": "present",
-    "revision_after_guard": "20260916_0009",
+    "revision_after_guard": "20261005_0010",
     "rows_after_guard": "1|1",
     "downgrade_0008_exit": "0",
     "revision_after_0008": "20260916_0008",
     "rows_after_0008": "1|1",
     "reupgrade_exit": "0",
-    "revision_after_reupgrade": "20260916_0009",
+    "revision_after_reupgrade": "20261005_0010",
     "rows_after_reupgrade": "1|1",
     "rows_after_cleanup": "0|0",
 }
