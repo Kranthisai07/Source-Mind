@@ -203,9 +203,21 @@ def test_upsert_body_never_accepts_identity_matching_fields() -> None:
 
 @pytest.mark.unit
 def test_routes_are_registered_under_v1() -> None:
-    from sourcemind.api.router import api_router
+    # Inspect the ASSEMBLED app's OpenAPI schema, not `api_router.routes`.
+    # Newer FastAPI (0.142.x, what an unpinned CI install resolves) includes a
+    # router lazily: `api_router.routes` then holds `_IncludedRouter` objects
+    # with no `.path`, so a path scan over it sees only {''} although every
+    # route is served. Older releases (0.135.x, our lock file) flatten the
+    # routes. The OpenAPI schema is the same on both and also pins the methods.
+    from sourcemind.main import create_app
 
-    paths = {getattr(route, "path", "") for route in api_router.routes}
-    assert "/v1/workspaces/{workspace_id}/github-author-links" in paths
-    assert "/v1/workspaces/{workspace_id}/github-author-links/{github_user_id}" in paths
-    assert "/v1/workspaces/{workspace_id}/github-authors" in paths
+    paths = create_app().openapi()["paths"]
+    http_methods = {"get", "put", "post", "patch", "delete"}
+
+    def methods(path: str) -> set[str]:
+        return {method for method in paths.get(path, {}) if method in http_methods}
+
+    base = "/v1/workspaces/{workspace_id}"
+    assert methods(f"{base}/github-author-links") == {"get"}
+    assert methods(f"{base}/github-author-links/{{github_user_id}}") == {"put", "delete"}
+    assert methods(f"{base}/github-authors") == {"get"}

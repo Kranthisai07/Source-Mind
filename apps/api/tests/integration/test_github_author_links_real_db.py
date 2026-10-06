@@ -30,6 +30,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -406,12 +407,33 @@ async def test_runtime_grant_is_explicit_exact_and_not_from_default_privileges(
         for expression in filter(None, (row.qual, row.with_check)):
             assert "app.current_user_id" in expression
             assert "departed_at IS NULL" in expression
-    admin_role = "'owner'::text, 'admin'::text"
-    assert admin_role not in by_cmd["SELECT"].qual
-    assert admin_role in by_cmd["INSERT"].with_check
-    assert admin_role not in by_cmd["UPDATE"].qual  # FOR SHARE stays member-level
-    assert admin_role in by_cmd["UPDATE"].with_check
-    assert admin_role in by_cmd["DELETE"].qual
+    # What the policies MEAN, not how PostgreSQL prints them. `role IN ('owner',
+    # 'admin')` on a varchar column is stored and rendered by pg_policies as
+    # `ARRAY['owner'::character varying, 'admin'::character varying]::text[]`
+    # (a different spelling on other versions), so the quoted role names are
+    # extracted rather than matching one rendering of the list. The behavioural
+    # denial of non-admin writes is proven separately by
+    # test_db_layer_allows_writes_only_for_declared_owner_or_admin.
+    def role_names(expression: str | None) -> set[str]:
+        return set(re.findall(r"'(owner|admin|member|viewer)'", expression or ""))
+
+    def reads_role_column(expression: str | None) -> bool:
+        return re.search(r"\.role\b", expression or "") is not None
+
+    admin_only = {"owner", "admin"}
+    # SELECT, and the UPDATE row filter that FOR SHARE evaluates, stay
+    # member-level: no role restriction at all.
+    assert role_names(by_cmd["SELECT"].qual) == set()
+    assert role_names(by_cmd["UPDATE"].qual) == set()
+    # Every write check restricts the declared user's membership role to
+    # exactly owner/admin, by reading the membership role column.
+    for gate in (
+        by_cmd["INSERT"].with_check,
+        by_cmd["UPDATE"].with_check,
+        by_cmd["DELETE"].qual,
+    ):
+        assert reads_role_column(gate)
+        assert role_names(gate) == admin_only
     assert (role_flags.rolsuper, role_flags.rolbypassrls) == (False, False)
 
 
