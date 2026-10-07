@@ -2090,11 +2090,10 @@ separately and are not changed by this entry.
 
 ## D-021 — GitHub sync credits the admin-linked author, never the sync initiator
 
-**Status:** On branch `fix/github-sync-attribution-claude` (draft PR #12),
-with round-2 and round-3 corrections; unit-verified locally; the real
-PostgreSQL/RLS tests run only in CI (no Docker locally); local compose role
-changes validated by `docker compose config` only; not merged, not migrated
-anywhere, not deployed.
+**Status:** Merged (PR #12, `main` commit `797521522aec72d3efc13d0c5aab71cd3ede246e`)
+and deployed to production on 2026-10-06/07; migration `20261005_0010` applied.
+See "D-021 production rollout record" at the end of this entry. Real two-author
+GitHub-sync attribution remains unproven in production.
 
 **Defect.** `workers/ingestion.py` credited `user_id` — the document submitter —
 for every memory it created. For GitHub sync the submitter is whoever clicked
@@ -2293,3 +2292,96 @@ for the worker's database tail, not for any provider call.
 earlier contributor and the editor becomes the sole 100% contributor. (b)
 Historical back-fill of memories synced before this change (they stay credited
 to the sync initiator until re-attributed by a separate, reviewed procedure).
+
+### D-021 production rollout record (2026-10-06 / 2026-10-07)
+
+**What was deployed.** `main` commit `797521522aec72d3efc13d0c5aab71cd3ede246e`
+(tree `afd98c40dc41a5c142db8403e9e060432e039d27`, the merge of PR #12 at
+2026-10-06T14:59:15Z) replaced live `c413d15b8b506a5e427d1143d78a3e392a9d1e44`.
+Migration `20260916_0009 -> 20261005_0010` was applied to the application
+database `sourcemind_release_0009`.
+
+**Backup gate (separate, before T0, read-only on production).** A GPG-encrypted
+logical backup of `sourcemind_release_0009` was made at 2026-10-06T16:55:44Z
+(archive SHA-256 `44fdcceeaa302777a0f617271a86b5821ec73a9ed1c0ffd3bdaa4f1b06dfa951`,
+191,377 bytes; the archive is kept outside the repository). The live database
+was read before and after the dump with identical row counts and content digests
+for all 18 tables. The archive was then restored into a throwaway PostgreSQL 18
+cluster (socket only, deleted afterwards) and matched the live revision, table
+set, row counts and content digests, including 1 user and 5 memories. Verdict:
+restore-verified. The only difference was the pgvector version (0.8.7 in the
+restore, 0.8.6 in production). The archive uses `--no-owner --no-acl`, so it
+carries no ownership or grants; those were recorded separately. Evidence was
+valid for 24 hours from the archive time. A first attempt with a mismatched
+passphrase failed before any export.
+
+**Window (75 minutes, T0 = 2026-10-06T23:51:39Z, no recovery used).**
+
+| Step | UTC | Result |
+|---|---|---|
+| Freeze: stop API `fa64a300-afba-4c40-a8aa-8efca66fee50` | 23:51:41 | five public probes failed |
+| Drain with the old worker, plus backup-currency check | 23:56 | two empty samples; live counts and digests identical to the backup gate's final reading |
+| Stop old worker `159dc640-6684-4079-bc4a-65d753569529` | 00:00:24 | no worker node, zero `sourcemind_runtime` sessions |
+| Owner-run migration as `postgres` | 00:00:59 | verified: revision `20261005_0010`, RLS enabled and forced, four policies, runtime SELECT/INSERT/UPDATE/DELETE, nothing for PUBLIC |
+| New worker `0a4d03e7-c11a-4365-8686-1d7e797c0b91` (pinned deploy) | 00:08:16 | one node `celery@2b6f127c4294`, both tasks registered, runtime role reads `github_author_links`, queues 0 |
+| New API `d84f7be6-abbe-47f7-aed5-b4573f9cf093` (pinned deploy) | 00:11:30 | `uvicorn` as PID 1, no alembic, `/health` healthy, fresh process instance, signed-out 401, no 5xx |
+| Authenticated validation by the user | about 00:15 | see below |
+
+Deadlines were T+3, 14, 23, 30, 42, 49 and 57 (recovery trigger); every step
+finished early. The optional synthetic ingestion was not authorized and not run,
+so no provider call was made.
+
+**Authenticated validation results (browser console, signed in).** `GET
+/v1/team/me`, `/v1/workspaces` and the analytics overview returned 200;
+`total_memories` 5 and `knowledge_health_score` 0.25, both equal to the baseline
+taken before the window; `unattributed_memories` 0 (absent before the release).
+The author-link and authors-seen lists returned 200 and were empty. A link for
+the operator's own GitHub account and own user was created (200, `created_by`
+equals `user_id`), re-sent identically (200), a non-member target and
+`github_user_id` 0 were rejected (422 each, link unchanged), and the link was
+deleted (200, `{"deleted":true}`) leaving no rows. This exercised INSERT, UPDATE
+and DELETE on the new table under the real runtime role and RLS.
+
+**Not performed.** The existing-memory attribution check
+(`GET /v1/memories/{id}?include_attribution=true`) was skipped: the validation
+script found no memory id to query. Neither "at least one attribution entry" nor
+"no unresolved author" has been observed on an existing production memory. The
+`health_breakdown` baseline was recorded truncated, so the after-comparison
+covered the health score, memory count and the visible breakdown prefix.
+
+**Still unproven: real two-author GitHub-sync attribution.** Production has one
+user, no connector and no GitHub App credentials. No synced GitHub memory exists,
+so the credited-author path (a linked author) and the unresolved-author path
+(an unlinked author) have not been observed in production. The evidence for them
+is the unit tests and the 40 real-PostgreSQL CI nodes on disposable
+infrastructure. This record proves the deployment, the migration, the grants and
+RLS under the real runtime role, and the admin API surface; it does not prove
+attribution of a real synced memory. That needs two real users, a linked
+author, an unlinked author and an observed sync.
+
+**State afterwards (read-only, 2026-10-07T00:17Z).** 19 tables;
+`github_author_links` has 0 rows; among the earlier tables only `alembic_version`
+changed; 1 user and 5 memories; Railway configuration unchanged from before the
+window; autodeploy triggers 0; queues 0; one worker node; `/health` 200. The
+previous deployments `fa64a300` and `159dc640` are now `REMOVED`
+(`canRollback` still reported true); rollback capability decays, and the
+fallback is a pinned redeploy of `c413d15`.
+
+**Operational findings worth keeping.**
+- The Postgres service's `DATABASE_PUBLIC_URL` points at the stale default
+  database `railway` (Alembic `20250817_0005`), not the application database.
+  Every migration, dump and read must override the database name and gate on
+  `current_database()` and the revision.
+- Production has only the roles `postgres` (owner of every table) and
+  `sourcemind_runtime`; there is no `sourcemind_owner`. The "owner-run" migration
+  therefore ran as `postgres`.
+- The runtime role holds an explicit table allowlist and is not granted
+  `alembic_version`; `pg_default_acl` is empty, so the migration's explicit grant
+  was required.
+- The older backup script hard-coded `-d railway`, the wrong database, and was
+  not used for this release; the corrected procedure targets
+  `sourcemind_release_0009` with a hard identity gate. The scripts live outside
+  the repository with the release records.
+- The two SSH keys used (one in WSL for the backup, one in Windows for exact-node
+  checks) were created and registered by the operator, unregistered afterwards,
+  and their local files deleted.
