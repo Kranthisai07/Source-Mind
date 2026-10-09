@@ -1054,3 +1054,217 @@ async def test_handoff_that_wins_the_row_lock_is_seen_and_protected_by_the_patch
     state_after = await _handoff_state(db_engine, tenants, handoff_id)
     assert state_after["assigned_count"] == 1
     assert state_after["assignments"] == [(str(v1), str(bob))]
+
+
+# ── chronology of legacy chains, and never scoring a partial ancestry ────────
+
+
+async def _state_for_ids(engine, data, memory_ids) -> dict[str, Any]:
+    """Everything a refused request must leave untouched, for explicit memory ids
+    (the recursive helper above would never terminate on a cyclic chain)."""
+    ids = [str(m) for m in memory_ids]
+    session = await _session(engine, data.owner_id, data.target_workspace_id)
+    async with session:
+        memories = (
+            await session.execute(
+                text(
+                    "SELECT id::text, version, current_version, parent_memory_id::text, content "
+                    "FROM memories WHERE parent_memory_id = ANY(CAST(:ids AS uuid[])) "
+                    "OR id = ANY(CAST(:ids AS uuid[])) ORDER BY version, id"
+                ),
+                {"ids": ids},
+            )
+        ).all()
+        known = [m[0] for m in memories]
+        edits = (
+            await session.execute(
+                text(
+                    "SELECT id::text, memory_id::text, edit_position FROM attribution_edits "
+                    "WHERE memory_id = ANY(CAST(:ids AS uuid[])) ORDER BY id"
+                ),
+                {"ids": known},
+            )
+        ).all()
+        attributions = (
+            await session.execute(
+                text(
+                    "SELECT id::text FROM attributions "
+                    "WHERE memory_id = ANY(CAST(:ids AS uuid[])) ORDER BY id"
+                ),
+                {"ids": known},
+            )
+        ).all()
+    return {
+        "memories": [tuple(r) for r in memories],
+        "edits": [tuple(r) for r in edits],
+        "attributions": [tuple(r) for r in attributions],
+    }
+
+
+async def _insert_legacy_version(engine, data, parent_id, editor, before, after) -> uuid.UUID:
+    """A version written the way the pre-fix code did: a child row whose single edit
+    restarts at edit_position 1 and whose snapshot lists only that editor."""
+    child = uuid.uuid4()
+    session = await _session(engine, data.owner_id, data.target_workspace_id)
+    async with session:
+        version = (
+            await session.execute(
+                text("SELECT version FROM memories WHERE id = CAST(:p AS uuid)"),
+                {"p": str(parent_id)},
+            )
+        ).scalar_one()
+        await session.execute(
+            text("UPDATE memories SET current_version = FALSE WHERE id = CAST(:p AS uuid)"),
+            {"p": str(parent_id)},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO memories (id, workspace_id, parent_memory_id, content, content_hash, "
+                "version, current_version) VALUES (CAST(:c AS uuid), CAST(:w AS uuid), "
+                "CAST(:p AS uuid), :content, :h, :v, TRUE)"
+            ),
+            {
+                "c": str(child),
+                "w": str(data.target_workspace_id),
+                "p": str(parent_id),
+                "content": after,
+                "h": uuid.uuid4().hex,
+                "v": version + 1,
+            },
+        )
+        edit_id = (
+            await session.execute(
+                text(
+                    "INSERT INTO attribution_edits (memory_id, editor_id, content_before, "
+                    "content_after, edit_position, action_type) VALUES (CAST(:m AS uuid), "
+                    "CAST(:e AS uuid), :b, :a, 1, 'edit') RETURNING id"
+                ),
+                {"m": str(child), "e": str(editor), "b": before, "a": after},
+            )
+        ).scalar_one()
+        await session.execute(
+            text(
+                "INSERT INTO attributions (memory_id, user_id, contribution_weight, "
+                "char_diff_score, semantic_score, temporal_score, structural_score, "
+                "approval_score, trigger_action, edit_id) VALUES (CAST(:m AS uuid), "
+                "CAST(:u AS uuid), 1.0, 0.5, 0.5, 1.0, 0.5, 0.0, 'edit', CAST(:e AS uuid))"
+            ),
+            {"m": str(child), "u": str(editor), "e": str(edit_id)},
+        )
+        await session.commit()
+    return child
+
+
+async def test_legacy_chain_with_restarted_positions_is_scored_chronologically(
+    client, db_engine, tenants, scorer
+) -> None:
+    alice, bob = tenants.admin_id, tenants.member_id
+    v1 = await _seed_memory(db_engine, tenants, alice, "Legacy first draft.")
+    v2 = await _insert_legacy_version(
+        db_engine, tenants, v1, bob, "Legacy first draft.", "Legacy first draft, Bob."
+    )
+
+    resp = await _patch(client, alice, v2, "Legacy first draft, Bob. Alice again.")
+
+    assert resp.status_code == 200, resp.text
+    v3 = uuid.UUID(resp.json()["data"]["id"])
+    # The scorer gets consecutive chronological positions ...
+    assert [(e.user_id, e.edit_position) for e in scorer.calls[-1]] == [
+        (str(alice), 1),
+        (str(bob), 2),
+        (str(alice), 3),
+    ]
+    # ... while the stored positions are left exactly as they were written.
+    stored = await _edits(db_engine, tenants, [v1, v2, v3])
+    assert sorted((e[0], e[1]) for e in stored) == sorted(
+        [(str(alice), 1), (str(bob), 1), (str(alice), 3)]
+    )
+    assert _contributors(await _get(client, alice, v3)) == {alice, bob}
+
+
+async def _extend_chain(client, db_engine, tenants, root, users, count) -> list[uuid.UUID]:
+    """PATCH ``count`` successive content edits, returning every version id."""
+    ids = [root]
+    for i in range(count):
+        resp = await _patch(client, users[i % len(users)], ids[-1], f"Chain content {i + 1}.")
+        assert resp.status_code == 200, resp.text
+        ids.append(uuid.UUID(resp.json()["data"]["id"]))
+    return ids
+
+
+async def test_chain_at_the_bound_is_accepted_and_beyond_it_is_refused_with_zero_writes(
+    client, db_engine, tenants, scorer, monkeypatch
+) -> None:
+    alice, bob = tenants.admin_id, tenants.member_id
+    monkeypatch.setattr(attribution_engine, "MAX_CHAIN_DEPTH", 2)
+    v1 = await _seed_memory(db_engine, tenants, alice, "Bound text.")
+
+    ids = await _extend_chain(client, db_engine, tenants, v1, (bob, alice), 2)  # v1 -> v2 -> v3
+    assert len(ids) == 3  # the newest version has exactly two ancestors: at the bound
+    before = await _state_for_ids(db_engine, tenants, ids)
+    calls = len(scorer.calls)
+
+    refused = await _patch(client, bob, ids[-1], "Past the bound.")
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["error"]["code"] == "SM034", refused.text
+    assert "ancestry_overflow" in refused.json()["error"]["message"], refused.text
+    assert await _state_for_ids(db_engine, tenants, ids) == before  # no version, no event
+    assert len(scorer.calls) == calls  # a partial history was never scored
+
+    # Metadata-only updates do not read the ancestry and stay allowed at the bound.
+    tagged = await _patch(client, bob, ids[-1], "Chain content 2.", tags=["still-ok"])
+    assert tagged.status_code == 200, tagged.text
+
+
+async def test_overflow_detected_after_the_version_exists_rolls_everything_back(
+    client, db_engine, tenants, scorer, monkeypatch
+) -> None:
+    """Skip the preflight so the version row IS created and recompute then refuses:
+    the failed request must leave no version, no flipped current_version flag, no
+    event and no attribution row."""
+    alice, bob = tenants.admin_id, tenants.member_id
+    monkeypatch.setattr(attribution_engine, "MAX_CHAIN_DEPTH", 2)
+    v1 = await _seed_memory(db_engine, tenants, alice, "Rollback text.")
+    ids = await _extend_chain(client, db_engine, tenants, v1, (bob, alice), 2)
+    before = await _state_for_ids(db_engine, tenants, ids)
+
+    async def no_preflight(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        attribution_engine, "assert_edit_preserves_inherited_contributors", no_preflight
+    )
+    refused = await _patch(client, bob, ids[-1], "Created, then refused.")
+
+    assert refused.status_code == 409, refused.text
+    assert "ancestry_overflow" in refused.json()["error"]["message"], refused.text
+    assert await _state_for_ids(db_engine, tenants, ids) == before
+
+
+async def test_cycle_in_the_version_chain_is_refused_with_zero_writes(
+    client, db_engine, tenants, scorer
+) -> None:
+    alice, bob = tenants.admin_id, tenants.member_id
+    v1 = await _seed_memory(db_engine, tenants, alice, "Cycle text.")
+    ids = await _extend_chain(client, db_engine, tenants, v1, (bob,), 1)  # v1 -> v2
+    session = await _session(db_engine, tenants.owner_id, tenants.target_workspace_id)
+    async with session:  # corrupt the chain: the root now claims the newest version as parent
+        await session.execute(
+            text(
+                "UPDATE memories SET parent_memory_id = CAST(:p AS uuid) "
+                "WHERE id = CAST(:c AS uuid)"
+            ),
+            {"p": str(ids[-1]), "c": str(ids[0])},
+        )
+        await session.commit()
+    before = await _state_for_ids(db_engine, tenants, ids)
+    calls = len(scorer.calls)
+
+    refused = await _patch(client, alice, ids[-1], "Edit into a cycle.")
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["error"]["code"] == "SM034", refused.text
+    assert "ancestry_cycle" in refused.json()["error"]["message"], refused.text
+    assert await _state_for_ids(db_engine, tenants, ids) == before
+    assert len(scorer.calls) == calls

@@ -132,6 +132,12 @@ async def create_initial_attribution(
     return attribution
 
 
+#: Most ancestors a memory may have and still be scored. The traversal stays
+#: bounded as a cycle/runaway guard, but hitting the bound is an explicit error:
+#: a partial ancestry is never scored.
+MAX_CHAIN_DEPTH = 10_000
+
+
 @dataclass(frozen=True)
 class _HistoryRow:
     edit_id: uuid.UUID
@@ -142,47 +148,103 @@ class _HistoryRow:
     action_type: str
 
 
+async def _load_ancestry(
+    session: AsyncSession, memory_id: uuid.UUID, reserve: int = 0
+) -> dict[uuid.UUID, int]:
+    """
+    Walk ``parent_memory_id`` upward from ``memory_id`` and return {id: version}.
+
+    Complete or nothing. The walk is bounded by MAX_CHAIN_DEPTH ancestors and
+    raises AttributionStateConflictError (never returns a partial chain) when
+      * the bound is exceeded (``ancestry_overflow``);
+      * a parent link leads back into the chain (``ancestry_cycle``);
+      * the chain stops at a row whose parent was not reached, for example a
+        parent in another workspace (``ancestry_incomplete``).
+    ``reserve`` counts versions about to be added, so a preflight can refuse a
+    chain that the new version would push past the bound before anything is
+    written.
+    """
+    from sourcemind.core.exceptions import AttributionStateConflictError
+
+    result = await session.execute(
+        text("""
+            WITH RECURSIVE chain AS (
+                SELECT id, parent_memory_id, version, workspace_id, 0 AS depth,
+                       ARRAY[id] AS path, FALSE AS cycle
+                FROM memories WHERE id = CAST(:mid AS uuid)
+                UNION ALL
+                SELECT m.id, m.parent_memory_id, m.version, m.workspace_id, c.depth + 1,
+                       c.path || m.id, m.id = ANY(c.path)
+                FROM memories m
+                JOIN chain c ON m.id = c.parent_memory_id
+                WHERE m.workspace_id = c.workspace_id
+                  AND NOT c.cycle
+                  AND c.depth <= CAST(:limit AS integer)
+            )
+            SELECT id, parent_memory_id, version, depth, cycle FROM chain
+        """),
+        {"mid": str(memory_id), "limit": MAX_CHAIN_DEPTH},
+    )
+    rows = result.fetchall()
+
+    def refuse(reason: str, detail: str) -> AttributionStateConflictError:
+        log.warning("attribution_ancestry_refused", memory_id=str(memory_id), reason=reason)
+        return AttributionStateConflictError(
+            f"The version ancestry of this memory cannot be scored completely ({detail}); "
+            f"this update was not applied ({reason})."
+        )
+
+    if any(r[4] for r in rows):
+        raise refuse("ancestry_cycle", "a parent link leads back into the chain")
+    deepest = max((r[3] for r in rows), default=0)
+    if deepest + reserve > MAX_CHAIN_DEPTH:
+        raise refuse(
+            "ancestry_overflow",
+            f"more than {MAX_CHAIN_DEPTH} ancestors including the version being created",
+        )
+    tail = next((r for r in rows if r[3] == deepest), None)
+    if tail is not None and tail[1] is not None:
+        raise refuse("ancestry_incomplete", "a parent version could not be reached")
+    return {r[0]: r[2] for r in rows}
+
+
 async def _load_chain_history(
-    session: AsyncSession, memory_id: uuid.UUID
+    session: AsyncSession, memory_id: uuid.UUID, reserve: int = 0
 ) -> list[_HistoryRow]:
     """
     Load every attribution edit recorded for ``memory_id`` and its ancestors.
 
     Ancestry is the ``parent_memory_id`` chain only, constrained to the
-    memory's workspace. Memories that merely share a document are NOT part
-    of the chain. Each edit row appears once. Ordering is by chain version
-    first (so legacy chains whose per-version positions restarted at 1 still
-    order correctly), then recorded position, creation time and id.
+    memory's workspace, and is validated as complete first (see
+    ``_load_ancestry``). Memories that merely share a document are NOT part of
+    the chain. Each edit row appears once. Ordering is by chain version first
+    (so legacy chains whose per-version positions restarted at 1 still order
+    correctly), then recorded position, creation time and id.
 
     Reads attribution_edits only - never attributions - so carried-forward
     snapshot rows can never be mistaken for contribution events.
     """
+    versions = await _load_ancestry(session, memory_id, reserve)
     result = await session.execute(
         text("""
-            WITH RECURSIVE chain AS (
-                SELECT id, parent_memory_id, version, workspace_id, 0 AS depth
-                FROM memories WHERE id = CAST(:mid AS uuid)
-                UNION ALL
-                SELECT m.id, m.parent_memory_id, m.version, m.workspace_id, c.depth + 1
-                FROM memories m
-                JOIN chain c ON m.id = c.parent_memory_id
-                WHERE m.workspace_id = c.workspace_id AND c.depth < 10000
-            )
-            SELECT ae.id, ae.editor_id::text, ae.content_before, ae.content_after,
-                   ae.edit_position, ae.action_type
+            SELECT ae.id, ae.memory_id, ae.editor_id::text, ae.content_before,
+                   ae.content_after, ae.edit_position, ae.action_type, ae.created_at
             FROM attribution_edits ae
-            JOIN chain c ON c.id = ae.memory_id
-            ORDER BY c.version ASC, ae.edit_position ASC, ae.created_at ASC, ae.id ASC
+            WHERE ae.memory_id = ANY(CAST(:ids AS uuid[]))
         """),
-        {"mid": str(memory_id)},
+        {"ids": [str(i) for i in versions]},
+    )
+    ordered = sorted(
+        result.fetchall(),
+        key=lambda r: (versions[r[1]], r[5], r[7], str(r[0])),
     )
     seen: set[uuid.UUID] = set()
     rows: list[_HistoryRow] = []
-    for r in result.fetchall():
+    for r in ordered:
         if r[0] in seen:
             continue
         seen.add(r[0])
-        rows.append(_HistoryRow(r[0], r[1], r[2], r[3], r[4], r[5]))
+        rows.append(_HistoryRow(r[0], r[2], r[3], r[4], r[5], r[6]))
     return rows
 
 
@@ -333,7 +395,7 @@ async def assert_edit_preserves_inherited_contributors(
     from sourcemind.core.exceptions import AttributionStateConflictError
 
     selected = await plan_carry_forward(session, memory_id)
-    history = await _load_chain_history(session, memory_id)
+    history = await _load_chain_history(session, memory_id, reserve=1)
     history_edit_ids = {h.edit_id for h in history}
     history_editors = {h.editor_id for h in history}
     unrepresented = [
@@ -416,25 +478,31 @@ async def recompute_attribution(
     # ancestry. Each PATCH creates a new memory row, so history recorded
     # against earlier versions lives under their ids, not memory_id.
     history = await _load_chain_history(session, memory_id)
+    # Stored position (audit): unchanged rule - after the highest position
+    # recorded so far, and at least one past the number of events.
     edit_position = max([len(history), *(row.edit_position for row in history)]) + 1
 
-    # Build edit event list including the new edit
+    # Scorer input: the temporal signal is 0.8 ** (edit_position - 1) computed from
+    # the event's own position, so recorded positions that restarted at 1 on every
+    # version (legacy chains) would give later editors first-event credit. The
+    # events are already in chronological order; number them consecutively for
+    # scoring only. Recorded positions stay as stored.
     edits = [
         EditEvent(
             user_id=row.editor_id,
             content_before=row.content_before,
             content_after=row.content_after,
-            edit_position=row.edit_position,
+            edit_position=index,
             action_type=row.action_type,
         )
-        for row in history
+        for index, row in enumerate(history, start=1)
     ]
     edits.append(
         EditEvent(
             user_id=str(editor_id),
             content_before=content_before,
             content_after=content_after,
-            edit_position=edit_position,
+            edit_position=len(history) + 1,
             action_type=action_type,
         )
     )

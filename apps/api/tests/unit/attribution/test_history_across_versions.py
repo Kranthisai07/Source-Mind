@@ -49,27 +49,26 @@ class _FakeScorer:
 
 
 class _FakeSession:
-    """Emulates just the two history queries and records adds.
+    """Emulates the two history queries and records adds.
 
-    ``chain_edits`` is what a correct ancestry query would return for the
-    memory being recomputed; ``own_edits`` is what a query scoped to that
-    single memory id would return (the pre-fix behaviour).
+    ``structure`` is what the ancestry query returns, as
+    (id, parent_memory_id, version, depth, cycle) tuples; ``edit_rows`` is what
+    the edits query returns, as
+    (edit_id, memory_id, editor, before, after, position, action, created_at).
     """
 
-    def __init__(self, chain_edits: list[tuple], own_edits: list[tuple]) -> None:
-        self.chain_edits = chain_edits
-        self.own_edits = own_edits
+    def __init__(self, structure: list[tuple], edit_rows: list[tuple]) -> None:
+        self.structure = structure
+        self.edit_rows = edit_rows
         self.added: list = []
 
     async def execute(self, statement, params=None):
         sql = str(statement)
         result = MagicMock()
         if "WITH RECURSIVE" in sql:
-            result.fetchall.return_value = self.chain_edits
-        elif "SELECT COALESCE(MAX(edit_position)" in sql:
-            result.scalar.return_value = len(self.own_edits) + 1
+            result.fetchall.return_value = self.structure
         elif "FROM attribution_edits ae" in sql:
-            result.fetchall.return_value = [r[1:] for r in self.own_edits]
+            result.fetchall.return_value = self.edit_rows
         else:  # pragma: no cover
             raise AssertionError(f"unexpected SQL: {sql}")
         return result
@@ -83,8 +82,32 @@ class _FakeSession:
                 obj.id = uuid.uuid4()
 
 
-def _edit(user: str, before, after, pos, action="create"):
-    return (uuid.uuid4(), user, before, after, pos, action)
+_BASE = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def _chain(n: int) -> tuple[list[uuid.UUID], list[tuple]]:
+    """A complete linear chain of ``n`` memories, current first, root last."""
+    ids = [uuid.uuid4() for _ in range(n)]
+    rows = [
+        (ids[d], ids[d + 1] if d + 1 < n else None, n - d, d, False) for d in range(n)
+    ]
+    return ids, rows
+
+
+def _edits_query_row(memory_id, user, before, after, pos, action="create", minute=0):
+    return (uuid.uuid4(), memory_id, user, before, after, pos, action,
+            _BASE.replace(minute=minute))
+
+
+def _session_for(n_versions: int, edits: list[tuple]):
+    """``edits`` are (version_index_from_root, user, before, after, pos, action)."""
+    ids, rows = _chain(n_versions)
+    by_version = {n_versions - d: ids[d] for d in range(n_versions)}  # version -> id
+    edit_rows = [
+        _edits_query_row(by_version[v], user, before, after, pos, action, minute=i)
+        for i, (v, user, before, after, pos, action) in enumerate(edits)
+    ]
+    return ids[0], _FakeSession(rows, edit_rows)
 
 
 @pytest.fixture
@@ -97,11 +120,10 @@ def scorer():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_alice_creates_bob_edits_scorer_sees_both_events_once(scorer):
-    create = _edit(ALICE, None, "v1", 1)
-    session = _FakeSession(chain_edits=[create], own_edits=[])
+    current, session = _session_for(2, [(1, ALICE, None, "v1", 1, "create")])
 
     await engine.recompute_attribution(
-        session, uuid.uuid4(), uuid.UUID(BOB), "v1", "v2", "edit", str(uuid.uuid4())
+        session, current, uuid.UUID(BOB), "v1", "v2", "edit", str(uuid.uuid4())
     )
 
     events = scorer.received[0]
@@ -118,11 +140,12 @@ async def test_alice_creates_bob_edits_scorer_sees_both_events_once(scorer):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_alice_bob_alice_all_three_events_once_in_order(scorer):
-    chain = [_edit(ALICE, None, "v1", 1), _edit(BOB, "v1", "v2", 2, "edit")]
-    session = _FakeSession(chain_edits=chain, own_edits=[])
+    current, session = _session_for(
+        3, [(1, ALICE, None, "v1", 1, "create"), (2, BOB, "v1", "v2", 2, "edit")]
+    )
 
     await engine.recompute_attribution(
-        session, uuid.uuid4(), uuid.UUID(ALICE), "v2", "v3", "edit", str(uuid.uuid4())
+        session, current, uuid.UUID(ALICE), "v2", "v3", "edit", str(uuid.uuid4())
     )
 
     events = scorer.received[0]
@@ -133,29 +156,145 @@ async def test_alice_bob_alice_all_three_events_once_in_order(scorer):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_duplicate_rows_for_one_edit_are_collapsed(scorer):
-    create = _edit(ALICE, None, "v1", 1)
-    session = _FakeSession(chain_edits=[create, create], own_edits=[])
+    current, session = _session_for(2, [(1, ALICE, None, "v1", 1, "create")])
+    session.edit_rows = session.edit_rows * 2  # the same edit returned twice
 
-    await engine.recompute_attribution(
-        session, uuid.uuid4(), uuid.UUID(BOB), "v1", "v2", "edit", None
-    )
+    await engine.recompute_attribution(session, current, uuid.UUID(BOB), "v1", "v2", "edit", None)
 
     assert len(scorer.received[0]) == 2
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_position_follows_legacy_chain_with_restarted_positions(scorer):
-    # Pre-fix versions each restarted at position 1; the new event must still
-    # land after everything already recorded.
-    chain = [_edit(ALICE, None, "v1", 1), _edit(BOB, "v1", "v2", 1, "edit")]
-    session = _FakeSession(chain_edits=chain, own_edits=[])
-
-    await engine.recompute_attribution(
-        session, uuid.uuid4(), uuid.UUID(ALICE), "v2", "v3", "edit", None
+async def test_legacy_restarted_positions_reach_the_scorer_chronologically(scorer):
+    """Pre-fix versions each restarted at position 1. The scorer's temporal signal
+    reads the position itself, so it must be given consecutive chronological
+    positions; the position persisted for the new edit keeps its audit rule."""
+    current, session = _session_for(
+        3, [(1, ALICE, None, "v1", 1, "create"), (2, BOB, "v1", "v2", 1, "edit")]
     )
 
-    assert scorer.received[0][-1].edit_position == 3
+    await engine.recompute_attribution(
+        session, current, uuid.UUID(ALICE), "v2", "v3", "edit", None
+    )
+
+    events = scorer.received[0]
+    assert [(e.user_id, e.edit_position) for e in events] == [(ALICE, 1), (BOB, 2), (ALICE, 3)]
+    persisted = [o for o in session.added if isinstance(o, AttributionEdit)]
+    assert [e.edit_position for e in persisted] == [3]  # max(2 events, highest recorded 1) + 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_later_editor_is_not_given_first_event_credit_by_restarted_positions():
+    """Run the REAL scorer (SBERT mocked, as elsewhere). Bob is the second event, so
+    his temporal primacy is 0.8; with the restarted recorded position it would be 1.0."""
+    import numpy as np
+
+    from sourcemind.services.attribution.scorer import AttributionScorer
+
+    real = AttributionScorer()
+    sbert = MagicMock()
+    sbert.encode = MagicMock(return_value=np.array([[1.0, 0.0], [1.0, 0.0]]))
+    real._sbert = sbert
+    current, session = _session_for(
+        3, [(1, ALICE, None, "Alice wrote the first draft.", 1, "create"),
+            (2, BOB, "Alice wrote the first draft.", "Alice wrote the first draft. Bob added.",
+             1, "edit")]
+    )
+
+    with patch.object(engine, "get_scorer", return_value=real):
+        await engine.recompute_attribution(
+            session, current, uuid.UUID(ALICE), "Alice wrote the first draft. Bob added.",
+            "Alice wrote the first draft. Bob added. Alice again.", "edit", None,
+        )
+
+    temporal = {str(a.user_id): a.temporal_score
+                for a in session.added if isinstance(a, Attribution)}
+    assert temporal[BOB] == pytest.approx(0.8)  # second event, not first
+    assert temporal[ALICE] == pytest.approx((1.0 + 0.8**2) / 2)  # events 1 and 3
+
+
+# ── ancestry validation ──────────────────────────────────────────────────────
+
+
+def _structure_session(rows):
+    return _FakeSession(rows, [])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_complete_chain_returns_every_version():
+    ids, rows = _chain(4)
+    versions = await engine._load_ancestry(_structure_session(rows), ids[0])
+    assert versions == {ids[0]: 4, ids[1]: 3, ids[2]: 2, ids[3]: 1}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_chain_exactly_at_the_bound_is_accepted_and_one_more_is_refused(monkeypatch):
+    monkeypatch.setattr(engine, "MAX_CHAIN_DEPTH", 3)
+    ids, rows = _chain(4)  # depths 0..3: three ancestors
+    assert len(await engine._load_ancestry(_structure_session(rows), ids[0])) == 4
+
+    ids5, rows5 = _chain(5)  # the traversal may emit depth 4 (limit + 1) to prove overflow
+    with pytest.raises(_conflict()) as exc:
+        await engine._load_ancestry(_structure_session(rows5), ids5[0])
+    assert "ancestry_overflow" in str(exc.value)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reserve_counts_the_version_about_to_be_created(monkeypatch):
+    monkeypatch.setattr(engine, "MAX_CHAIN_DEPTH", 3)
+    ids, rows = _chain(4)  # already three ancestors
+    await engine._load_ancestry(_structure_session(rows), ids[0], reserve=0)
+    with pytest.raises(_conflict()) as exc:
+        await engine._load_ancestry(_structure_session(rows), ids[0], reserve=1)
+    assert "ancestry_overflow" in str(exc.value)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cycle_in_parent_links_is_refused():
+    a, b, c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    rows = [(a, b, 3, 0, False), (b, c, 2, 1, False), (c, a, 1, 2, False), (a, b, 3, 3, True)]
+    with pytest.raises(_conflict()) as exc:
+        await engine._load_ancestry(_structure_session(rows), a)
+    assert "ancestry_cycle" in str(exc.value)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_chain_whose_parent_cannot_be_reached_is_refused_not_truncated():
+    ids, rows = _chain(3)
+    rows[-1] = (rows[-1][0], uuid.uuid4(), rows[-1][2], rows[-1][3], False)  # root has a parent
+    with pytest.raises(_conflict()) as exc:
+        await engine._load_ancestry(_structure_session(rows), ids[0])
+    assert "ancestry_incomplete" in str(exc.value)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_refused_ancestry_never_reaches_the_scorer_or_writes(scorer):
+    a, b = uuid.uuid4(), uuid.uuid4()
+    session = _FakeSession([(a, b, 2, 0, False), (b, a, 1, 1, False), (a, b, 2, 2, True)], [])
+    with pytest.raises(_conflict()):
+        await engine.recompute_attribution(
+            session, a, uuid.UUID(BOB), "x", "y", "edit", None
+        )
+    assert scorer.received == [] and session.added == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_edit_guard_reserves_headroom_for_the_version_it_precedes():
+    with (
+        patch.object(engine, "plan_carry_forward", new=AsyncMock(return_value=[])),
+        patch.object(engine, "_load_chain_history", new=AsyncMock(return_value=[])) as load,
+    ):
+        await engine.assert_edit_preserves_inherited_contributors(MagicMock(), uuid.uuid4())
+    assert load.await_args.kwargs["reserve"] == 1
 
 
 # ── snapshot selection ───────────────────────────────────────────────────────

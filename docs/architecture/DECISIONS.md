@@ -2392,7 +2392,7 @@ fallback is a pinned redeploy of `c413d15`.
 
 **Status:** Local, uncommitted patch for independent review (base `main`
 `0868262caaca05f1df0f2e0f04a7abecb2c8ef3a`). Not merged, not deployed. NOT an
-attribution-quality validation. It contains temporary refusals (SM034 for attribution state, SM035 for a stale handoff target, below)
+attribution-quality validation. It contains temporary refusals (SM034 for attribution state and an incomplete ancestry, SM035 for a stale handoff target, below) and an open idempotency gap (see "Open follow-up")
 that need a real policy before V1 is frozen.
 
 **Defect (verified at the base commit).** `PATCH /v1/memories/{id}` writes a
@@ -2434,6 +2434,32 @@ against the base source: both concurrency regressions fail there).
   lock" below). A second concurrent writer blocks, then finds the row no longer
   current and receives the existing `MemoryNotFoundError` (404) from PATCH or
   `MemoryVersionStaleError` (409 SM035) from handoff assignment.
+
+**Scorer chronology and a complete ancestry (added after review).** The temporal
+signal is `0.8 ** (edit_position - 1)` computed from the event's OWN
+`edit_position`, not from its place in the list. Chains written before this
+change restarted positions at 1 on every version, so passing recorded positions
+through would have given a later editor first-event credit. The scorer input is
+therefore numbered 1..N from the complete, ordered ancestry (the new event is
+N+1), while every stored `edit_position` is left as written and the position
+persisted for the new edit keeps its earlier audit rule (one past the highest
+recorded position, and at least one past the number of events). Weights and the
+scoring formula are untouched.
+
+The ancestry walk stays bounded (`MAX_CHAIN_DEPTH` = 10,000 ancestors, a
+runaway/cycle guard) but a partial ancestry is never scored. It tracks the path,
+and raises the handled `409 SM034` (`AttributionStateConflictError`) for
+`ancestry_overflow` (more ancestors than the bound, counting the version about
+to be created), `ancestry_cycle` (a parent link leads back into the chain) and
+`ancestry_incomplete` (the chain stops at a row whose parent was not reached,
+for example a parent in another workspace). The content-edit preflight reserves
+one version of headroom, so overflow is refused before anything is written; the
+same check inside `recompute_attribution` is a second line of defence and, when
+it fires after the new version exists, the request's rollback removes the
+version, the `current_version` change, the event and the snapshot (asserted on a
+real database). Metadata-only updates do not read the ancestry and remain allowed
+on a chain at the bound; the next content edit of such a chain is refused until a
+policy exists.
 
 **Choosing the current snapshot row (carry-forward).** Per user, the newest
 `created_at` wins and every candidate at that timestamp is inspected before one
@@ -2519,6 +2545,16 @@ old id is a 404, not idempotency; against the new id it is the no-op above.
 With the lock, the second of two concurrent requests - same key or different
 keys - gets a 404 and the winner succeeds (asserted on a real database).
 
+**Open follow-up - metadata-only requests do not record their Idempotency-Key.**
+The only persistence for the key is `attribution_edits.idempotency_key`, and
+exact-unchanged and tags-only requests create no edit. A key used for such a
+request can later be reused with different content and will succeed; the
+UNIQUE index cannot enforce the key's reuse contract for them. **Idempotency
+is therefore not complete.** Closing the gap needs reservations persisted
+independently of contribution events (target, caller, request fingerprint)
+checked before any no-op or tags-only return. That is a schema and replay-handling
+change, deliberately not made here (no migration, no replay redesign).
+
 **History and snapshots (replaces the earlier "no backfill" wording).** No
 migration runs and no stored snapshot or edit row is rewritten. The next
 substantive edit of a chain truncated by the old bug rebuilds the new version's
@@ -2537,57 +2573,47 @@ evaluated here. The scorer's known problems (weights, distance direction,
 semantic and approval signals, the share floor, merge weighting) are untouched,
 and nothing in this patch says anything about attribution accuracy.
 
-**Tests actually executed (2026-10-08; logs in the review packet under `logs/`,
-current evidence in `logs/round3/`, earlier rounds kept and marked superseded in
-`logs/SUPERSEDED.md`).**
-- Unit: 23 tests in `tests/unit/attribution/test_history_across_versions.py`
-  (provenance rule per selected row, overlap case, stamped-transfer case, foreign
-  edit link, merged row, user who never edited, selection and PATCH preflight
-  ordering) plus 2 new lock-first tests in `tests/unit/attribution/test_handoff.py`;
-  the mock session doubles in `test_handoff.py` and
-  `tests/integration/test_handoff_workflow.py` gained a branch for the new lock
-  statement (their assertions are unchanged). Full `tests/unit`: 558 passed,
-  1 skipped. The skip is `tests/unit/test_sql_param_types.py:132`, "requires a live
-  Postgres to PREPARE against" (pre-existing, unrelated, deliberately not given a
-  database in the unit run). `ruff check sourcemind/` and the changed test files are
-  clean; `tests/integration/test_handoff_workflow.py` has 3 F401 unused-import
-  warnings that exist in the base file and were left alone. mypy was not run.
-- Real PostgreSQL 18.6 (WSL Ubuntu, non-root user, fresh temporary data directory,
-  127.0.0.1:55432, throwaway credentials; the bootstrap role is a superuser for
-  initialisation only and the owner and runtime roles are NOSUPERUSER/NOBYPASSRLS as
-  the workflow asserts), disposable Redis on 127.0.0.1:56379, migrations to
-  `20261005_0010` as the owner role, driven from Windows:
-  - `tests/integration/test_attribution_history_real_db.py`: 23 tests. After the last
-    change to the test file, 23 of 23 passed in each of 5 consecutive focused runs
-    and in both full acceptance runs below; 3 focused runs just before that change
-    also passed.
-  - Against the previous provenance rule (user ids only) and without the handoff
-    lock, with the new logic reverted in a temporary copy: the overlap test failed
-    (`200 == 409`, the edit succeeded and discarded Bob's transfer) and the
-    PATCH-first ordering test failed (`200 == 409`, the handoff wrote past an
-    in-flight edit). The handoff-first ordering test passed in that run, so it is
-    not evidence for the lock.
+**Tests actually executed (2026-10-09; logs in the review packet under `logs/round4/`;
+earlier rounds are kept and marked superseded in `logs/SUPERSEDED.md`).**
+- Unit: `tests/unit/attribution/test_history_across_versions.py` covers ancestry
+  history order and de-duplication, legacy restarted positions reaching the scorer
+  chronologically, the REAL scorer (SBERT mocked) giving a later editor 0.8 temporal
+  primacy rather than 1.0, the ancestry bound (exactly at it accepted, one more and a
+  reserved version refused), cycles, an unreachable parent, a refused ancestry never
+  reaching the scorer or writing, the guard reserving headroom, plus the earlier
+  provenance, snapshot-selection and PATCH-preflight tests. Full `tests/unit`:
+  566 passed, 1 skipped (`tests/unit/test_sql_param_types.py:132`, "requires a live
+  Postgres to PREPARE against", pre-existing and unrelated). `ruff check sourcemind/`
+  and the changed test files are clean. mypy was not run.
+- Real PostgreSQL 16.15 (WSL Ubuntu, non-root user, fresh temporary data directory,
+  127.0.0.1:55432, throwaway credentials; bootstrap superuser for initialisation only,
+  owner and runtime roles NOSUPERUSER/NOBYPASSRLS as the workflow asserts), disposable
+  Redis on 127.0.0.1:56379, migrations to `20261005_0010`, driven from Windows with
+  Python 3.14 and the lockfile dependencies:
+  - `tests/integration/test_attribution_history_real_db.py`: 27 tests, 27 passed in
+    each of 5 consecutive runs. Four are new in this revision: a real legacy chain
+    with restarted positions (scorer receives 1,2,3 while stored positions stay
+    1,1,3), a chain exactly at the bound accepted and one past it refused with zero
+    writes, an overflow detected after the version row exists rolling everything back,
+    and a cyclic chain refused with zero writes.
+  - Against the previous `engine.py` those four fail: the legacy test on behaviour
+    (scorer positions 1,1,3), the cycle test on behaviour (the previous code scored the
+    cycle and created a version: 200 instead of 409), and the two bound tests only
+    structurally (the constant does not exist there), so they are not independent
+    behavioural red evidence.
   - Affected suites (`tests/unit/attribution`, `tests/unit/conflict`,
-    `test_handoff_assignment_real_db.py`, `test_handoff_workflow.py`): the first run
-    found `test_handoff_workflow.py` failing because its mock session did not model
-    the new lock statement; fixed as above and re-run green.
-  - Full Security Acceptance selection exactly as the workflow runs it: 63 collected,
-    identical to the explicit node list; two consecutive runs, 63 passed, 0 skipped;
-    the workflow's own JUnit assertion script reports `executed 63, passed 63`.
-    (A run made before `MIGRATION_DATABASE_URL` was exported in my shell skipped
-    `test_runtime_grant_is_explicit_exact_and_not_from_default_privileges`; that was
-    my environment omission, the CI step sets the variable, and the run is kept as
-    superseded evidence.)
-  - One failure that is NOT explained: in one earlier full run the pre-existing
-    `test_concurrent_patches_of_one_version_settle_without_forking[same-key]` reported
-    that request B was never seen waiting. It did not recur in the 5 focused and 2 full
-    runs that followed. That test now uses the same stricter waiter as the new tests
-    (waits for `wait_event = 'transactionid'` and prints `pg_stat_activity` on timeout);
-    the cause of the single failure was not established.
-- Not run: the GitHub Actions lane itself. CI uses Python 3.12 and a
-  `pgvector/pgvector:0.8.1-pg16` image; the local run used Python 3.14 and
-  PostgreSQL 18.6. `api-ci.yml` has no PostgreSQL, so the DB tests skip there.
-  The explicit node list and counts in `security-acceptance.yml` are now 63.
+    `test_handoff_assignment_real_db.py`, `test_handoff_workflow.py`): 122 passed.
+  - Full Security Acceptance selection exactly as the workflow runs it: 67 collected,
+    identical to the explicit node list; two consecutive runs, 67 passed, 0 skipped; the
+    workflow's own JUnit assertion script reports `executed 67, passed 67`.
+- An earlier CI failure (4 of 63 on `aa27170`) was a defect in the lock-wait test
+  observer, not in the locking: it polled `pg_stat_activity` inside one transaction,
+  which PostgreSQL caches (`stats_fetch_consistency = cache`). Fixed in `1c154ec` by
+  ending the observer's own transaction after every poll.
+- Not run locally: the GitHub Actions lane. CI uses Python 3.12, a
+  `pgvector/pgvector:0.8.1-pg16` image and dependencies resolved at run time (newer
+  majors than the lockfile: Starlette 1.7, FastAPI 0.143, SQLAlchemy 2.1). The
+  explicit node list and counts in `security-acceptance.yml` are now 67.
 
 **Follow-ups (unrelated, not fixed).** `MemoryResponse.relation_count` is
 hardcoded 0 on PATCH; `GET /memories/{id}/versions` returns no attribution;
