@@ -2385,3 +2385,238 @@ fallback is a pinned redeploy of `c413d15`.
 - The two SSH keys used (one in WSL for the backup, one in Windows for exact-node
   checks) were created and registered by the operator, unregistered afterwards,
   and their local files deleted.
+
+---
+
+## D-022 — Memory edits keep the contribution history of earlier versions; unchanged and tags-only saves are not authorship
+
+**Status:** Local, uncommitted patch for independent review (base `main`
+`0868262caaca05f1df0f2e0f04a7abecb2c8ef3a`). Not merged, not deployed. NOT an
+attribution-quality validation. It contains temporary refusals (SM034 for attribution state and an incomplete ancestry, SM035 for a stale handoff target, below) and an open idempotency gap (see "Open follow-up")
+that need a real policy before V1 is frozen.
+
+**Defect (verified at the base commit).** `PATCH /v1/memories/{id}` writes a
+new `memories` row per edit (`parent_memory_id`, `version + 1`) and passed the
+NEW id to `recompute_attribution()`, which loaded `attribution_edits WHERE
+memory_id = <that id>`. `create_new_version()` copies no edits, so earlier
+contribution events were never given to the scorer and the latest editor
+became the only contributor on the current version. Separately, an unchanged
+save still created a version and recorded an edit event: the equality check in
+`versioning.py` only skipped the embedding. Concurrent edits of one version
+could also both read it and fork the chain (reproduced on a real database
+against the base source: both concurrency regressions fail there).
+
+**Corrected behaviour.**
+- History is read across the memory's `parent_memory_id` ancestry, inside the
+  memory's workspace, from `attribution_edits` only (a recursive CTE in
+  `engine._load_chain_history`). Memories that merely share a `document_id` are
+  not part of the chain. Each edit row is used once; order is chain version,
+  recorded position, creation time, id. The new event's position is
+  `max(count, highest recorded position) + 1`, so chains written before this
+  change (positions restarted at 1 on every version) still order correctly.
+  The scorer receives history plus the new event; the snapshot is written for
+  the new version only. Old snapshots and the append-only trigger are untouched.
+- "Unchanged" means exact string equality of `content` with the current
+  version (no whitespace or semantic normalisation; the request schema's
+  existing strip applies as before). An equal-length replacement is a real edit.
+  - Content and tags both unchanged (tags omitted counts as unchanged): no new
+    version, no event; the current memory is returned in the existing response
+    shape. Authorization (`require_memory_access`, CONTRIBUTE) runs first.
+  - Content unchanged, tags changed: a new version is still created (existing
+    design) and `carry_forward_attribution()` copies the parent's current
+    snapshot to it, preserving weights, signal scores, `trigger_action` and
+    `edit_id`. No `attribution_edits` row is created, so carrying forward
+    repeatedly never adds a contribution event, and because history is read from
+    `attribution_edits` only, carried rows cannot be counted as events.
+  - Content changed: history-aware `recompute_attribution()`.
+- The current row is locked (`SELECT ... FOR UPDATE`) in `update_memory`, in
+  `create_new_version()` and, since this revision, in `assign_memory` (see "Shared
+  lock" below). A second concurrent writer blocks, then finds the row no longer
+  current and receives the existing `MemoryNotFoundError` (404) from PATCH or
+  `MemoryVersionStaleError` (409 SM035) from handoff assignment.
+
+**Scorer chronology and a complete ancestry (added after review).** The temporal
+signal is `0.8 ** (edit_position - 1)` computed from the event's OWN
+`edit_position`, not from its place in the list. Chains written before this
+change restarted positions at 1 on every version, so passing recorded positions
+through would have given a later editor first-event credit. The scorer input is
+therefore numbered 1..N from the complete, ordered ancestry (the new event is
+N+1), while every stored `edit_position` is left as written and the position
+persisted for the new edit keeps its earlier audit rule (one past the highest
+recorded position, and at least one past the number of events). Weights and the
+scoring formula are untouched.
+
+The ancestry walk stays bounded (`MAX_CHAIN_DEPTH` = 10,000 ancestors, a
+runaway/cycle guard) but a partial ancestry is never scored. It tracks the path,
+and raises the handled `409 SM034` (`AttributionStateConflictError`) for
+`ancestry_overflow` (more ancestors than the bound, counting the version about
+to be created), `ancestry_cycle` (a parent link leads back into the chain) and
+`ancestry_incomplete` (the chain stops at a row whose parent was not reached,
+for example a parent in another workspace). The content-edit preflight reserves
+one version of headroom, so overflow is refused before anything is written; the
+same check inside `recompute_attribution` is a second line of defence and, when
+it fires after the new version exists, the request's rollback removes the
+version, the `current_version` change, the event and the snapshot (asserted on a
+real database). Metadata-only updates do not read the ancestry and remain allowed
+on a chain at the bound; the next content edit of such a chain is refused until a
+policy exists.
+
+**Choosing the current snapshot row (carry-forward).** Per user, the newest
+`created_at` wins and every candidate at that timestamp is inspected before one
+is chosen. Candidates identical in values AND provenance (`trigger_action`,
+`edit_id`; only the row id differs) collapse to one. Two or more distinct
+candidates are ordered by `edit_position` only when every one is a recorded edit
+of the same memory with a distinct position. Anything else - notably an
+edit-linked row against a snapshot-only row such as a handoff transfer or a
+merge, whose relative chronology is unknown - is refused. A row id is never used
+as a tie-break, and there is no float tolerance: distinct stored values are
+distinct.
+
+**Temporary restriction 1 - ambiguous snapshot (tags-only).** If tied candidates
+differ and no valid order exists, a tags-only update is refused with
+`409 SM034` (`AttributionStateConflictError`, message
+`ambiguous_snapshot_order`). The check is read-only and runs before the version
+is created, so a refusal leaves no new version, no `current_version` change and
+no attribution rows (asserted on a real database). Exact unchanged saves are
+not affected.
+
+**Temporary restriction 2 - snapshot-only attribution (substantive edit).** A
+substantive edit is refused with `409 SM034` (message
+`inherited_contributors_not_representable`) when any SELECTED current snapshot
+row cannot be reproduced by the recorded edit history. The rule is about the
+row's provenance, not about user ids. A selected row is representable only if
+ALL of these hold: (1) its `edit_id` is not NULL and belongs to the loaded
+`parent_memory_id` ancestry; (2) its `trigger_action` equals the linked edit's
+`action_type` (rows the engine writes always satisfy this, a `transfer` or
+`merged` row never does, even if it were stamped with an edit id); (3) its user
+is an editor somewhere in that history. Condition 3 is necessary but not
+sufficient: a user who genuinely edited earlier and later received a handoff
+transfer still has a selected transfer row (`edit_id` NULL, action `transfer`),
+which fails 1 and 2, so the edit is refused. An earlier version of this rule
+compared user ids only and let exactly that case through. This covers merged
+memories, their metadata-only descendants (carry-forward preserves the merge
+rows) and memories that received a handoff transfer. No event is invented and no
+merge weighting is applied. The check is read-only and runs before the version
+is created, so a refusal writes nothing (asserted on a real database, including
+the handoff tables). Not affected: exact unchanged saves; tags-only updates whose
+snapshot is unambiguous (a transfer row written in a later transaction is
+strictly newer than the batch row it follows, so carry-forward proceeds); memories
+whose rows are all engine-written from recorded events; unresolved external
+origins, which have no snapshot rows (having no resolved original author is
+different from losing known contributors). **Consequence:** after a handoff
+assignment, content edits to that memory are refused until a policy exists.
+
+**Shared lock between PATCH and handoff assignment.** `assign_memory` now locks
+the memory row (`SELECT ... FOR UPDATE`, the same row `update_memory` locks)
+before any assignment or attribution mutation and re-checks `current_version`
+under that lock. Lock order everywhere is memory row, then `handoff_assignments`,
+then `handoff_records`, then conflict rows (severity); PATCH never touches the
+handoff tables, so this adds no cycle. A missing or deleted memory is still
+`HandoffNotFoundError`; a superseded version is the new handled
+`MemoryVersionStaleError` (`409 SM035`, `stale_memory_version`) and the route's
+rollback leaves the assignment, the transfer row and `assigned_count` untouched.
+Authorization (ADMINISTER) still runs first in the route. Both orderings are
+tested with one database session per request and the overlap established by
+`pg_stat_activity` showing a backend waiting on `transactionid`, not by sleeping:
+PATCH first (handoff gets SM035, no transfer row exists on either version) and
+handoff first (the committed transfer is visible to PATCH, which is refused
+SM034, with no new version and no new event). The handoff-first test passed
+with the explicit lock removed, so it does not independently prove that lock; it
+covers the provenance guard observing a committed transfer. The lock itself is
+evidenced by the PATCH-first test, which failed without it. **Consequence:**
+handoff assignment rows stay pinned to the memory id they were planned on, so
+once a PATCH supersedes that version, assigning it returns SM035 until a policy
+re-points handoff assignments to the current version.
+
+**Unresolved external authors.** They have no `attributions` rows by design
+(D-021) and are reported from `artifact_links` through the document, which new
+versions keep. An editor is credited as an editor only; nothing is inferred
+from names, e-mail, login or submitter id, and the sync initiator is not
+credited.
+
+**Idempotency, stated as it is.** Duplicate prevention: `attribution_edits.
+idempotency_key` is UNIQUE, and the version lock means a retry against the
+now-stale id finds no current version (404) before anything is written.
+Successful replay is NOT provided and is unresolved: stored records establish
+target chain, editor and content but not whether tags were omitted or
+supplied, so a replay shortcut could not be bound to the original request
+reliably, and no new persistence was added. A metadata-only retry against the
+old id is a 404, not idempotency; against the new id it is the no-op above.
+With the lock, the second of two concurrent requests - same key or different
+keys - gets a 404 and the winner succeeds (asserted on a real database).
+
+**Open follow-up - metadata-only requests do not record their Idempotency-Key.**
+The only persistence for the key is `attribution_edits.idempotency_key`, and
+exact-unchanged and tags-only requests create no edit. A key used for such a
+request can later be reused with different content and will succeed; the
+UNIQUE index cannot enforce the key's reuse contract for them. **Idempotency
+is therefore not complete.** Closing the gap needs reservations persisted
+independently of contribution events (target, caller, request fingerprint)
+checked before any no-op or tags-only return. That is a schema and replay-handling
+change, deliberately not made here (no migration, no replay redesign).
+
+**History and snapshots (replaces the earlier "no backfill" wording).** No
+migration runs and no stored snapshot or edit row is rewritten. The next
+substantive edit of a chain truncated by the old bug rebuilds the new version's
+snapshot from the ancestral `attribution_edits` that do exist, so recorded
+contributors reappear then; nothing is written until someone edits. Contributors
+who exist only as snapshot rows are not reconstructed (restriction 2 refuses
+rather than guess), and events the old bug never recorded cannot be recovered.
+
+**Not changed.** Signal weights, character-distance direction, semantic
+scoring, approval bonuses, minimum-share normalisation, conflict-merge
+weighting, schema.
+
+**Remaining scoring limitations (separate task).** Preserving history exposes
+scorer behaviour the history loss used to hide; none of it was changed or
+evaluated here. The scorer's known problems (weights, distance direction,
+semantic and approval signals, the share floor, merge weighting) are untouched,
+and nothing in this patch says anything about attribution accuracy.
+
+**Tests actually executed (2026-10-09; logs in the review packet under `logs/round4/`;
+earlier rounds are kept and marked superseded in `logs/SUPERSEDED.md`).**
+- Unit: `tests/unit/attribution/test_history_across_versions.py` covers ancestry
+  history order and de-duplication, legacy restarted positions reaching the scorer
+  chronologically, the REAL scorer (SBERT mocked) giving a later editor 0.8 temporal
+  primacy rather than 1.0, the ancestry bound (exactly at it accepted, one more and a
+  reserved version refused), cycles, an unreachable parent, a refused ancestry never
+  reaching the scorer or writing, the guard reserving headroom, plus the earlier
+  provenance, snapshot-selection and PATCH-preflight tests. Full `tests/unit`:
+  566 passed, 1 skipped (`tests/unit/test_sql_param_types.py:132`, "requires a live
+  Postgres to PREPARE against", pre-existing and unrelated). `ruff check sourcemind/`
+  and the changed test files are clean. mypy was not run.
+- Real PostgreSQL 16.15 (WSL Ubuntu, non-root user, fresh temporary data directory,
+  127.0.0.1:55432, throwaway credentials; bootstrap superuser for initialisation only,
+  owner and runtime roles NOSUPERUSER/NOBYPASSRLS as the workflow asserts), disposable
+  Redis on 127.0.0.1:56379, migrations to `20261005_0010`, driven from Windows with
+  Python 3.14 and the lockfile dependencies:
+  - `tests/integration/test_attribution_history_real_db.py`: 27 tests, 27 passed in
+    each of 5 consecutive runs. Four are new in this revision: a real legacy chain
+    with restarted positions (scorer receives 1,2,3 while stored positions stay
+    1,1,3), a chain exactly at the bound accepted and one past it refused with zero
+    writes, an overflow detected after the version row exists rolling everything back,
+    and a cyclic chain refused with zero writes.
+  - Against the previous `engine.py` those four fail: the legacy test on behaviour
+    (scorer positions 1,1,3), the cycle test on behaviour (the previous code scored the
+    cycle and created a version: 200 instead of 409), and the two bound tests only
+    structurally (the constant does not exist there), so they are not independent
+    behavioural red evidence.
+  - Affected suites (`tests/unit/attribution`, `tests/unit/conflict`,
+    `test_handoff_assignment_real_db.py`, `test_handoff_workflow.py`): 122 passed.
+  - Full Security Acceptance selection exactly as the workflow runs it: 67 collected,
+    identical to the explicit node list; two consecutive runs, 67 passed, 0 skipped; the
+    workflow's own JUnit assertion script reports `executed 67, passed 67`.
+- An earlier CI failure (4 of 63 on `aa27170`) was a defect in the lock-wait test
+  observer, not in the locking: it polled `pg_stat_activity` inside one transaction,
+  which PostgreSQL caches (`stats_fetch_consistency = cache`). Fixed in `1c154ec` by
+  ending the observer's own transaction after every poll.
+- Not run locally: the GitHub Actions lane. CI uses Python 3.12, a
+  `pgvector/pgvector:0.8.1-pg16` image and dependencies resolved at run time (newer
+  majors than the lockfile: Starlette 1.7, FastAPI 0.143, SQLAlchemy 2.1). The
+  explicit node list and counts in `security-acceptance.yml` are now 67.
+
+**Follow-ups (unrelated, not fixed).** `MemoryResponse.relation_count` is
+hardcoded 0 on PATCH; `GET /memories/{id}/versions` returns no attribution;
+the comment in `test_github_author_links_real_db.py` calling editor-only
+attribution "the pre-existing versioning behaviour" is now accurate only for
+memories with no prior events.

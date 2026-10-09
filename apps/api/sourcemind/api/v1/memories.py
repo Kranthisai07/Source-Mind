@@ -286,9 +286,57 @@ async def update_memory(
         db, current_user.user_id, memory_id, WorkspacePermission.CONTRIBUTE
     )
 
-    from sourcemind.services.attribution.engine import recompute_attribution
+    from sourcemind.services.attribution.engine import (
+        assert_edit_preserves_inherited_contributors,
+        carry_forward_attribution,
+        plan_carry_forward,
+        recompute_attribution,
+    )
     from sourcemind.services.attribution.versioning import create_new_version
     from sourcemind.services.memory.importance import recompute_importance
+
+    # Exact string equality defines "unchanged"; no normalisation. The row is
+    # locked so the checks below and the version insert see one stable state.
+    current_result = await db.execute(
+        select(Memory)
+        .where(
+            Memory.id == memory_id,
+            Memory.current_version.is_(True),
+            Memory.deleted_at.is_(None),
+        )
+        .with_for_update()
+    )
+    current = current_result.scalar_one_or_none()
+    if current is None:
+        raise MemoryNotFoundError(f"Memory {memory_id} not found or not current version.")
+    content_changed = current.content != body.content
+    tags_changed = body.tags is not None and list(body.tags) != list(current.tags or [])
+
+    if not content_changed and not tags_changed:
+        # Nothing to record: no new version and no contribution event.
+        return APIResponse(
+            data=MemoryResponse(
+                id=current.id,
+                workspace_id=current.workspace_id,
+                document_id=current.document_id,
+                content=current.content,
+                version=current.version,
+                tags=current.tags,
+                category=current.category,
+                confidence_score=current.confidence_score,
+                created_at=current.created_at or datetime.now(UTC),
+                updated_at=current.updated_at,
+                relation_count=0,
+            ),
+            meta=_make_meta(request_id, start),
+        )
+
+    # Read-only refusals, evaluated BEFORE any write so a refusal leaves no new
+    # version, no current_version change and no attribution rows (D-022).
+    if content_changed:
+        await assert_edit_preserves_inherited_contributors(db, memory_id)
+    else:
+        await plan_carry_forward(db, memory_id)
 
     version_result = await create_new_version(
         session=db,
@@ -305,15 +353,24 @@ async def update_memory(
     old_mem = old_content_result.scalar_one_or_none()
     content_before = old_mem.content if old_mem else ""
 
-    await recompute_attribution(
-        session=db,
-        memory_id=new_mem.id,
-        editor_id=current_user.user_id,
-        content_before=content_before,
-        content_after=body.content,
-        action_type="edit",
-        idempotency_key=idempotency_key,
-    )
+    if content_changed:
+        await recompute_attribution(
+            session=db,
+            memory_id=new_mem.id,
+            editor_id=current_user.user_id,
+            content_before=content_before,
+            content_after=body.content,
+            action_type="edit",
+            idempotency_key=idempotency_key,
+        )
+    else:
+        # Tags-only: new version, same content. Expose the prior attribution
+        # on it without recording an authorship event.
+        await carry_forward_attribution(
+            db,
+            from_memory_id=version_result.previous_version_id,
+            to_memory_id=new_mem.id,
+        )
 
     await recompute_importance(session=db, memory_id=new_mem.id)
 

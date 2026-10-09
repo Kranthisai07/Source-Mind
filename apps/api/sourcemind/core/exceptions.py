@@ -59,6 +59,8 @@ class ErrorCode(StrEnum):
     WORKSPACE_SLUG_TAKEN = "SM031"
     ORGANIZATION_SLUG_TAKEN = "SM032"
     IDEMPOTENCY_CONFLICT = "SM033"
+    ATTRIBUTION_STATE_CONFLICT = "SM034"
+    MEMORY_VERSION_STALE = "SM035"
 
     # Processing / Pipeline (040–049)
     INGESTION_FAILED = "SM040"
@@ -245,6 +247,29 @@ class WorkspaceSlugTakenError(SourceMindError):
 class IdempotencyConflictError(SourceMindError):
     """Same Idempotency-Key was used with different request body."""
     code = ErrorCode.IDEMPOTENCY_CONFLICT
+    http_status = HTTPStatus.CONFLICT
+
+
+class AttributionStateConflictError(SourceMindError):
+    """
+    The stored attribution cannot be carried or recomputed without guessing.
+
+    Temporary, deliberate refusal (D-022): either equally ordered snapshots
+    disagree and their chronology is unknown, or an edit would discard
+    contributors that exist only as snapshot rows.
+    """
+    code = ErrorCode.ATTRIBUTION_STATE_CONFLICT
+    http_status = HTTPStatus.CONFLICT
+
+
+class MemoryVersionStaleError(SourceMindError):
+    """
+    The memory version the request targeted has been superseded by an edit.
+
+    Raised when work planned against a version (for example a handoff
+    assignment) reaches the memory after a newer version became current.
+    """
+    code = ErrorCode.MEMORY_VERSION_STALE
     http_status = HTTPStatus.CONFLICT
 
 

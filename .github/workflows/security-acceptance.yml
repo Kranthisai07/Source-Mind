@@ -169,7 +169,7 @@ jobs:
       # pyproject so the collected count is the raw test count. Asserting the
       # exact node IDs means a rename cannot silently shrink the gate, which a
       # bare count would not catch.
-      - name: Verify exact test selection (40 nodes)
+      - name: Verify exact test selection (67 nodes)
         working-directory: apps/api
         # SECURITY_TEST_ALLOW_DISPOSABLE / TEST_DATABASE_URL / TEST_REDIS_URL
         # are already in the environment via GITHUB_ENV.
@@ -177,6 +177,33 @@ jobs:
           set -euo pipefail
           expected=$(mktemp); actual=$(mktemp)
           cat > "$expected" <<'NODES'
+          tests/integration/test_attribution_history_real_db.py::test_alice_bob_alice_history_is_preserved_once_in_order
+          tests/integration/test_attribution_history_real_db.py::test_chain_at_the_bound_is_accepted_and_beyond_it_is_refused_with_zero_writes
+          tests/integration/test_attribution_history_real_db.py::test_concurrent_patches_of_one_version_settle_without_forking[different-keys]
+          tests/integration/test_attribution_history_real_db.py::test_concurrent_patches_of_one_version_settle_without_forking[same-key]
+          tests/integration/test_attribution_history_real_db.py::test_cycle_in_the_version_chain_is_refused_with_zero_writes
+          tests/integration/test_attribution_history_real_db.py::test_equal_length_replacement_is_a_genuine_edit
+          tests/integration/test_attribution_history_real_db.py::test_exact_unchanged_save_is_a_noop
+          tests/integration/test_attribution_history_real_db.py::test_handoff_that_wins_the_row_lock_is_seen_and_protected_by_the_patch_guard
+          tests/integration/test_attribution_history_real_db.py::test_identical_tied_duplicates_are_collapsed_not_refused
+          tests/integration/test_attribution_history_real_db.py::test_legacy_chain_with_restarted_positions_is_scored_chronologically
+          tests/integration/test_attribution_history_real_db.py::test_merged_snapshot_is_preserved_by_unchanged_and_tags_only_updates
+          tests/integration/test_attribution_history_real_db.py::test_overflow_detected_after_the_version_exists_rolls_everything_back
+          tests/integration/test_attribution_history_real_db.py::test_patch_that_wins_the_row_lock_makes_a_later_handoff_stale
+          tests/integration/test_attribution_history_real_db.py::test_retried_content_patch_creates_no_duplicate_event_or_version
+          tests/integration/test_attribution_history_real_db.py::test_retried_metadata_only_patch_is_noop_on_new_id_and_404_on_stale_id
+          tests/integration/test_attribution_history_real_db.py::test_sibling_memories_and_other_workspaces_never_mix
+          tests/integration/test_attribution_history_real_db.py::test_substantive_edit_after_a_handoff_transfer_is_refused_with_zero_writes
+          tests/integration/test_attribution_history_real_db.py::test_substantive_edit_of_a_merged_memory_is_refused_with_zero_writes
+          tests/integration/test_attribution_history_real_db.py::test_substantive_edit_of_a_metadata_only_descendant_of_a_merge_is_refused
+          tests/integration/test_attribution_history_real_db.py::test_tags_only_update_keeps_attribution_readable_and_adds_no_event
+          tests/integration/test_attribution_history_real_db.py::test_tied_edit_row_and_transfer_row_with_differing_shares_refuse_tags_only
+          tests/integration/test_attribution_history_real_db.py::test_tied_snapshots_equal_in_value_but_not_in_provenance_still_refuse
+          tests/integration/test_attribution_history_real_db.py::test_transfer_to_a_user_who_also_edited_is_still_protected_from_loss
+          tests/integration/test_attribution_history_real_db.py::test_unauthorized_callers_cannot_use_the_noop_or_tags_paths[other_workspace_member_id]
+          tests/integration/test_attribution_history_real_db.py::test_unauthorized_callers_cannot_use_the_noop_or_tags_paths[viewer_id]
+          tests/integration/test_attribution_history_real_db.py::test_unauthorized_callers_cannot_use_the_noop_or_tags_paths[zero_membership_id]
+          tests/integration/test_attribution_history_real_db.py::test_unresolved_origin_survives_a_real_edit_without_crediting_the_initiator
           tests/integration/test_backend_review_real_services.py::test_concurrent_recovery_attempts_publish_once
           tests/integration/test_backend_review_real_services.py::test_failed_request_releases_reservation_for_retry
           tests/integration/test_backend_review_real_services.py::test_identical_concurrent_submissions_share_one_result
@@ -219,6 +246,7 @@ jobs:
           tests/integration/test_security_foundation_real_db.py::test_workspace_context_cannot_substitute_for_membership
           NODES
           python -m pytest -o addopts='' -q --collect-only \
+            tests/integration/test_attribution_history_real_db.py \
             tests/integration/test_security_foundation_real_db.py \
             tests/integration/test_security_acceptance_real_services.py \
             tests/integration/test_handoff_assignment_real_db.py \
@@ -228,7 +256,7 @@ jobs:
             | grep '::' | sort > "$actual"
           echo "collected $(wc -l < "$actual") node(s)"
           diff -u "$expected" "$actual" || {
-            echo "::error::collected node IDs differ from the expected forty"
+            echo "::error::collected node IDs differ from the expected 67"
             exit 1
           }
 
@@ -238,7 +266,7 @@ jobs:
       # never reported as an acceptance timeout.
       #
       # A JUnit report is emitted so the next step can prove the tests RAN.
-      # `pytest` exits 0 on "40 skipped", and every one of these is guarded by
+      # `pytest` exits 0 on "67 skipped", and every one of these is guarded by
       # the disposable-DB check — so a silent skip is the realistic failure and
       # exit status alone cannot detect it.
       - name: Security acceptance tests
@@ -253,6 +281,7 @@ jobs:
         run: |
           python -m pytest -o addopts='' -q -p no:cacheprovider \
             --junitxml=acceptance-results.xml \
+            tests/integration/test_attribution_history_real_db.py \
             tests/integration/test_security_foundation_real_db.py \
             tests/integration/test_security_acceptance_real_services.py \
             tests/integration/test_handoff_assignment_real_db.py \
@@ -260,7 +289,7 @@ jobs:
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py
 
-      - name: Assert all forty tests executed and passed
+      - name: Assert all 67 tests executed and passed
         if: always() && steps.acceptance.outcome != 'skipped'
         working-directory: apps/api
         run: |
@@ -288,11 +317,11 @@ jobs:
               else:
                   bad.append(f"{node} -> {state}")
           print(f"executed {total}, passed {passed}")
-          if total != 40:
-              print(f"::error::expected 40 test cases, report contains {total}")
+          if total != 67:
+              print(f"::error::expected 67 test cases, report contains {total}")
           for b in bad:
               print(f"::error::{b}")
-          sys.exit(0 if (total == 40 and passed == 40) else 1)
+          sys.exit(0 if (total == 67 and passed == 67) else 1)
           PY
 
       - name: Upload acceptance report

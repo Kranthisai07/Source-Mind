@@ -111,7 +111,10 @@ async def test_complete_handoff_lifecycle():
         assign_call_count[0] += 1
         mock_result = MagicMock()
         query_str = str(query)
-        if "UPDATE handoff_assignments AS assignment" in query_str:
+        if "FROM memories" in query_str and "FOR UPDATE" in query_str:
+            # assign_memory locks the memory row first; it is the current version
+            mock_result.fetchone = MagicMock(return_value=(True,))
+        elif "UPDATE handoff_assignments AS assignment" in query_str:
             mock_result.fetchone = MagicMock(return_value=(uuid.uuid4(),))
         elif "contribution_weight" in query_str and "ORDER BY created_at DESC" in query_str:
             # Current attribution weight for departing user
