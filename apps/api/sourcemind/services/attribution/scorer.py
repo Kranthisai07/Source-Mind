@@ -15,6 +15,7 @@ ALLCAPS, version strings, known tech keywords). See ADR-007.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -103,6 +104,19 @@ _W5 = 0.10  # explicit approval
 # Floor: min share for any contributor with a substantive edit (>10 chars changed)
 _FLOOR = 0.02
 _SUBSTANTIVE_CHARS = 10
+
+# The floor can be honoured for at most this many eligible contributors: more would need
+# floors alone to exceed the whole share. Derived from _FLOOR, not hard-coded.
+_MAX_FLOORED = math.floor(1.0 / _FLOOR + 1e-9)
+
+
+def _floor_pass_limit(eligible_count: int) -> int:
+    """Passes the floor loop may use.
+
+    The floored set only grows and is bounded by the eligible contributors, so
+    eligible_count + 1 passes always suffice. It is a bound, not a tuning knob.
+    """
+    return eligible_count + 1
 
 # Approval action types that grant full Signal 5 score
 _APPROVAL_ACTIONS = frozenset({"approved", "merged", "accepted", "approve", "merge"})
@@ -364,13 +378,36 @@ class AttributionScorer:
     def _normalize(self, contributors: list[ContributorScore]) -> list[NormalizedAttribution]:
         """
         Normalize raw scores to sum to 1.0, applying the floor for substantive editors.
+
+        Defined behaviour (D0):
+          * Validation comes first, before any shortcut: a non-finite raw score is
+            refused (handled SM034, ``invalid_score_input``); a negative finite one is
+            clamped to 0 with a warning.
+          * Normalisation is numerically safe: if the sum of finite scores overflows,
+            scores are divided by the largest one first.
+          * A zero total keeps the documented equal split (no signal scores) and warns.
+          * The floor is disabled for the calculation, not reduced or equalised, when it
+            is infeasible or would drive a contributor with positive raw credit to
+            exactly 0. Otherwise the floored set only grows, so the loop terminates.
         """
         if not contributors:
             return []
 
-        total = sum(c.raw_score for c in contributors)
+        scores = self._validated_scores(contributors)
+        # Who has strictly positive raw credit, decided on the validated, clamped scores
+        # BEFORE any scaling: a tiny positive score can underflow to 0.0 once normalised.
+        positive = frozenset(uid for uid, raw in scores.items() if raw > 0)
+
+        total = sum(scores.values())
+        if not math.isfinite(total):
+            # The scores are finite but their sum overflowed: divide by the largest first.
+            peak = max(scores.values())
+            scores = {uid: raw / peak for uid, raw in scores.items()}
+            total = math.fsum(scores.values())
+
         if total == 0:
-            # Edge case: all signals zero — give equal weight
+            # Edge case: no measurable credit - give equal weight (documented behaviour)
+            log.warning("normalize.zero_total", contributors=len(contributors))
             equal = 1.0 / len(contributors)
             return [
                 NormalizedAttribution(
@@ -385,38 +422,8 @@ class AttributionScorer:
                 for c in contributors
             ]
 
-        # Initial normalization
-        normalized = {c.user_id: c.raw_score / total for c in contributors}
-
-        # Apply floor
-        floor_applied = {
-            c.user_id: c.has_substantive_edit
-            for c in contributors
-        }
-        changed = True
-        while changed:
-            changed = False
-            floored_ids = [uid for uid, is_sub in floor_applied.items()
-                           if is_sub and normalized[uid] < _FLOOR]
-            if not floored_ids:
-                break
-            # Set floored contributors to _FLOOR
-            floored_total = len(floored_ids) * _FLOOR
-            non_floored_total = sum(normalized[uid] for uid in normalized
-                                    if uid not in floored_ids)
-            if non_floored_total == 0:
-                # All would be floored equally
-                for uid in floored_ids:
-                    normalized[uid] = _FLOOR
-                break
-            # Redistribute the deficit from non-floored contributors
-            scale = (1.0 - floored_total) / non_floored_total
-            for uid in floored_ids:
-                normalized[uid] = _FLOOR
-                changed = True
-            for uid in normalized:
-                if uid not in floored_ids:
-                    normalized[uid] *= scale
+        base = {uid: raw / total for uid, raw in scores.items()}
+        normalized = self._apply_floor(contributors, base, positive)
 
         # Final renormalize to ensure exact 1.0
         final_total = sum(normalized.values())
@@ -436,6 +443,84 @@ class AttributionScorer:
             )
             for uid, w in normalized.items()
         ]
+
+    @staticmethod
+    def _validated_scores(contributors: list[ContributorScore]) -> dict[str, float]:
+        """Raw scores as finite, nonnegative numbers, or a handled refusal."""
+        from sourcemind.core.exceptions import AttributionStateConflictError
+
+        scores: dict[str, float] = {}
+        clamped = 0
+        for c in contributors:
+            raw = c.raw_score
+            if not math.isfinite(raw):
+                raise AttributionStateConflictError(
+                    "A contributor's raw attribution score is not a finite number; "
+                    "this update was not applied (invalid_score_input)."
+                )
+            if raw < 0:
+                clamped += 1
+                raw = 0.0
+            scores[c.user_id] = raw
+        if clamped:
+            log.warning(
+                "normalize.negative_raw_clamped", count=clamped, contributors=len(contributors)
+            )
+        return scores
+
+    @staticmethod
+    def _apply_floor(
+        contributors: list[ContributorScore],
+        base: dict[str, float],
+        positive: frozenset[str],
+    ) -> dict[str, float]:
+        """Give every eligible contributor at least _FLOOR, or disable the floor.
+
+        ``positive`` is the set whose validated raw score is strictly positive. It is passed in
+        rather than inferred from ``base``, because a tiny positive score underflows to 0.0 when
+        normalised. The floored set only grows, so the loop ends within _floor_pass_limit passes.
+        """
+        eligible = {c.user_id for c in contributors if c.has_substantive_edit}
+        if not eligible:
+            return base
+
+        def disabled(reason: str) -> dict[str, float]:
+            log.warning(
+                "normalize.floor_disabled",
+                reason=reason,
+                eligible=len(eligible),
+                capacity=_MAX_FLOORED,
+                contributors=len(base),
+            )
+            return base
+
+        if len(eligible) > _MAX_FLOORED:
+            return disabled("eligible_exceeds_capacity")
+        if len(eligible) >= _MAX_FLOORED and any(
+            uid in positive for uid in base if uid not in eligible
+        ):
+            # Every eligible contributor must receive at least _FLOOR, and _MAX_FLOORED of them
+            # already take the whole share: a contributor outside the floor with positive raw
+            # credit would be left at exactly 0. Keep the raw credit instead. Decided up front,
+            # not inside the loop, because with unequal scores the loop stops one short of
+            # flooring everyone and the last contributor simply lands on _FLOOR.
+            return disabled("would_zero_positive_credit")
+
+        floored: set[str] = set()
+        scale = 0.0
+        for _ in range(_floor_pass_limit(len(eligible))):
+            rest_mass = sum(x for uid, x in base.items() if uid not in floored)
+            if rest_mass == 0:
+                break
+            scale = (1.0 - _FLOOR * len(floored)) / rest_mass
+            newly = {uid for uid in eligible - floored if base[uid] * scale < _FLOOR}
+            if not newly:
+                break
+            floored |= newly
+        else:
+            return disabled("no_convergence")
+
+        return {uid: (_FLOOR if uid in floored else x * scale) for uid, x in base.items()}
 
 
 # Module-level singleton for route handlers (lazy-initialized)

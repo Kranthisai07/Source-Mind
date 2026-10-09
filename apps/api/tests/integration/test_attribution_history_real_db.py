@@ -43,6 +43,7 @@ from sourcemind.core.dependencies import AuthenticatedUser, get_current_user, ge
 from sourcemind.services.attribution import engine as attribution_engine
 from sourcemind.services.attribution import scorer as scorer_module
 from sourcemind.services.attribution.engine import create_initial_attribution
+from sourcemind.services.attribution.scorer import AttributionScorer, ContributorScore
 from tests.integration.test_security_foundation_real_db import (
     SecurityTenantData,
     _seed_security_tenants,
@@ -1268,3 +1269,37 @@ async def test_cycle_in_the_version_chain_is_refused_with_zero_writes(
     assert "ancestry_cycle" in refused.json()["error"]["message"], refused.text
     assert await _state_for_ids(db_engine, tenants, ids) == before
     assert len(scorer.calls) == calls
+
+
+async def test_invalid_score_input_is_refused_by_the_route_and_the_request_rolls_back(
+    client, db_engine, tenants, scorer, monkeypatch
+) -> None:
+    """D0: a non-finite raw score is refused inside the scorer's normalisation, after the new
+    version row has been created. The request must answer the handled 409 SM034 and leave no
+    new version, no flipped current_version flag, no event and no attribution row."""
+    alice, bob = tenants.admin_id, tenants.member_id
+    v1 = await _seed_memory(db_engine, tenants, alice, "Rollback on invalid scores.")
+    before = await _write_state(db_engine, tenants, v1)
+
+    class _NonFiniteScorer:
+        """Real normalisation, fed a NaN raw score (as a corrupted signal would produce)."""
+
+        def compute_scores(self, edits):
+            return AttributionScorer()._normalize(
+                [
+                    ContributorScore(
+                        user_id=edits[-1].user_id,
+                        raw_score=float("nan"),
+                        has_substantive_edit=True,
+                    )
+                ]
+            )
+
+    monkeypatch.setattr(attribution_engine, "get_scorer", lambda: _NonFiniteScorer())
+
+    refused = await _patch(client, bob, v1, "Edited so that the scorer is asked to run.")
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["error"]["code"] == "SM034", refused.text
+    assert "invalid_score_input" in refused.json()["error"]["message"], refused.text
+    assert await _write_state(db_engine, tenants, v1) == before
