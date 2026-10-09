@@ -907,6 +907,11 @@ async def _await_blocked_on_row_lock(engine) -> None:
                     )
                 )
             ).scalar_one()
+            # pg_stat_activity is cached for the life of a transaction
+            # (stats_fetch_consistency = cache), so a backend that connects after
+            # the first poll stays invisible until the transaction ends. End it
+            # on every poll so each one sees current state.
+            await waiter.rollback()
             if blocked:
                 return
             await asyncio.sleep(0.1)
