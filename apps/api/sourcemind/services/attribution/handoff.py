@@ -24,7 +24,7 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sourcemind.core.exceptions import HandoffNotFoundError
+from sourcemind.core.exceptions import HandoffNotFoundError, MemoryVersionStaleError
 
 log = structlog.get_logger(__name__)
 
@@ -332,7 +332,31 @@ async def assign_memory(
       - Historical records are NEVER modified (append-only)
 
     Returns the updated attribution breakdown.
+
+    Lock order (shared with PATCH /v1/memories/:id, which locks the same row
+    first): memory row -> handoff_assignments -> handoff_records. The memory
+    row is locked before any assignment or attribution mutation and its
+    current-version status is re-checked under that lock, so a concurrent
+    edit either completes first (this call is refused as stale) or waits for
+    this call to commit (and then sees the committed transfer).
     """
+    locked = await session.execute(
+        text("""
+            SELECT current_version FROM memories
+            WHERE id = CAST(:mid AS uuid) AND deleted_at IS NULL
+            FOR UPDATE
+        """),
+        {"mid": str(memory_id)},
+    )
+    locked_row = locked.fetchone()
+    if locked_row is None:
+        raise HandoffNotFoundError("Handoff assignment target not found.")
+    if not locked_row[0]:
+        raise MemoryVersionStaleError(
+            f"Memory {memory_id} has been superseded by a newer version; "
+            "the handoff assignment was not applied (stale_memory_version)."
+        )
+
     assignment_result = await session.execute(
         text("""
             UPDATE handoff_assignments AS assignment

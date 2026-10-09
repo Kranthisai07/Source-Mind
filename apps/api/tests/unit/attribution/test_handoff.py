@@ -104,7 +104,9 @@ async def test_successor_suggestion_finds_semantic_neighbor():
     async def execute_side_effect(stmt, params=None, **kwargs):
         stmt_str = str(stmt)
         r = MagicMock()
-        if "UPDATE handoff_assignments AS assignment" in stmt_str:
+        if "FROM memories" in stmt_str and "FOR UPDATE" in stmt_str:
+            r.fetchone = MagicMock(return_value=(True,))  # current version, row locked
+        elif "UPDATE handoff_assignments AS assignment" in stmt_str:
             r.fetchone = MagicMock(return_value=(uuid.uuid4(),))
         elif "SELECT contribution_weight" in stmt_str:
             r.fetchone = MagicMock(return_value=(0.8,))
@@ -375,3 +377,42 @@ async def test_similarity_query_uses_the_documented_threshold_and_excludes_depar
     assert captured.get("dep_uid") == departing, (
         "the departing user must be excluded from their own succession"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lock_row, error", [((False,), "MemoryVersionStaleError"),
+                                             (None, "HandoffNotFoundError")])
+async def test_assign_memory_locks_the_memory_row_first_and_refuses_before_any_write(
+    lock_row, error
+):
+    """The memory row is locked and re-validated before any assignment or attribution write."""
+    import sourcemind.core.exceptions as exceptions
+    from sourcemind.services.attribution.handoff import assign_memory
+
+    statements: list[str] = []
+
+    async def execute_side_effect(stmt, params=None, **kwargs):
+        statements.append(str(stmt))
+        r = MagicMock()
+        r.fetchone = MagicMock(return_value=lock_row)
+        return r
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=execute_side_effect)
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+
+    with pytest.raises(getattr(exceptions, error)):
+        await assign_memory(
+            session=session,
+            handoff_record_id=uuid.uuid4(),
+            memory_id=uuid.uuid4(),
+            new_owner_id=uuid.uuid4(),
+            departing_user_id=uuid.uuid4(),
+        )
+
+    assert len(statements) == 1
+    assert "FROM memories" in statements[0] and "FOR UPDATE" in statements[0]
+    session.add.assert_not_called()
+    session.flush.assert_not_awaited()

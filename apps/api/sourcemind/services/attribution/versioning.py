@@ -62,6 +62,10 @@ async def create_new_version(
             Memory.current_version.is_(True),
             Memory.deleted_at.is_(None),
         )
+        # Serialise concurrent edits of the same version: a second writer
+        # blocks, then re-evaluates current_version and finds none instead
+        # of forking the chain.
+        .with_for_update()
     )
     old = result.scalar_one_or_none()
     if not old:
