@@ -73,6 +73,8 @@ async def test_pilot_export_scopes_every_dataset_to_one_workspace() -> None:
     for sql, params in session.calls:
         assert "workspace_id = CAST(:workspace_id AS uuid)" in sql
         assert params == {"workspace_id": str(workspace_id)}
+    documents_sql = next(sql for sql, _params in session.calls if "FROM documents" in sql)
+    assert "metadata AS pipeline_data" in documents_sql
 
 
 @pytest.mark.unit

@@ -23,7 +23,7 @@ SELECT
     error_message,
     chunk_count,
     memory_count,
-    pipeline_data,
+    metadata AS pipeline_data,
     created_at,
     updated_at,
     deleted_at
