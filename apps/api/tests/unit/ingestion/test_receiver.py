@@ -31,6 +31,24 @@ def test_idempotency_cache_key_is_scoped_by_workspace_and_user():
 
 
 @pytest.mark.unit
+def test_request_fingerprint_distinguishes_verbatim_from_extraction():
+    from sourcemind.services.ingestion.receiver import _request_fingerprint
+
+    common = {
+        "content": "same input",
+        "url": None,
+        "source_type": "text",
+        "title": None,
+        "tags": ["pilot"],
+        "category": None,
+    }
+
+    extract = _request_fingerprint(**common, ingestion_mode="extract")
+    assert extract == _request_fingerprint(**common)
+    assert extract != _request_fingerprint(**common, ingestion_mode="verbatim")
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_missing_content_and_url_raises_validation_error():
     from sourcemind.core.exceptions import ValidationError

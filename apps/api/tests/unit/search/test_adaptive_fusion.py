@@ -112,7 +112,21 @@ async def test_identifier_query_searches_on_the_identifier_alone():
     evaluation questions. With an identifier present the arm must search on the
     identifier by itself, OR-ed and unstemmed.
     """
-    session = _session_returning([("m1", "Commit 926fa8554175 removed caches", 0.4)])
+    session = _session_returning([
+        (
+            "m1",
+            "Commit 926fa8554175 removed caches",
+            0.4,
+            None,
+            1,
+            None,
+            None,
+            None,
+            None,
+            None,
+            0,
+        )
+    ])
 
     out = await _keyword_search(
         session,
@@ -132,6 +146,14 @@ async def test_identifier_query_searches_on_the_identifier_alone():
             "id": "m1",
             "content": "Commit 926fa8554175 removed caches",
             "score": 0.4,
+            "document_id": None,
+            "version": 1,
+            "tags": None,
+            "category": None,
+            "confidence_score": None,
+            "created_at": None,
+            "updated_at": None,
+            "relation_count": 0,
             "match_type": "keyword",
         }
     ]

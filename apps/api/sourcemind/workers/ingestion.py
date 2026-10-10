@@ -186,40 +186,60 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
 
             attempt_savepoint = await session.begin_nested()
             try:
-                # Stage 2: EXTRACT
-                await update_document_status(
-                    session, doc_uuid, IngestionStatus.PROCESSING, current_stage="extracting"
-                )
-                raw_content = (doc.pipeline_data or {}).get("raw_content")
-                extraction = await extract(
-                    content=raw_content,
-                    url=doc.source_url if doc.source_type == "url" else None,
-                    source_type=doc.source_type,
-                )
+                pipeline_data = doc.pipeline_data or {}
+                raw_content = pipeline_data.get("raw_content")
+                verbatim = pipeline_data.get("ingestion_mode") == "verbatim"
+                if verbatim:
+                    if not isinstance(raw_content, str) or not raw_content.strip():
+                        raise ValueError("verbatim ingestion requires non-empty raw_content")
+                    facts = [raw_content]
+                    chunk_count = 1
+                    fact_extraction = None
+                    log.info("pipeline_verbatim", document_id=document_id)
+                else:
+                    # Stage 2: EXTRACT
+                    await update_document_status(
+                        session,
+                        doc_uuid,
+                        IngestionStatus.PROCESSING,
+                        current_stage="extracting",
+                    )
+                    document_extraction = await extract(
+                        content=raw_content,
+                        url=doc.source_url if doc.source_type == "url" else None,
+                        source_type=doc.source_type,
+                    )
 
-                # Stage 3: CHUNK
-                await update_document_status(
-                    session, doc_uuid, IngestionStatus.PROCESSING, current_stage="chunking"
-                )
-                chunks = await chunk(extraction)
-                log.info("pipeline_chunked", document_id=document_id, chunks=len(chunks))
+                    # Stage 3: CHUNK
+                    await update_document_status(
+                        session,
+                        doc_uuid,
+                        IngestionStatus.PROCESSING,
+                        current_stage="chunking",
+                    )
+                    chunks = await chunk(document_extraction)
+                    chunk_count = len(chunks)
+                    log.info("pipeline_chunked", document_id=document_id, chunks=chunk_count)
 
-                # Stage 4: FACT EXTRACTION
-                await update_document_status(
-                    session, doc_uuid, IngestionStatus.PROCESSING, current_stage="extracting_facts"
-                )
-                extraction = await fact_extractor.extract(
-                    chunks,
-                    source_url=doc.source_url,
-                    content_type=doc.source_type,
-                )
-                facts = extraction.facts
-                log.info(
-                    "pipeline_facts",
-                    document_id=document_id,
-                    facts=len(facts),
-                    failed_chunks=extraction.failed_chunks,
-                )
+                    # Stage 4: FACT EXTRACTION
+                    await update_document_status(
+                        session,
+                        doc_uuid,
+                        IngestionStatus.PROCESSING,
+                        current_stage="extracting_facts",
+                    )
+                    fact_extraction = await fact_extractor.extract(
+                        chunks,
+                        source_url=doc.source_url,
+                        content_type=doc.source_type,
+                    )
+                    facts = fact_extraction.facts
+                    log.info(
+                        "pipeline_facts",
+                        document_id=document_id,
+                        facts=len(facts),
+                        failed_chunks=fact_extraction.failed_chunks,
+                    )
 
                 # A document with nothing to extract and one whose extraction
                 # broke are different events and must not land in the same
@@ -228,13 +248,13 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                 # extraction failure indistinguishable from spam - and left no
                 # way to tell how much of an apparently empty corpus was
                 # actually flakiness.
-                if extraction.wholly_failed:
-                    detail = "; ".join(extraction.failure_reasons)[:480]
+                if fact_extraction is not None and fact_extraction.wholly_failed:
+                    detail = "; ".join(fact_extraction.failure_reasons)[:480]
                     log.error(
                         "pipeline_extraction_failed",
                         document_id=document_id,
-                        failed_chunks=extraction.failed_chunks,
-                        total_chunks=extraction.total_chunks,
+                        failed_chunks=fact_extraction.failed_chunks,
+                        total_chunks=fact_extraction.total_chunks,
                         detail=detail,
                     )
                     await update_document_status(
@@ -242,7 +262,7 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                         doc_uuid,
                         IngestionStatus.FAILED,
                         memory_count=0,
-                        chunk_count=len(chunks),
+                        chunk_count=chunk_count,
                         error_message=f"fact extraction failed: {detail}",
                         current_stage="failed",
                     )
@@ -261,7 +281,7 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                     log.info(
                         "pipeline_no_facts",
                         document_id=document_id,
-                        chunks=extraction.total_chunks,
+                        chunks=fact_extraction.total_chunks if fact_extraction else chunk_count,
                         reason="model returned no facts on both attempts",
                     )
                     await update_document_status(
@@ -269,7 +289,7 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                         doc_uuid,
                         IngestionStatus.COMPLETED,
                         memory_count=0,
-                        chunk_count=len(chunks),
+                        chunk_count=chunk_count,
                         current_stage="completed",
                     )
                     await session.commit()
@@ -280,14 +300,14 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                         "duration_ms": _elapsed_ms(start),
                     }
 
-                if extraction.failed_chunks:
+                if fact_extraction is not None and fact_extraction.failed_chunks:
                     # Partial: some chunks produced facts, others broke. The
                     # document is usable, but incomplete, and says so.
                     log.warning(
                         "pipeline_partial_extraction",
                         document_id=document_id,
-                        failed_chunks=extraction.failed_chunks,
-                        total_chunks=extraction.total_chunks,
+                        failed_chunks=fact_extraction.failed_chunks,
+                        total_chunks=fact_extraction.total_chunks,
                     )
 
                 # Stage 5: EMBED
@@ -357,7 +377,7 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                     doc_uuid,
                     IngestionStatus.COMPLETED,
                     memory_count=len(memories),
-                    chunk_count=len(chunks),
+                    chunk_count=chunk_count,
                     current_stage="completed",
                 )
                 await session.commit()

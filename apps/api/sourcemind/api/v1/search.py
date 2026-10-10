@@ -17,7 +17,6 @@ Access control:
 """
 
 import time
-from datetime import UTC, datetime
 from uuid import UUID
 
 import structlog
@@ -31,6 +30,7 @@ from sourcemind.core.dependencies import (
     WorkspacePermission,
     require_workspace_permission,
 )
+from sourcemind.core.exceptions import ValidationError
 from sourcemind.core.rate_limit import RateLimitedOperation, enforce_rate_limit
 from sourcemind.schemas.memory import (
     MemoryResponse,
@@ -73,6 +73,10 @@ async def search_memories(
     from sourcemind.services.search.hybrid import hybrid_search
 
     t0 = time.perf_counter()
+    if body.filters is not None:
+        raise ValidationError(
+            "Search filters are not implemented; refusing to ignore supplied filters."
+        )
 
     user_role = await require_workspace_permission(
         db,
@@ -101,21 +105,21 @@ async def search_memories(
         mem_resp = MemoryResponse(
             id=UUID(item["id"]),
             workspace_id=workspace_id,
-            document_id=None,
+            document_id=UUID(item["document_id"]) if item["document_id"] else None,
             content=item["content"],
-            version=1,
-            tags=None,
-            category=None,
-            confidence_score=None,
-            created_at=datetime.now(UTC),
-            updated_at=None,
+            version=item["version"],
+            tags=item["tags"],
+            category=item["category"],
+            confidence_score=item["confidence_score"],
+            created_at=item["created_at"],
+            updated_at=item["updated_at"],
             # hybrid_search attaches this when include_attribution is set, and
             # MemoryResponse has always had the field, but the route never
             # passed it through. The flag was accepted and its extra query
             # paid for, then the result dropped on the floor here.
             attribution=item.get("attribution"),
             unresolved_author=item.get("unresolved_author"),
-            relation_count=0,
+            relation_count=item["relation_count"],
         )
         results.append(
             SearchResultItem(

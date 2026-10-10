@@ -6,7 +6,7 @@ therefore split into:
 
   plan()  -- candidate vector query + LLM classification; writes NOTHING
   apply() -- conflict creation with the precomputed verdict, relation
-             inserts, retire-superseded and importance/severity recompute;
+             inserts, and importance/severity recompute;
              NEVER calls the model provider
 
 detect() remains plan-and-apply interleaved exactly as before for its
@@ -170,22 +170,41 @@ async def test_apply_without_contributors_creates_no_conflict() -> None:
 
 
 @pytest.mark.unit
-async def test_plan_excludes_candidates_an_earlier_memory_will_retire() -> None:
-    """detect() retires a superseded candidate before querying for the next
-    memory, so that memory never sees it. plan() writes nothing, so it must
-    exclude the candidate it predicts will be retired."""
-    retired = str(uuid.uuid4())
+async def test_plan_keeps_update_targets_visible_to_later_memories() -> None:
+    target = str(uuid.uuid4())
     first, second = _memory("first"), _memory("second")
-    session = _session([(retired, "old value", _LLM_RADIUS - 0.05)])
+    session = _session([(target, "old value", _LLM_RADIUS - 0.05)])
     client = _client("updates", 0.95)
 
     planned = await RelationDetector(client).plan(session, [first, second], uuid.uuid4())
 
-    assert [(p.memory, p.cand_id) for p in planned] == [(first, uuid.UUID(retired))]
+    assert [(p.memory, p.cand_id) for p in planned] == [
+        (first, uuid.UUID(target)),
+        (second, uuid.UUID(target)),
+    ]
     candidate_queries = [p for sql, p in session.statements if "embedding <=>" in sql]
     assert "excluded" not in candidate_queries[0]
-    assert candidate_queries[1]["excluded"] == [retired]
-    client.messages.create.assert_awaited_once()
+    assert "excluded" not in candidate_queries[1]
+    assert client.messages.create.await_count == 2
+
+
+@pytest.mark.unit
+async def test_cross_user_update_keeps_relation_without_retiring_target() -> None:
+    target = str(uuid.uuid4())
+    memory = _memory("replacement wording")
+    session = _session(
+        [(target, "original wording", _CONFLICT_RADIUS - 0.01)],
+        contributors={str(memory.id): "user-b", target: "user-a"},
+    )
+    detector = RelationDetector(_client("updates", 0.95))
+
+    planned = await detector.plan(session, [memory], uuid.uuid4())
+    await detector.apply(session, [memory], planned)
+
+    relations = [item for item in session.added if isinstance(item, MemoryRelation)]
+    assert len(relations) == 1
+    assert relations[0].relation_type == "updates"
+    assert not any(sql.startswith("UPDATE memories") for sql, _ in session.statements)
 
 
 @pytest.mark.unit

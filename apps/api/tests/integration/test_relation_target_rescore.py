@@ -34,12 +34,7 @@ from sourcemind.services.memory.relations import RelationDetector
 
 
 def _claude_saying_extends():
-    """A confident, non-conflicting 'extends' verdict.
-
-    'extends' on purpose rather than 'updates': an updates verdict retires the
-    target (current_version = FALSE), and a retired memory would muddy an
-    assertion about that same memory's score.
-    """
+    """A confident, non-conflicting 'extends' verdict."""
     client = MagicMock()
     payload = json.dumps(
         {

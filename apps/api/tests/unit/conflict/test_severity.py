@@ -77,8 +77,7 @@ def test_severity_critical_two_claims_high_importance():
     """Two people disagreeing about an important decision is critical.
 
     This was unreachable before: critical demanded three competing claims,
-    and an 'updates' verdict retires the disputed memory so it can never
-    collect a third through ingestion. It is the ordinary case, not an edge.
+    Two important competing claims are the ordinary case, not an edge.
     """
     assert classify_severity(0.75, 2) == "critical"
     assert classify_severity(0.71, 2) == "critical"

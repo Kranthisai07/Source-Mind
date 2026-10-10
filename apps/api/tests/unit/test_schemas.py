@@ -8,9 +8,8 @@ No external dependencies required.
 import pytest
 from pydantic import ValidationError
 
-from sourcemind.schemas.memory import MemoryCreate, MemoryUpdate, SearchRequest, SearchMode
+from sourcemind.schemas.memory import MemoryCreate, SearchMode, SearchRequest
 from sourcemind.schemas.workspace import WorkspaceCreate
-
 
 # ─── MemoryCreate ──────────────────────────────────────────────────────────────
 
@@ -54,6 +53,24 @@ def test_memory_create_strips_whitespace() -> None:
     """str_strip_whitespace should trim leading/trailing whitespace."""
     m = MemoryCreate(content="  hello world  ")
     assert m.content == "hello world"
+
+
+@pytest.mark.unit
+def test_memory_create_verbatim_mode_preserves_content_exactly() -> None:
+    content = "  First line.\n\nSecond line.  "
+
+    memory = MemoryCreate(content=content, ingestion_mode=" verbatim ")
+
+    assert memory.content == content
+
+
+@pytest.mark.unit
+def test_memory_create_verbatim_mode_requires_inline_content() -> None:
+    with pytest.raises(ValidationError):
+        MemoryCreate(
+            url="https://example.com/docs",
+            ingestion_mode="verbatim",
+        )
 
 
 # ─── WorkspaceCreate ──────────────────────────────────────────────────────────

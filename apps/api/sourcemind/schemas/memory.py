@@ -65,6 +65,13 @@ class MemoryCreate(BaseModel):
         default=DocumentSourceType.TEXT,
         description="Content type hint for the extraction stage",
     )
+    ingestion_mode: Literal["extract", "verbatim"] = Field(
+        default="extract",
+        description=(
+            "Use 'verbatim' to store inline content as exactly one memory "
+            "without fact extraction."
+        ),
+    )
 
     # Optional metadata
     title: str | None = Field(default=None, max_length=500)
@@ -79,7 +86,23 @@ class MemoryCreate(BaseModel):
         description="Optional category to apply to all extracted memories",
     )
 
-    model_config = {"str_strip_whitespace": True}
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_strings(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        for field_name in ("url", "title", "category", "source_type", "ingestion_mode"):
+            value = normalized.get(field_name)
+            if isinstance(value, str):
+                normalized[field_name] = value.strip()
+        verbatim = normalized.get("ingestion_mode") == "verbatim"
+        if not verbatim and isinstance(normalized.get("content"), str):
+            normalized["content"] = normalized["content"].strip()
+        tags = normalized.get("tags")
+        if isinstance(tags, list):
+            normalized["tags"] = [tag.strip() if isinstance(tag, str) else tag for tag in tags]
+        return normalized
 
     @model_validator(mode="after")
     def require_content_or_url(self) -> "MemoryCreate":
@@ -87,6 +110,11 @@ class MemoryCreate(BaseModel):
             raise ValueError("Either 'content' or 'url' must be provided.")
         if self.content and self.url:
             raise ValueError("Provide either 'content' or 'url', not both.")
+        if self.ingestion_mode == "verbatim":
+            if self.url is not None:
+                raise ValueError("Verbatim ingestion requires inline 'content', not 'url'.")
+            if self.content is None or not self.content.strip():
+                raise ValueError("Verbatim ingestion requires non-empty inline 'content'.")
         return self
 
 
