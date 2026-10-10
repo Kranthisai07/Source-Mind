@@ -90,9 +90,9 @@ jobs:
       PGPORT: "5432"
       DB: sourcemind_e2e
       # Every `alembic upgrade` in this job (the five steps and
-      # check_connector_rollback.sh) reaches 20261005_0010 when it targets
-      # head, and that revision grants github_author_links explicitly to
-      # this role and aborts if it is unset (D-021).
+      # check_connector_rollback.sh) reaches 20261010_0011 when it targets
+      # head. Revisions 0010 and 0011 grant their tables explicitly to this
+      # role and abort if it is unset.
       SOURCEMIND_RUNTIME_ROLE: sourcemind_test
       BASELINE_REV: "20250817_0005"
       # The revision that CONTAINS the defect. The regression must fail here,

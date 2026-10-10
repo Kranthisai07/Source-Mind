@@ -68,13 +68,14 @@ jobs:
           .
 
       # ── Rollback + revocation contract ─────────────────────────────────
-      # These five nodes carry the 15fe_0001 and 12f6_0002 corrections. The
+      # These seven nodes carry the rollback/revocation corrections and the
+      # 0011 append-only evidence migration contract. The
       # general `Tests` step below would run them too, but it asserts only
       # "pytest exited 0" — which a rename, a relocation or a collection
       # error would also satisfy while quietly dropping the coverage. So the
       # exact node IDs are pinned first, then the JUnit report is required to
-      # show all five EXECUTED and passed. A skip counts as not-passed.
-      - name: Verify exact rollback/revocation selection (5 nodes)
+      # show all seven EXECUTED and passed. A skip counts as not-passed.
+      - name: Verify exact rollback/revocation selection (7 nodes)
         run: |
           set -euo pipefail
           expected=$(mktemp); actual=$(mktemp)
@@ -84,6 +85,8 @@ jobs:
           tests/unit/test_migration_regressions.py::test_0006_downgrade_restores_workspace_members_rls_flags
           tests/unit/test_migration_regressions.py::test_0009_allows_downgrade_that_keeps_expanded_connector_schema
           tests/unit/test_migration_regressions.py::test_0009_blocks_incompatible_rollback_before_changing_schema
+          tests/unit/test_migration_regressions.py::test_0011_downgrade_checks_both_tables_before_dropping
+          tests/unit/test_migration_regressions.py::test_0011_runtime_grants_are_append_only_privileges
           NODES
           python -m pytest -o addopts='' -q --collect-only \
             tests/unit/test_migration_regressions.py \
@@ -91,7 +94,7 @@ jobs:
             | grep '::' | sort > "$actual"
           echo "collected $(wc -l < "$actual") node(s)"
           diff -u "$expected" "$actual" || {
-            echo "::error::collected node IDs differ from the expected five"
+            echo "::error::collected node IDs differ from the expected seven"
             exit 1
           }
 
@@ -103,7 +106,7 @@ jobs:
             tests/unit/test_migration_regressions.py \
             tests/unit/api/test_workspace_revocation.py
 
-      - name: Assert all five rollback/revocation tests executed and passed
+      - name: Assert all seven rollback/revocation tests executed and passed
         if: always() && steps.rollback_revocation.outcome != 'skipped'
         run: |
           python - <<'PY'
@@ -128,11 +131,11 @@ jobs:
               else:
                   bad.append(f"{node} -> {state}")
           print(f"executed {total}, passed {passed}")
-          if total != 5:
-              print(f"::error::expected 5 test cases, report contains {total}")
+          if total != 7:
+              print(f"::error::expected 7 test cases, report contains {total}")
           for b in bad:
               print(f"::error::{b}")
-          sys.exit(0 if (total == 5 and passed == 5) else 1)
+          sys.exit(0 if (total == 7 and passed == 7) else 1)
           PY
 
       - name: Tests
