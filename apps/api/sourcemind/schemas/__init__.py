@@ -42,6 +42,11 @@ from sourcemind.schemas.memory import (
     SearchResponse,
     SearchResultItem,
 )
+from sourcemind.schemas.pilot import (
+    RatingSource,
+    SearchRatingCreate,
+    SearchRatingResponse,
+)
 from sourcemind.schemas.user import UserResponse, UserSummary
 from sourcemind.schemas.workspace import (
     WorkspaceAnalyticsResponse,
@@ -78,6 +83,9 @@ __all__ = [
     "ResponseMeta",
     "SearchRequest",
     "SearchResponse",
+    "RatingSource",
+    "SearchRatingCreate",
+    "SearchRatingResponse",
     "SearchResultItem",
     "SyncLogResponse",
     "SyncLogsResponse",

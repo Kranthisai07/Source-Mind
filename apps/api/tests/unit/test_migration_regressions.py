@@ -32,6 +32,17 @@ def _load_owner_removal_migration():
     return migration
 
 
+def _load_pilot_evidence_migration():
+    migration_path = (
+        API_ROOT / "alembic" / "versions" / "20261010_0011_pilot_search_evidence.py"
+    )
+    spec = importlib.util.spec_from_file_location("pilot_search_evidence_0011", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    return migration
+
+
 @pytest.mark.unit
 def test_0006_downgrade_restores_workspace_members_rls_flags() -> None:
     migration = _load_security_foundation_migration()
@@ -86,3 +97,35 @@ def test_0009_allows_downgrade_that_keeps_expanded_connector_schema() -> None:
 
     migration.op.get_bind.assert_not_called()
     assert migration.op.execute.call_count == 2
+
+
+@pytest.mark.unit
+def test_0011_runtime_grants_are_append_only_privileges() -> None:
+    migration = _load_pilot_evidence_migration()
+    execute = MagicMock()
+
+    migration.grant_runtime_privileges(execute, "runtime_role", "search_events", "owner")
+
+    statements = [call.args[0] for call in execute.call_args_list]
+    assert statements == [
+        "REVOKE ALL ON TABLE search_events FROM PUBLIC",
+        'REVOKE ALL ON TABLE search_events FROM "runtime_role"',
+        'GRANT SELECT, INSERT ON TABLE search_events TO "runtime_role"',
+    ]
+
+
+@pytest.mark.unit
+def test_0011_downgrade_checks_both_tables_before_dropping() -> None:
+    migration = _load_pilot_evidence_migration()
+    migration.op = MagicMock()
+
+    migration.downgrade()
+
+    statements = [call.args[0] for call in migration.op.execute.call_args_list]
+    assert "EXISTS (SELECT 1 FROM search_events LIMIT 1)" in statements[0]
+    assert "EXISTS (SELECT 1 FROM search_ratings LIMIT 1)" in statements[0]
+    assert statements[1:] == [
+        "DROP TABLE search_ratings",
+        "DROP TABLE search_events",
+        "DROP FUNCTION prevent_search_evidence_mutation()",
+    ]

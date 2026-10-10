@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"  # noqa: S104
     port: int = 8000
     workers: int = 1
+    pilot_search_evidence_enabled: bool = False
     cors_origins: list[str] = Field(
         default=["http://localhost:3000", "http://localhost:3001"]
     )
