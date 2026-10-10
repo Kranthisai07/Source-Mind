@@ -180,21 +180,10 @@ async def test_real_detect_path_computes_severity_without_any_wrapper(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_an_updates_verdict_retires_the_disputed_memory(
+async def test_an_updates_verdict_keeps_the_disputed_memory_searchable(
     db_session, test_workspace
 ):
-    """A second rival cannot reach the same memory through detect().
-
-    When Claude classifies a pair as 'updates', detect() sets
-    current_version = FALSE on the disputed memory. The neighbour search
-    filters on current_version = TRUE, so that memory is invisible to every
-    later detect() call and can never collect a second conflict this way.
-
-    Consequence worth stating plainly: the critical tier, which needs three
-    competing claims, is effectively unreachable through ingestion alone. It
-    is reachable when conflicts arrive from separate sources — a re-run where
-    the relation insert failed, or conflicts created outside this path.
-    """
+    """An updates edge records the relationship without hiding its target."""
     author_a = await _user(db_session)
     author_b = await _user(db_session)
     author_c = await _user(db_session)
@@ -221,7 +210,7 @@ async def test_an_updates_verdict_retires_the_disputed_memory(
             {"id": str(disputed)},
         )
     ).scalar()
-    assert still_current is False, "an 'updates' verdict should retire the memory"
+    assert still_current is True, "an 'updates' verdict must not retire the memory"
 
     rival_two = await _memory_with_author(
         db_session, test_workspace.id, author_c, seed=0.07, importance=0.20
@@ -232,9 +221,7 @@ async def test_an_updates_verdict_retires_the_disputed_memory(
         test_workspace.id,
     )
 
-    assert len(await _conflicts_for(db_session, disputed)) == 1, (
-        "a retired memory must not accumulate further conflicts"
-    )
+    assert len(await _conflicts_for(db_session, disputed)) == 2
 
 
 async def _set_importance(session, memory_id, value: float) -> None:
@@ -260,12 +247,7 @@ async def _set_importance(session, memory_id, value: float) -> None:
 
 
 async def _extra_conflict(session, workspace_id, memory_a, memory_b):
-    """A conflict arriving from a source other than this detect() run.
-
-    Realistic because a retired memory is invisible to detect(): further
-    conflicts on it can only come from a re-run where the relation insert
-    failed, or from outside the ingestion path.
-    """
+    """A conflict arriving from a source other than this detect() run."""
     conflict_id = uuid.uuid4()
     await session.execute(
         text(
@@ -511,22 +493,10 @@ async def test_three_way_conflict_creates_correct_pairwise_rows(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_clustering_does_not_widen_the_retirement_blind_spot(
+async def test_clustering_keeps_update_targets_visible_across_runs(
     db_session, test_workspace
 ):
-    """Clustering must not lose conflicts to the current_version filter.
-
-    An 'updates' verdict sets current_version = FALSE on the disputed memory,
-    and the neighbour search only sees current_version = TRUE. The risk is
-    ordering: if retiring the first candidate removed the second from the run,
-    a three-way disagreement would silently record only one conflict.
-
-    It does not, because detect() materialises the whole candidate list before
-    the loop begins. Retirement therefore takes effect from the NEXT run on,
-    which is the already-known deferred bug and no worse here: this asserts
-    the boundary explicitly so a future rewrite that moves the neighbour query
-    inside the loop fails loudly instead of quietly halving the cluster.
-    """
+    """Every current claim remains available to later relation scans."""
     authors = [await _user(db_session) for _ in range(4)]
 
     claim_a = await _memory_with_author(
@@ -546,22 +516,19 @@ async def test_clustering_does_not_widen_the_retirement_blind_spot(
         test_workspace.id,
     )
 
-    # Both conflicts recorded despite both candidates being retired mid-loop.
     assert len(await _conflicts_for(db_session, newcomer)) == 2
 
-    retired = (
+    current = (
         await db_session.execute(
             text(
                 "SELECT id::text FROM memories WHERE id IN "
-                "(CAST(:a AS uuid), CAST(:b AS uuid)) AND current_version = FALSE"
+                "(CAST(:a AS uuid), CAST(:b AS uuid)) AND current_version = TRUE"
             ),
             {"a": str(claim_a), "b": str(claim_b)},
         )
     ).fetchall()
-    assert len(retired) == 2, "both disputed claims should have been retired"
+    assert len(current) == 2, "both disputed claims must remain searchable"
 
-    # The blind spot itself, unchanged: a fourth claim sees only the newcomer,
-    # so it adds one conflict, not three.
     fourth = await _memory_with_author(
         db_session, test_workspace.id, authors[3], seed=0.11, importance=0.30
     )
@@ -571,9 +538,5 @@ async def test_clustering_does_not_widen_the_retirement_blind_spot(
         test_workspace.id,
     )
 
-    assert len(await _conflicts_for(db_session, fourth)) == 1, (
-        "a retired claim must stay invisible to later runs"
-    )
-    assert len(await _conflicts_for(db_session, claim_a)) == 1, (
-        "clustering must not let retired claims accumulate new conflicts"
-    )
+    assert len(await _conflicts_for(db_session, fourth)) == 3
+    assert len(await _conflicts_for(db_session, claim_a)) == 2

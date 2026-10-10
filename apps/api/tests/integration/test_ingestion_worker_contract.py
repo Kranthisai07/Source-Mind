@@ -59,6 +59,7 @@ class FakeTask:
 class WorkerHarness:
     transient_failures: int = 0
     extract_calls: int = 0
+    fact_extraction_calls: int = 0
     attribution_calls: int = 0
     attribution_delegate: Callable[..., Awaitable[Attribution]] | None = None
     pause_first_extract: bool = False
@@ -89,6 +90,7 @@ class WorkerHarness:
         ]
 
     async def extract_facts(self, *_args: object, **_kwargs: object) -> FactExtractionResult:
+        self.fact_extraction_calls += 1
         return FactExtractionResult(
             facts=["The selected category survives worker execution."],
             total_chunks=1,
@@ -289,6 +291,9 @@ async def _submit(
     *,
     category: str | None = None,
     user_id: uuid.UUID | None = None,
+    content: str | None = None,
+    ingestion_mode: str = "extract",
+    tags: list[str] | None = None,
 ) -> tuple[str, uuid.UUID]:
     from sourcemind.workers import ingestion as worker
 
@@ -300,11 +305,14 @@ async def _submit(
         lambda **_kwargs: SimpleNamespace(id=job_id),
     )
     payload: dict[str, object] = {
-        "content": f"Worker contract payload {uuid.uuid4()}",
+        "content": content or f"Worker contract payload {uuid.uuid4()}",
         "source_type": "text",
+        "ingestion_mode": ingestion_mode,
     }
     if category is not None:
         payload["category"] = category
+    if tags is not None:
+        payload["tags"] = tags
     body = MemoryCreate.model_validate(payload)
 
     await init_redis()
@@ -649,6 +657,69 @@ async def test_selected_category_reaches_memory_through_worker(
     completed = await _poll(ingestion_worker_engine, data, job_id)
     assert completed.status == "completed"
     assert worker_harness.attribution_calls == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_verbatim_ingestion_stores_exactly_one_unextracted_memory(
+    ingestion_worker_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_harness: WorkerHarness,
+) -> None:
+    from sourcemind.workers.ingestion import _run_pipeline
+
+    data = await _seed_security_tenants(ingestion_worker_engine)
+    raw_content = "  Exact pilot text.\n\nA short correction matters.  "
+    _job_id, document_id = await _submit(
+        ingestion_worker_engine,
+        monkeypatch,
+        data,
+        content=raw_content,
+        ingestion_mode="verbatim",
+        category="pilot",
+        tags=["manual", "five-person"],
+    )
+
+    result = await _run_pipeline(
+        FakeTask(retries=0),
+        str(document_id),
+        str(data.target_workspace_id),
+        str(data.member_id),
+    )
+
+    assert result["status"] == "completed"
+    assert result["memories_created"] == 1
+    assert worker_harness.extract_calls == 0
+    assert worker_harness.fact_extraction_calls == 0
+    async with AsyncSession(ingestion_worker_engine) as session:
+        await set_rls_user_context(session, data.owner_id)
+        await set_rls_workspace_context(session, data.target_workspace_id)
+        memories = list(
+            (
+                await session.scalars(
+                    select(Memory).where(Memory.document_id == document_id)
+                )
+            ).all()
+        )
+        assert len(memories) == 1
+        assert memories[0].content == raw_content
+        assert memories[0].version == 1
+        assert memories[0].current_version is True
+        assert memories[0].tags == ["manual", "five-person"]
+        assert memories[0].category == "pilot"
+        assert memories[0].workspace_id == data.target_workspace_id
+        assert memories[0].document_id == document_id
+        attribution = await session.scalar(
+            select(Attribution).where(Attribution.memory_id == memories[0].id)
+        )
+        assert attribution is not None
+        assert attribution.user_id == data.member_id
+    document = await _document(ingestion_worker_engine, data, document_id)
+    assert document.submitter_id == data.member_id
+    assert document.pipeline_data["raw_content"] == raw_content
+    assert document.pipeline_data["ingestion_mode"] == "verbatim"
+    assert document.created_at is not None
+    assert document.updated_at is not None
 
 
 @pytest.mark.integration

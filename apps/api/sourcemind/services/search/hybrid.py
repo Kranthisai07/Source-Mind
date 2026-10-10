@@ -138,7 +138,20 @@ async def _semantic_search(
             SELECT
                 id::text,
                 content,
-                1 - (embedding <=> (:emb)::vector) AS score
+                1 - (embedding <=> (:emb)::vector) AS score,
+                document_id::text,
+                version,
+                tags,
+                category,
+                confidence_score,
+                created_at,
+                updated_at,
+                (
+                    SELECT COUNT(*)
+                    FROM memory_relations mr
+                    WHERE mr.source_memory_id = memories.id
+                       OR mr.target_memory_id = memories.id
+                ) AS relation_count
             FROM memories
             WHERE workspace_id = (:ws_id)::uuid
               AND current_version = TRUE
@@ -160,6 +173,14 @@ async def _semantic_search(
             "id": row[0],
             "content": row[1],
             "score": float(row[2]),
+            "document_id": row[3],
+            "version": row[4],
+            "tags": row[5],
+            "category": row[6],
+            "confidence_score": row[7],
+            "created_at": row[8],
+            "updated_at": row[9],
+            "relation_count": row[10],
             "match_type": "semantic",
         }
         for row in result.fetchall()
@@ -196,7 +217,20 @@ async def _keyword_search(
             SELECT
                 id::text,
                 content,
-                ts_rank(content_tsv, to_tsquery('simple', :query)) AS score
+                ts_rank(content_tsv, to_tsquery('simple', :query)) AS score,
+                document_id::text,
+                version,
+                tags,
+                category,
+                confidence_score,
+                created_at,
+                updated_at,
+                (
+                    SELECT COUNT(*)
+                    FROM memory_relations mr
+                    WHERE mr.source_memory_id = memories.id
+                       OR mr.target_memory_id = memories.id
+                ) AS relation_count
             FROM memories
             WHERE workspace_id = (:ws_id)::uuid
               AND current_version = TRUE
@@ -211,7 +245,20 @@ async def _keyword_search(
             SELECT
                 id::text,
                 content,
-                ts_rank(content_tsv, plainto_tsquery('english', :query)) AS score
+                ts_rank(content_tsv, plainto_tsquery('english', :query)) AS score,
+                document_id::text,
+                version,
+                tags,
+                category,
+                confidence_score,
+                created_at,
+                updated_at,
+                (
+                    SELECT COUNT(*)
+                    FROM memory_relations mr
+                    WHERE mr.source_memory_id = memories.id
+                       OR mr.target_memory_id = memories.id
+                ) AS relation_count
             FROM memories
             WHERE workspace_id = (:ws_id)::uuid
               AND current_version = TRUE
@@ -234,6 +281,14 @@ async def _keyword_search(
             "id": row[0],
             "content": row[1],
             "score": float(row[2]),
+            "document_id": row[3],
+            "version": row[4],
+            "tags": row[5],
+            "category": row[6],
+            "confidence_score": row[7],
+            "created_at": row[8],
+            "updated_at": row[9],
+            "relation_count": row[10],
             "match_type": "keyword",
         }
         for row in result.fetchall()
@@ -253,26 +308,34 @@ def _rrf_merge(
     exactly.
     """
     scores: dict[str, float] = {}
-    content_map: dict[str, str] = {}
+    item_map: dict[str, dict[str, Any]] = {}
     match_types: dict[str, set[str]] = {}
 
     for rank, item in enumerate(semantic):
         mid = item["id"]
         scores[mid] = scores.get(mid, 0.0) + w_semantic / (_RRF_K + rank + 1)
-        content_map[mid] = item["content"]
+        item_map[mid] = {
+            key: value for key, value in item.items() if key not in {"score", "match_type"}
+        }
         match_types.setdefault(mid, set()).add("semantic")
 
     for rank, item in enumerate(keyword):
         mid = item["id"]
         scores[mid] = scores.get(mid, 0.0) + w_keyword / (_RRF_K + rank + 1)
-        content_map.setdefault(mid, item["content"])
+        item_map.setdefault(
+            mid,
+            {
+                key: value
+                for key, value in item.items()
+                if key not in {"score", "match_type"}
+            },
+        )
         match_types.setdefault(mid, set()).add("keyword")
 
     ranked = sorted(scores.keys(), key=lambda k: scores[k], reverse=True)
     return [
         {
-            "id": mid,
-            "content": content_map[mid],
+            **item_map[mid],
             "score": scores[mid],
             # Emit in the order MatchTypeLiteral declares ("semantic+keyword").
             # sorted() would produce "keyword+semantic" and fail response validation.

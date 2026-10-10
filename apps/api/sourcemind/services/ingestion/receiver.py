@@ -126,6 +126,7 @@ async def receive(
     title: str | None = None,
     tags: list[str] | None = None,
     category: str | None = None,
+    ingestion_mode: str = "extract",
     idempotency_key: str,
     artifact_link: dict[str, Any] | None = None,
     attribution: dict[str, Any] | None = None,
@@ -145,6 +146,12 @@ async def receive(
     # ── Input validation ──────────────────────────────────────────
     if not content and not url:
         raise ValidationError("Either 'content' or 'url' must be provided.")
+    if ingestion_mode not in {"extract", "verbatim"}:
+        raise ValidationError("Unsupported ingestion mode.")
+    if ingestion_mode == "verbatim" and (
+        url is not None or content is None or not content.strip()
+    ):
+        raise ValidationError("Verbatim ingestion requires inline content.")
 
     if artifact_link is not None:
         unexpected = set(artifact_link) - _ARTIFACT_LINK_FIELDS
@@ -185,6 +192,7 @@ async def receive(
         title=title,
         tags=tags,
         category=category,
+        ingestion_mode=ingestion_mode,
     )
     reservation_token, cached_response = await _claim_idempotency(
         redis,
@@ -207,6 +215,7 @@ async def receive(
             title=title,
             tags=tags,
             category=category,
+            ingestion_mode=ingestion_mode,
             idempotency_key=idempotency_key,
             artifact_link=artifact_link,
             attribution=attribution,
@@ -254,13 +263,15 @@ async def _receive_reserved(
     title: str | None,
     tags: list[str] | None,
     category: str | None,
+    ingestion_mode: str,
     idempotency_key: str,
     artifact_link: dict[str, Any] | None = None,
     attribution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     raw_for_hash = url if url else content
     assert raw_for_hash is not None
-    sha256 = hashlib.sha256(raw_for_hash.encode()).hexdigest()
+    hash_input = raw_for_hash if ingestion_mode == "extract" else f"verbatim\0{raw_for_hash}"
+    sha256 = hashlib.sha256(hash_input.encode()).hexdigest()
 
     dup_result = await session.execute(
         select(Document).where(
@@ -293,6 +304,7 @@ async def _receive_reserved(
         # was stored with tags=NULL.
         "tags": tags or [],
         "category": category,
+        "ingestion_mode": ingestion_mode,
         "dispatch_state": "orphaned",
         "dispatch_attempts": 0,
     }
@@ -512,16 +524,20 @@ def _request_fingerprint(
     title: str | None,
     tags: list[str] | None,
     category: str | None,
+    ingestion_mode: str = "extract",
 ) -> str:
+    request = {
+        "category": category,
+        "content": content,
+        "source_type": source_type,
+        "tags": tags or [],
+        "title": title,
+        "url": url,
+    }
+    if ingestion_mode != "extract":
+        request["ingestion_mode"] = ingestion_mode
     payload = json.dumps(
-        {
-            "category": category,
-            "content": content,
-            "source_type": source_type,
-            "tags": tags or [],
-            "title": title,
-            "url": url,
-        },
+        request,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,

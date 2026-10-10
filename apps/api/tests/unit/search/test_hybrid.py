@@ -5,7 +5,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sourcemind.services.search.hybrid import _rrf_merge
+from sourcemind.services.search.hybrid import (
+    _keyword_search,
+    _rrf_merge,
+    _semantic_search,
+)
 
 
 @pytest.mark.unit
@@ -84,12 +88,109 @@ def test_rrf_merge_descending_order():
 
 
 @pytest.mark.unit
+def test_rrf_merge_preserves_memory_provenance() -> None:
+    created_at = object()
+    updated_at = object()
+    provenance = {
+        "document_id": str(uuid.uuid4()),
+        "version": 3,
+        "tags": ["pilot"],
+        "category": "decision",
+        "confidence_score": 0.87,
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }
+    semantic = [{
+        "id": "shared",
+        "content": "Auditable memory",
+        "score": 0.8,
+        "match_type": "semantic",
+        **provenance,
+    }]
+    keyword = [{
+        "id": "shared",
+        "content": "Auditable memory",
+        "score": 0.6,
+        "match_type": "keyword",
+        **provenance,
+    }]
+
+    result = _rrf_merge(semantic, keyword)
+
+    assert {key: result[0][key] for key in provenance} == provenance
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("search", "args"),
+    [
+        (_semantic_search, ([0.1], uuid.uuid4(), 10, 0.3)),
+        (_keyword_search, ("audit", uuid.uuid4(), 10)),
+    ],
+)
+async def test_search_arms_return_real_memory_provenance(search, args) -> None:
+    document_id = str(uuid.uuid4())
+    unrelated_memory_id = str(uuid.uuid4())
+    related_memory_id = str(uuid.uuid4())
+    created_at = object()
+    updated_at = object()
+    rows = [
+        (
+            unrelated_memory_id,
+            "Memory without relations",
+            0.75,
+            document_id,
+            4,
+            ["pilot"],
+            "process",
+            0.91,
+            created_at,
+            updated_at,
+            0,
+        ),
+        (
+            related_memory_id,
+            "Memory with relations",
+            0.7,
+            document_id,
+            3,
+            ["pilot"],
+            "decision",
+            0.8,
+            created_at,
+            updated_at,
+            2,
+        ),
+    ]
+    result = MagicMock()
+    result.fetchall.return_value = rows
+    session = AsyncMock()
+    session.execute.return_value = result
+
+    items = await search(session, *args)
+
+    statement = str(session.execute.await_args.args[0])
+    assert "memory_relations" in statement
+    assert items[0]["document_id"] == document_id
+    assert items[0]["version"] == 4
+    assert items[0]["tags"] == ["pilot"]
+    assert items[0]["category"] == "process"
+    assert items[0]["confidence_score"] == 0.91
+    assert items[0]["created_at"] is created_at
+    assert items[0]["updated_at"] is updated_at
+    assert items[0]["relation_count"] == 0
+    assert items[1]["relation_count"] == 2
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_viewer_role_truncates_content():
     """Viewer role should receive truncated content."""
-    import base64, struct
+    import base64
+    import struct
 
-    from sourcemind.services.search.hybrid import hybrid_search, _VIEWER_LIMIT
+    from sourcemind.services.search.hybrid import _VIEWER_LIMIT, hybrid_search
 
     long_content = "A" * 500
     mock_session = AsyncMock()
@@ -100,7 +201,17 @@ async def test_viewer_role_truncates_content():
 
     result_mock = MagicMock()
     result_mock.fetchall = MagicMock(return_value=[(
-        "00000000-0000-4000-8000-000000000001", long_content, 0.8
+        "00000000-0000-4000-8000-000000000001",
+        long_content,
+        0.8,
+        None,
+        1,
+        None,
+        None,
+        None,
+        object(),
+        None,
+        0,
     )])
     mock_session.execute = AsyncMock(return_value=result_mock)
 
@@ -133,6 +244,7 @@ def test_workspace_isolation_enforced():
 
     # Test that the hybrid_search function signature accepts workspace_id
     import inspect
+
     from sourcemind.services.search.hybrid import hybrid_search
 
     sig = inspect.signature(hybrid_search)

@@ -105,6 +105,7 @@ async def create_memory(
         # forwarded them, so they never reached the stored memory.
         tags=body.tags,
         category=body.category,
+        ingestion_mode=body.ingestion_mode,
         idempotency_key=idempotency_key,
     )
 

@@ -47,7 +47,7 @@ from sourcemind.models.memory_conflict import (
     ConflictType,
     MemoryConflict,
 )
-from sourcemind.models.memory_relation import MemoryRelation, RelationType
+from sourcemind.models.memory_relation import MemoryRelation
 
 log = structlog.get_logger(__name__)
 
@@ -349,10 +349,7 @@ class RelationDetector:
     ) -> list[Any]:
         """Nearest current memories in the workspace (read-only).
 
-        ``excluded`` is only passed by plan(): it removes candidates an
-        earlier memory in the same batch will retire, which detect() achieves
-        by having already written the retirement. Without it the SQL and
-        parameters are exactly what detect() always issued.
+        ``excluded`` is retained for callers that need to omit explicit IDs.
         """
         embedding_str = "[" + ",".join(str(f) for f in memory.embedding) + "]"
         exclusion = ""
@@ -438,16 +435,6 @@ class RelationDetector:
                     session.add(relation)
                     await session.flush()
 
-                    # If new memory supersedes existing: retire existing
-                    if relation_type == RelationType.UPDATES:
-                        await session.execute(
-                            text(
-                                "UPDATE memories SET current_version = FALSE "
-                                "WHERE id = CAST(:id AS uuid)"
-                            ),
-                            {"id": cand_id_str},
-                        )
-
                 related_targets.add(cand_id)
 
                 log.info(
@@ -471,15 +458,10 @@ class RelationDetector:
         """Phase 1: candidate queries and LLM classification. Writes nothing."""
         new_ids = {str(m.id) for m in new_memories}
         planned: list[PlannedPair] = []
-        # Candidates apply() will retire (an 'updates' edge at or above
-        # _MIN_CONFIDENCE). detect() writes that retirement before querying
-        # for the next memory, so later memories must not see them here.
-        retiring: list[str] = []
-
         for memory in new_memories:
             if memory.embedding is None:
                 continue
-            candidates = await self._candidates(session, memory, workspace_id, retiring)
+            candidates = await self._candidates(session, memory, workspace_id)
             for cand_id_str, cand_content, distance in candidates:
                 if cand_id_str in new_ids:
                     continue
@@ -489,12 +471,6 @@ class RelationDetector:
                 planned.append(
                     PlannedPair(memory, uuid.UUID(cand_id_str), cand_content, distance, verdict)
                 )
-                if (
-                    verdict.relation == RelationType.UPDATES
-                    and verdict.confidence >= _MIN_CONFIDENCE
-                    and cand_id_str not in retiring
-                ):
-                    retiring.append(cand_id_str)
         return planned
 
     async def apply(
@@ -503,7 +479,7 @@ class RelationDetector:
         new_memories: list[Memory],
         planned: list[PlannedPair],
     ) -> None:
-        """Phase 2: conflicts, relations, retirement, rescoring. DB only."""
+        """Phase 2: conflicts, relations, and rescoring. DB only."""
         related_targets: set[uuid.UUID] = set()
         for pair in planned:
             await self._apply_pair(session, pair, related_targets)
