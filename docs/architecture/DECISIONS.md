@@ -2390,10 +2390,14 @@ fallback is a pinned redeploy of `c413d15`.
 
 ## D-022 — Memory edits keep the contribution history of earlier versions; unchanged and tags-only saves are not authorship
 
-**Status:** Local, uncommitted patch for independent review (base `main`
-`0868262caaca05f1df0f2e0f04a7abecb2c8ef3a`). Not merged, not deployed. NOT an
-attribution-quality validation. It contains temporary refusals (SM034 for attribution state and an incomplete ancestry, SM035 for a stale handoff target, below) and an open idempotency gap (see "Open follow-up")
-that need a real policy before V1 is frozen.
+**Status:** **Merged** (PR #14, merge commit `0856a85f449ec90143c588e5c8f81d993f51b3fa`
+on `main`, 2026-10-09T05:22:48Z; reviewed head
+`3af162282ee153fe622cc3da6ddcc8ea31e29b0b`; base `0868262caaca05f1df0f2e0f04a7abecb2c8ef3a`).
+**Not deployed.** V1 correction 1 (contribution-history preservation). NOT an
+attribution-quality validation. It ships temporary refusals (SM034 for attribution
+state and an incomplete ancestry, SM035 for a stale handoff target, below) and an
+open idempotency gap (see "Open follow-up"), all of which need a real policy before
+V1 is frozen. See "D-022 merge record" at the end of this entry.
 
 **Defect (verified at the base commit).** `PATCH /v1/memories/{id}` writes a
 new `memories` row per edit (`parent_memory_id`, `version + 1`) and passed the
@@ -2620,3 +2624,37 @@ hardcoded 0 on PATCH; `GET /memories/{id}/versions` returns no attribution;
 the comment in `test_github_author_links_real_db.py` calling editor-only
 attribution "the pre-existing versioning behaviour" is now accurate only for
 memories with no prior events.
+
+### D-022 merge record
+
+- **Merge:** PR #14 merged by the repository owner as `0856a85f449ec90143c588e5c8f81d993f51b3fa`
+  (parents `0868262…` and `3af1622…`). The PR carried three commits: `aa27170`
+  (history preservation), `1c154ec` (test-only fix of the lock-wait observer) and
+  `3af1622` (scorer chronology and complete-ancestry fixes). `main`'s tree is
+  identical to the reviewed head `3af1622` (no diff).
+- **Checks on the reviewed head (`pull_request`):** API CI, Web CI and Security
+  Acceptance succeeded; Security Acceptance collected 67 nodes, passed 67 and skipped
+  none (the workflow's assertion printed `executed 67, passed 67`).
+- **Checks on the merge commit (`push` to `main`):** API CI, Web CI and Migration
+  Round-Trip (PostgreSQL 18) succeeded. Security Acceptance is not triggered by pushes
+  to `main` (pull requests and manual dispatch only), so its result for the merged
+  code is the pull-request run above.
+- **Not done, deliberately:** no deployment, no Railway operation, no frontend
+  publication. The merged code is not running anywhere this record covers.
+- **Still in force after the merge:**
+  - **Idempotency is not complete.** Exact-unchanged and tags-only requests do not
+    record their `Idempotency-Key`; a key can be reused later with different content.
+    Successful replay is not provided. Needs reservations persisted independently of
+    contribution events (schema and replay handling); not started.
+  - **Temporary `409 SM034`:** ambiguous equally-ordered snapshots (tags-only), content
+    edits that would discard snapshot-only attribution (merged memories, their
+    metadata-only descendants, handoff-transferred memories), and ancestries that
+    cannot be scored completely (overflow past 10,000, cycle, unreachable parent).
+  - **Temporary `409 SM035`:** assigning a handoff memory whose version was superseded;
+    handoff assignment rows stay pinned to the memory id they were planned on.
+  - **Scoring unchanged and unvalidated:** weights, character-distance direction,
+    semantic scoring, approval bonuses, minimum-share normalisation and merge weighting
+    still have their known problems. Preserving history may expose them.
+  - **Separate follow-ups:** CI/lockfile dependency alignment (CI resolves Starlette 1.7,
+    FastAPI 0.143, SQLAlchemy 2.1 against older lockfile versions) and the lockfile
+    venv's mismatched OpenTelemetry packages.
