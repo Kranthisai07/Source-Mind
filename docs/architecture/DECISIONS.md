@@ -2620,3 +2620,43 @@ hardcoded 0 on PATCH; `GET /memories/{id}/versions` returns no attribution;
 the comment in `test_github_author_links_real_db.py` calling editor-only
 attribution "the pre-existing versioning behaviour" is now accurate only for
 memories with no prior events.
+
+---
+
+## D-023 — Pilot search evidence is opt-in, append-only, and fail-closed
+
+**Status:** Implemented for the isolated manual-pilot backend; not deployed by
+this change.
+
+### Decision
+
+Search evidence remains disabled by default. When
+`PILOT_SEARCH_EVIDENCE_ENABLED=true`, every successful search must persist one
+`search_events` row before the API returns its `search_event_id`. The stored
+snapshot is the ordered result representation returned to the client, including
+memory/document provenance, relation counts, result scores and ranks. Persistence
+failure fails the search request. Rejected filters and failed searches produce no
+event.
+
+Operator-managed ratings are separate append-only `search_ratings` rows. They
+identify their source as `independent`, `self`, or `external`; validate that the
+event, result and memory belong to the requested workspace; and use recorded edit
+history to separate self-assessment from non-editing teammate assessment. The
+endpoint requires workspace administration permission and an idempotency key.
+
+Both tables use FORCE RLS and explicit runtime grants limited to `SELECT` and
+`INSERT`. Database triggers reject mutation even by a role that otherwise owns
+the tables. Downgrade is allowed only while both tables are empty.
+
+Pilot export schema version 2 includes the complete implemented audit datasets
+and a deterministic SHA-256 of the canonical payload. The hash excludes
+`exported_at`, so reproducing the same ordered data reproduces the same hash.
+
+### Deliberate limits
+
+- This is evidence capture, not a public rating UI or participant workflow.
+- It does not change search ranking, attribution scoring, candidate formulas, or
+  the definition of recorded editing contribution.
+- It does not authorize deployment or participant invitations. The migration,
+  feature flag, isolated-workspace rehearsal and export verification remain
+  operational gates.

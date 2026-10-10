@@ -1,21 +1,34 @@
-# Pilot Search Evidence Migration Proposal
+# Pilot Search Evidence Readiness Note
 
-The current schema has no `search_events` or `search_ratings` tables. The pilot
-export therefore reports both datasets as unavailable and returns empty arrays;
-it does not imply that no searches or ratings occurred.
+## Implemented in this change
 
-Before collecting search evidence, approve a migration with two workspace-scoped
-append-only tables:
+- Migration `20261010_0011` adds workspace-scoped, FORCE-RLS-protected,
+  append-only `search_events` and `search_ratings` tables. The runtime role gets
+  only `SELECT` and `INSERT`; downgrade refuses to remove non-empty evidence.
+- Evidence mode is off by default. When enabled, a successful search flushes one
+  event before the response is returned. A failed evidence write fails the
+  request; rejected filters and failed searches do not create events.
+- The event stores the query, complete request parameters, request ID, ordered
+  response snapshot, memory and document IDs, returned provenance and scores,
+  and the frozen search algorithm identifier.
+- An admin/operator endpoint records independent, self, or external ratings.
+  It validates workspace/event/result membership, recorded edit history, rater
+  identity rules, and workspace-scoped idempotency.
+- Pilot export schema version 2 includes documents, all memory versions,
+  attribution snapshots and edits, relations, conflicts, membership, search
+  events and ratings. A deterministic SHA-256 covers the canonical payload;
+  export time is deliberately excluded.
 
-- `search_events`: `id`, `workspace_id`, pseudonymous `user_id`, query text or
-  approved query reference, requested mode, frozen algorithm ID, ordered memory
-  IDs and scores, request ID, and `created_at`.
-- `search_ratings`: `id`, `workspace_id`, `search_event_id`, pseudonymous rater
-  ID, memory ID, rating value, rating-source class, exclusion reason if any, and
-  `created_at`.
+## Remaining pilot gates
 
-Both tables should use UUID primary keys, foreign keys to their workspace and
-related rows, workspace indexes, row-level-security policies matching existing
-workspace isolation, and no update/delete application path. The export must add
-explicit `workspace_id` predicates for both tables. This proposal is not a
-migration and creates no tables.
+- Apply the migration in an isolated pilot environment with the restricted
+  runtime role configured, then enable `PILOT_SEARCH_EVIDENCE_ENABLED=true` for
+  both the API process configuration and the pilot rehearsal only.
+- Rehearse operator rating ingestion and export from the isolated workspace.
+  There is intentionally no public participant rating UI in this change.
+- Verify pseudonymous participant setup, workspace isolation, verbatim memory
+  creation, search provenance, update-relation visibility, and the Q5
+  non-contributor export before invitations.
+- Freeze the held-out manifest and rating instructions before revealing scores.
+  This implementation captures evidence; it does not change candidate formulas,
+  choose a scorer, establish attribution accuracy, or authorize a pilot start.

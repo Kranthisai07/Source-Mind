@@ -27,6 +27,7 @@ def test_default_settings_load() -> None:
     settings = Settings()
     assert settings.environment == Environment.DEVELOPMENT
     assert settings.app_name == "SourceMind API"
+    assert settings.pilot_search_evidence_enabled is False
 
 
 @pytest.mark.unit

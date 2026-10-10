@@ -94,9 +94,9 @@ echo "revision_after_0008=$(revision)" >> "$OUT"
 echo "rows_after_0008=$(rows)" >> "$OUT"
 
 # ── 5. and it comes back ─────────────────────────────────────────────────────
-# 20261005_0010 grants github_author_links to the runtime role named here and
-# refuses to run without it (D-021). This script only targets the disposable
-# e2e database, whose runtime role is sourcemind_test.
+# Head 20261010_0011 and its predecessor 20261005_0010 grant their tables to
+# the runtime role named here and refuse to run without it. This script only
+# targets the disposable e2e database, whose runtime role is sourcemind_test.
 export SOURCEMIND_RUNTIME_ROLE="${SOURCEMIND_RUNTIME_ROLE:-sourcemind_test}"
 set +e
 (cd apps/api && alembic upgrade head > /dev/null 2>&1)

@@ -25,6 +25,7 @@ from sourcemind.models.memory import Memory
 from sourcemind.models.memory_conflict import ConflictStatus, ConflictType, MemoryConflict
 from sourcemind.models.memory_relation import MemoryRelation, RelationType
 from sourcemind.models.organization import Organization, OrganizationPlan
+from sourcemind.models.search_evidence import SearchEvent, SearchRating
 from sourcemind.models.user import User
 from sourcemind.models.workspace import (
     Workspace,
@@ -60,4 +61,6 @@ __all__ = [
     "ConnectorSyncLog",
     "ArtifactLink",
     "GitHubAuthorLink",
+    "SearchEvent",
+    "SearchRating",
 ]

@@ -300,5 +300,9 @@ class SearchResponse(BaseModel):
     query: str
     mode: SearchMode
     latency_ms: float
+    search_event_id: UUID | None = Field(
+        default=None,
+        description="Persisted evidence event ID; omitted when pilot evidence mode is disabled.",
+    )
 
 

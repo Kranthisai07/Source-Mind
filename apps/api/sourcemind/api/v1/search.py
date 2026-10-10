@@ -22,6 +22,7 @@ from uuid import UUID
 import structlog
 from fastapi import APIRouter, Query
 
+from sourcemind.core.config import get_settings
 from sourcemind.core.dependencies import (
     CurrentUser,
     DBSession,
@@ -46,6 +47,7 @@ router = APIRouter(prefix="/memories", tags=["search"])
 @router.post(
     "/search",
     response_model=SearchResponse,
+    response_model_exclude_none=True,
     summary="Hybrid semantic + keyword search",
     description=(
         "Search workspace memories using Reciprocal Rank Fusion of vector "
@@ -131,6 +133,19 @@ async def search_memories(
         )
 
     latency_ms = (time.perf_counter() - t0) * 1000
+    search_event_id = None
+    if get_settings().pilot_search_evidence_enabled:
+        from sourcemind.services.pilot_evidence import record_search_event
+
+        event = await record_search_event(
+            db,
+            workspace_id=workspace_id,
+            requester_user_id=current_user.user_id,
+            request_id=request_id,
+            request=body,
+            results=results,
+        )
+        search_event_id = event.id
 
     return SearchResponse(
         results=results,
@@ -138,4 +153,5 @@ async def search_memories(
         query=body.query,
         mode=body.mode,
         latency_ms=latency_ms,
+        search_event_id=search_event_id,
     )

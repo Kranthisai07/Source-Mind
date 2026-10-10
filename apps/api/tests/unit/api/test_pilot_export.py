@@ -55,26 +55,76 @@ async def test_pilot_export_scopes_every_dataset_to_one_workspace() -> None:
                 {"id": "edit-a", "_workspace_id": str(workspace_id)},
                 {"id": "edit-b", "_workspace_id": str(other_workspace_id)},
             ],
+            "memory_relations": [
+                {"id": "relation-a", "_workspace_id": str(workspace_id)},
+                {"id": "relation-b", "_workspace_id": str(other_workspace_id)},
+            ],
+            "memory_conflicts": [
+                {"id": "conflict-a", "_workspace_id": str(workspace_id)},
+                {"id": "conflict-b", "_workspace_id": str(other_workspace_id)},
+            ],
+            "workspace_members": [
+                {"id": "member-a", "_workspace_id": str(workspace_id)},
+                {"id": "member-b", "_workspace_id": str(other_workspace_id)},
+            ],
+            "search_events": [
+                {"id": "event-a", "_workspace_id": str(workspace_id)},
+                {"id": "event-b", "_workspace_id": str(other_workspace_id)},
+            ],
+            "search_ratings": [
+                {"id": "rating-a", "_workspace_id": str(workspace_id)},
+                {"id": "rating-b", "_workspace_id": str(other_workspace_id)},
+            ],
         }
     )
 
     export = await export_workspace_pilot_data(session, workspace_id)
 
     assert export["workspace_id"] == str(workspace_id)
-    assert export["search_events"] == []
-    assert export["search_ratings"] == []
-    assert set(export["unavailable_datasets"]) == {"search_events", "search_ratings"}
+    assert export["search_events"] == [{"id": "event-a"}]
+    assert export["search_ratings"] == [{"id": "rating-a"}]
+    assert export["unavailable_datasets"] == {}
     assert export["documents"] == [{"id": "document-a"}]
     assert export["memories"] == [{"id": "memory-a"}]
     assert export["versions"] == [{"id": "memory-a"}]
     assert export["attributions"] == [{"id": "attribution-a"}]
     assert export["attribution_edits"] == [{"id": "edit-a"}]
-    assert len(session.calls) == 5
+    assert export["relations"] == [{"id": "relation-a"}]
+    assert export["conflicts"] == [{"id": "conflict-a"}]
+    assert export["workspace_members"] == [{"id": "member-a"}]
+    assert export["canonical_hash_algorithm"] == "sha256"
+    assert len(export["canonical_hash"]) == 64
+    assert len(session.calls) == 10
     for sql, params in session.calls:
         assert "workspace_id = CAST(:workspace_id AS uuid)" in sql
         assert params == {"workspace_id": str(workspace_id)}
     documents_sql = next(sql for sql, _params in session.calls if "FROM documents" in sql)
     assert "metadata AS pipeline_data" in documents_sql
+
+
+@pytest.mark.unit
+async def test_pilot_export_canonical_hash_ignores_export_time() -> None:
+    from sourcemind.services.pilot_export import export_workspace_pilot_data
+
+    workspace_id = uuid.uuid4()
+    empty = {
+        table: []
+        for table in (
+            "documents",
+            "memories",
+            "attributions",
+            "attribution_edits",
+            "memory_relations",
+            "memory_conflicts",
+            "workspace_members",
+            "search_events",
+            "search_ratings",
+        )
+    }
+    first = await export_workspace_pilot_data(_session(empty), workspace_id)
+    second = await export_workspace_pilot_data(_session(empty), workspace_id)
+
+    assert first["canonical_hash"] == second["canonical_hash"]
 
 
 @pytest.mark.unit
@@ -99,6 +149,9 @@ async def test_pilot_export_route_requires_administer_permission() -> None:
             "attribution_edits": [],
             "search_events": [],
             "search_ratings": [],
+            "relations": [],
+            "conflicts": [],
+            "workspace_members": [],
             "unavailable_datasets": {},
         }
     )
