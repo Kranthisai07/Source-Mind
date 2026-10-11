@@ -528,6 +528,14 @@ export const realApi = {
                 body: payload,
             })
         ),
+    updateMemory: async (id, { idempotencyKey, ...payload } = {}) =>
+        unwrapOne(
+            await request(`/v1/memories/${encodeURIComponent(id)}`, {
+                method: "PATCH",
+                headers: { "Idempotency-Key": idempotencyKey || newIdempotencyKey() },
+                body: payload,
+            })
+        ),
     getJobStatus: async (jobId) => {
         const r = unwrapOne(
             await request(`/v1/memories/jobs/${encodeURIComponent(jobId)}`)
@@ -553,6 +561,22 @@ export const realApi = {
     // an empty list — the caller has to tell those apart.
     getMemoryVersions: async (id) =>
         request(`/v1/memories/${encodeURIComponent(id)}/versions`),
+
+    createPilotRating: async ({ workspace_id, idempotencyKey, ...payload } = {}) =>
+        unwrapOne(
+            await request(
+                `/v1/workspaces/${await resolveWorkspaceId(workspace_id)}/pilot-ratings`,
+                {
+                    method: "POST",
+                    headers: { "Idempotency-Key": idempotencyKey || newIdempotencyKey() },
+                    body: payload,
+                }
+            )
+        ),
+    getPilotExport: async (wsId) =>
+        unwrapOne(
+            await request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/pilot-export`)
+        ),
 
     getConflict: (id) => request(`/v1/conflicts/${encodeURIComponent(id)}`),
     reviewConflict: (id) =>

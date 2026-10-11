@@ -38,3 +38,25 @@ test("renders a real contributor handle when attribution is present", () => {
     expect(screen.getByTestId("memory-attribution-handle").textContent).toBe("@synthetic-author");
     expect(screen.queryByTestId("memory-attribution-unattributed")).toBeNull();
 });
+
+test("pilot mode hides ranking, scores and attribution identity", () => {
+    render(
+        <MemoryRouter>
+            <MemoryCard
+                pilotMode
+                rank={1}
+                score={0.987}
+                memory={{
+                    ...memory,
+                    attribution: [{ author: "hidden-author", name: "Hidden Author", score: 0.8, is_primary: true }],
+                }}
+            />
+        </MemoryRouter>
+    );
+
+    expect(screen.getByTestId("pilot-attribution-hidden")).toBeTruthy();
+    expect(screen.queryByTestId("result-score")).toBeNull();
+    expect(screen.queryByTestId("attribution-bar")).toBeNull();
+    expect(screen.queryByText("Hidden Author")).toBeNull();
+    expect(document.body.textContent).not.toContain("0.987");
+});

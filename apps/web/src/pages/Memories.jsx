@@ -11,12 +11,14 @@ import api, { resolveCurrentWorkspace } from "../lib/api";
 import { classifyApiError } from "../lib/apiError";
 import { createSubmissionKeyHolder, submissionIdentity } from "../lib/submissionKey";
 import { getCurrentUserId } from "../lib/currentUser";
+import { isPilotMode } from "../lib/pilotMode";
 import { toast } from "sonner";
 
 const MODES = ["hybrid", "semantic", "keyword"];
 const CATEGORIES = ["general", "architecture", "decision", "incident", "onboarding"];
 
 export default function Memories() {
+    const pilotMode = isPilotMode();
     const [query, setQuery] = useState("");
     const [mode, setMode] = useState("hybrid");
     const [results, setResults] = useState([]);
@@ -145,6 +147,7 @@ export default function Memories() {
                                         score={result?.score}
                                         rank={result?.rank ?? index + 1}
                                         matchType={result?.match_type}
+                                        pilotMode={pilotMode}
                                     />
                                 );
                             })}
@@ -157,7 +160,7 @@ export default function Memories() {
                 )}
             </div>
 
-            <IngestPanel open={open} onOpenChange={setOpen} />
+            <IngestPanel open={open} onOpenChange={setOpen} pilotMode={pilotMode} />
         </>
     );
 }
@@ -195,7 +198,7 @@ function EmptyState({ query, onIngest }) {
     );
 }
 
-function IngestPanel({ open, onOpenChange }) {
+function IngestPanel({ open, onOpenChange, pilotMode }) {
     const [content, setContent] = useState("");
     const [tagsRaw, setTagsRaw] = useState("");
     const [tags, setTags] = useState([]);
@@ -257,7 +260,12 @@ function IngestPanel({ open, onOpenChange }) {
         inFlight.current = true;
         try {
             const workspaceId = await resolveCurrentWorkspace();
-            const payload = { content, tags, category };
+            const payload = {
+                content,
+                tags,
+                category,
+                ...(pilotMode ? { ingestion_mode: "verbatim" } : {}),
+            };
             const idempotencyKey = keyHolder.current.keyFor(submissionIdentity({
                 payload,
                 workspaceId,
@@ -302,9 +310,13 @@ function IngestPanel({ open, onOpenChange }) {
                 data-testid="ingest-panel"
             >
                 <SheetHeader className="p-6 border-b border-sm-border">
-                    <SheetTitle className="text-sm-text text-[17px] font-semibold">Ingest Knowledge</SheetTitle>
+                    <SheetTitle className="text-sm-text text-[17px] font-semibold">
+                        {pilotMode ? "Create Pilot Memory" : "Ingest Knowledge"}
+                    </SheetTitle>
                     <SheetDescription className="text-sm-text-secondary text-[12.5px]">
-                        Paste a document, meeting notes, or decision record. We'll extract, chunk, embed, and attribute.
+                        {pilotMode
+                            ? "Verbatim mode stores this text as one memory without fact extraction."
+                            : "Paste a document, meeting notes, or decision record. We'll extract, chunk, embed, and attribute."}
                     </SheetDescription>
                 </SheetHeader>
 
@@ -322,6 +334,12 @@ function IngestPanel({ open, onOpenChange }) {
                                 className="bg-sm-bg/60 border-sm-border text-sm-text placeholder:text-sm-text-muted resize-none font-mono text-[12.5px]"
                             />
                         </div>
+
+                        {pilotMode && (
+                            <div data-testid="pilot-verbatim-notice" className="rounded-lg border border-sm-blue/30 bg-sm-blue/10 px-3 py-2 text-[12px] text-sm-blue">
+                                Pilot mode is active · submission mode: verbatim
+                            </div>
+                        )}
 
                         <div>
                             <label htmlFor="ingest-tags" className="block text-[12px] text-sm-text-secondary mb-2 font-medium">Tags</label>
@@ -366,7 +384,7 @@ function IngestPanel({ open, onOpenChange }) {
                             disabled={!content.trim()}
                             className="w-full h-10 bg-sm-blue hover:bg-sm-blue/90 text-white disabled:opacity-40"
                         >
-                            Ingest &amp; Process
+                            {pilotMode ? "Create Verbatim Memory" : "Ingest & Process"}
                         </Button>
                     </div>
                 ) : (

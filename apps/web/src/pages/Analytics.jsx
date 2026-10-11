@@ -9,8 +9,29 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs"
 import useApiResource from "../hooks/useApiResource";
 import api, { useMocks } from "../lib/api";
 import { relativeTime } from "../lib/format";
+import { isPilotMode } from "../lib/pilotMode";
 
 export default function Analytics() {
+    if (isPilotMode()) {
+        return (
+            <>
+                <TopBar title="Analytics" subtitle="Unavailable during blinded pilot ratings" />
+                <div className="flex-1 px-8 py-6">
+                    <section data-testid="pilot-analytics-hidden" className="sm-card p-10 text-center">
+                        <h2 className="text-[16px] font-semibold text-sm-text">Scores are hidden during the pilot</h2>
+                        <p className="mt-2 text-[13px] text-sm-text-secondary">
+                            Contribution percentages, rankings, signal values and health scores remain unavailable until ratings are frozen.
+                        </p>
+                    </section>
+                </div>
+            </>
+        );
+    }
+
+    return <AnalyticsContent />;
+}
+
+function AnalyticsContent() {
     const [riskFilter, setRiskFilter] = useState("ALL");
 
     const overviewResource = useApiResource(() => api.getAnalyticsOverview());

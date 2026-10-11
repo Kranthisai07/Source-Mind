@@ -131,6 +131,28 @@ export const mockApi = {
         job_id: `job_${Date.now().toString(36)}`,
     }), { min: 120, max: 240 }),
 
+    updateMemory: (id, payload) => request(() => {
+        const memory = MEMORIES.find((item) => item.memory_id === id || item.id === id);
+        if (!memory) return { error: "not_found" };
+        memory.content = payload.content;
+        if (Array.isArray(payload.tags)) memory.tags = payload.tags;
+        memory.version = (memory.version || 1) + 1;
+        memory.updated_at = new Date().toISOString();
+        return memory;
+    }),
+
+    createPilotRating: (payload) => request(() => ({
+        id: `rating_${Date.now().toString(36)}`,
+        ...payload,
+        created_at: new Date().toISOString(),
+    })),
+
+    getPilotExport: () => request(() => ({
+        schema_version: 2,
+        canonical_sha256: "mock-pilot-export",
+        datasets: {},
+    })),
+
     // GET /v1/memories/jobs/:id — progressive pipeline status
     // We use an in-memory job tracker so the same job id returns advancing stages.
     _jobStart: {},

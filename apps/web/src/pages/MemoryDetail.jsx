@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Edit3, Trash2, AlertTriangle, Share2 } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
@@ -7,13 +7,34 @@ import ContributorAvatar from "../components/widgets/ContributorAvatar";
 import Markdown from "../components/widgets/Markdown";
 import { PageLoadError } from "../components/widgets/PageLoadState";
 import { Button } from "../components/ui/button";
+import { Textarea } from "../components/ui/textarea";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "../components/ui/dialog";
 import useApiResource from "../hooks/useApiResource";
 import api from "../lib/api";
+import { classifyApiError } from "../lib/apiError";
+import { getCurrentUserId } from "../lib/currentUser";
 import { relativeTime, formatDate } from "../lib/format";
+import { isPilotMode } from "../lib/pilotMode";
+import { createSubmissionKeyHolder, submissionIdentity } from "../lib/submissionKey";
 
 export default function MemoryDetail() {
     const { id } = useParams();
     const navigate = useNavigate();
+    const pilotMode = isPilotMode();
+    const [editOpen, setEditOpen] = useState(false);
+    const [draftContent, setDraftContent] = useState("");
+    const [draftTags, setDraftTags] = useState("");
+    const [editSaving, setEditSaving] = useState(false);
+    const [editError, setEditError] = useState(null);
+    const [editSuccess, setEditSuccess] = useState(null);
+    const editKeyHolder = useRef(createSubmissionKeyHolder());
     const memoryResource = useApiResource(() => api.getMemory(id), { resetKey: id });
     const versionsResource = useApiResource(() => api.getMemoryVersions(id), { resetKey: id });
     const mem = memoryResource.data;
@@ -54,6 +75,48 @@ export default function MemoryDetail() {
         mem.created_at ? `created ${relativeTime(mem.created_at)}` : null,
     ].filter(Boolean).join(" · ") || "No metadata recorded";
 
+    const openEditor = () => {
+        setDraftContent(mem.content || "");
+        setDraftTags(tags.join(", "));
+        setEditError(null);
+        setEditSuccess(null);
+        setEditOpen(true);
+    };
+
+    const saveEdit = async () => {
+        if (!draftContent.trim() || editSaving) return;
+        const nextTags = draftTags
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean);
+        const payload = { content: draftContent, tags: nextTags };
+        const idempotencyKey = editKeyHolder.current.keyFor(submissionIdentity({
+            payload,
+            workspaceId: mem.workspace_id,
+            userId: getCurrentUserId(),
+        }));
+        setEditSaving(true);
+        setEditError(null);
+        setEditSuccess(null);
+        try {
+            const updated = await api.updateMemory(memoryId, { ...payload, idempotencyKey });
+            editKeyHolder.current.clear();
+            setEditOpen(false);
+            setEditSuccess(`Saved as version ${updated.version ?? "next"}.`);
+            if (updated.id && updated.id !== id) {
+                navigate(`/memories/${updated.id}`, { replace: true });
+            } else {
+                memoryResource.retry();
+                versionsResource.retry();
+            }
+        } catch (requestError) {
+            const classified = classifyApiError(requestError);
+            setEditError(requestError?.body?.error?.message || classified.detail || classified.title);
+        } finally {
+            setEditSaving(false);
+        }
+    };
+
     return (
         <>
             <TopBar
@@ -64,12 +127,17 @@ export default function MemoryDetail() {
                         <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="text-sm-text-secondary" data-testid="mem-back">
                             <ArrowLeft className="w-4 h-4" /> Back
                         </Button>
-                        <Button variant="outline" size="sm" disabled data-testid="mem-edit" title="Editing a memory isn't available on this screen yet" className="bg-white/[0.04] border-sm-border text-sm-text disabled:opacity-40 disabled:cursor-not-allowed"><Edit3 className="w-3.5 h-3.5" /> Edit</Button>
+                        <Button variant="outline" size="sm" onClick={openEditor} data-testid="mem-edit" className="bg-white/[0.04] border-sm-border text-sm-text"><Edit3 className="w-3.5 h-3.5" /> Edit</Button>
                         <Button variant="outline" size="sm" disabled data-testid="mem-share" title="Sharing a memory isn't available on this screen yet" className="bg-white/[0.04] border-sm-border text-sm-text disabled:opacity-40 disabled:cursor-not-allowed"><Share2 className="w-3.5 h-3.5" /> Share</Button>
                         <Button variant="outline" size="sm" disabled data-testid="mem-delete" title="Deleting a memory isn't available on this screen yet" className="bg-white/[0.04] border-sm-border text-sm-red hover:text-sm-red disabled:opacity-40 disabled:cursor-not-allowed"><Trash2 className="w-3.5 h-3.5" /> Delete</Button>
                     </>
                 }
             />
+            {editSuccess && (
+                <div data-testid="memory-edit-success" className="mx-8 mt-5 rounded-lg border border-sm-green/30 bg-sm-green/10 px-4 py-3 text-[12.5px] text-sm-green">
+                    {editSuccess}
+                </div>
+            )}
             <div className="flex-1 px-8 py-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
                 {/* Main content */}
                 <section className="sm-card p-8 lg:col-span-2">
@@ -88,6 +156,7 @@ export default function MemoryDetail() {
                     </article>
 
                     <div className="mt-8 pt-6 border-t border-sm-border flex items-center justify-between">
+                        {!pilotMode ? (
                         <div className="flex items-center gap-3">
                             <ContributorAvatar contributor={primary} size={32} />
                             <div>
@@ -99,6 +168,11 @@ export default function MemoryDetail() {
                                 </div>
                             </div>
                         </div>
+                        ) : (
+                            <div data-testid="pilot-memory-attribution-hidden" className="text-[12px] text-sm-text-secondary">
+                                Attribution and contribution scores are hidden during pilot ratings.
+                            </div>
+                        )}
                         <div className="text-right">
                             <div className="font-mono text-[11px] text-sm-text-secondary">created</div>
                             <div className="font-mono text-[12px] text-sm-text">{formatDate(mem.created_at)}</div>
@@ -106,7 +180,7 @@ export default function MemoryDetail() {
                     </div>
 
                     {/* Attribution details */}
-                    <div className="mt-8">
+                    {!pilotMode && <div className="mt-8">
                         <h3 className="text-[14px] font-semibold text-sm-text mb-4">Attribution Breakdown</h3>
                         <div className="grid grid-cols-1 md:grid-cols-[180px_1fr] gap-6 items-center">
                             <div className="w-[180px] h-[180px] relative">
@@ -166,7 +240,7 @@ export default function MemoryDetail() {
                                 </tbody>
                             </table>
                         </div>
-                    </div>
+                    </div>}
                 </section>
 
                 {/* Version timeline */}
@@ -199,11 +273,53 @@ export default function MemoryDetail() {
                         ))}
                     </ol>}
 
-                    <Button variant="outline" size="sm" className="w-full mt-6 bg-white/[0.03] border-sm-border text-sm-amber hover:bg-sm-amber/10" onClick={() => navigate("/conflicts")}>
+                    {!pilotMode && <Button variant="outline" size="sm" className="w-full mt-6 bg-white/[0.03] border-sm-border text-sm-amber hover:bg-sm-amber/10" onClick={() => navigate("/conflicts")}>
                         <AlertTriangle className="w-3.5 h-3.5" /> View Conflicts
-                    </Button>
+                    </Button>}
                 </aside>
             </div>
+            <Dialog open={editOpen} onOpenChange={(open) => { if (!editSaving) setEditOpen(open); }}>
+                <DialogContent className="bg-sm-surface border-sm-border text-sm-text" data-testid="memory-edit-dialog">
+                    <DialogHeader>
+                        <DialogTitle>Edit memory</DialogTitle>
+                        <DialogDescription className="text-sm-text-secondary">
+                            Saving creates the next chronological memory version.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                        <div>
+                            <label htmlFor="memory-edit-content" className="mb-2 block text-[12px] text-sm-text-secondary">Content</label>
+                            <Textarea
+                                id="memory-edit-content"
+                                data-testid="memory-edit-content"
+                                value={draftContent}
+                                onChange={(event) => { setDraftContent(event.target.value); setEditError(null); }}
+                                disabled={editSaving}
+                                rows={12}
+                                className="bg-sm-bg/60 border-sm-border text-sm-text font-mono text-[12.5px]"
+                            />
+                        </div>
+                        <div>
+                            <label htmlFor="memory-edit-tags" className="mb-2 block text-[12px] text-sm-text-secondary">Tags, comma separated</label>
+                            <input
+                                id="memory-edit-tags"
+                                data-testid="memory-edit-tags"
+                                value={draftTags}
+                                onChange={(event) => { setDraftTags(event.target.value); setEditError(null); }}
+                                disabled={editSaving}
+                                className="h-10 w-full rounded-md border border-sm-border bg-sm-bg/60 px-3 text-[12.5px] text-sm-text outline-none focus:border-sm-blue"
+                            />
+                        </div>
+                        {editError && <p role="alert" data-testid="memory-edit-error" className="text-[12px] text-sm-red">{editError}</p>}
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setEditOpen(false)} disabled={editSaving}>Cancel</Button>
+                        <Button data-testid="memory-edit-save" onClick={saveEdit} disabled={!draftContent.trim() || editSaving} className="bg-sm-blue text-white">
+                            {editSaving ? "Saving…" : "Save new version"}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </>
     );
 }
