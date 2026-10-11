@@ -74,6 +74,7 @@ async function openPanelAndType(text) {
 }
 
 beforeEach(() => {
+    delete process.env.REACT_APP_PILOT_MODE;
     mockSearch.mockReset().mockResolvedValue({ results: [], total_found: 0, latency_ms: 1 });
     mockCreate.mockReset();
     mockResolve.mockReset().mockResolvedValue("11111111-1111-4111-8111-111111111111");
@@ -190,4 +191,46 @@ describe("submission keys", () => {
             .toBe("11111111-1111-4111-8111-111111111111");
     });
 
+});
+
+describe("pilot verbatim creation", () => {
+    test("normal mode omits the ingestion mode and keeps extraction as the backend default", async () => {
+        mockCreate.mockResolvedValue({ job_id: "normal-job" });
+
+        render(<MemoryRouter><Memories /></MemoryRouter>);
+        await settle();
+        await openPanelAndType("Normal extraction memory.");
+        await clickSubmit();
+
+        await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
+        expect(mockCreate.mock.calls[0][0]).not.toHaveProperty("ingestion_mode");
+    });
+
+    test("explicit pilot mode sends verbatim with content, tags and category", async () => {
+        const previous = process.env.REACT_APP_PILOT_MODE;
+        process.env.REACT_APP_PILOT_MODE = "true";
+        mockCreate.mockResolvedValue({ job_id: "pilot-job" });
+
+        try {
+            render(<MemoryRouter><Memories /></MemoryRouter>);
+            await settle();
+            await openPanelAndType("Exact pilot memory text.");
+            expect(screen.getByTestId("pilot-verbatim-notice")).toBeTruthy();
+
+            fireEvent.change(screen.getByTestId("ingest-tags"), { target: { value: "pilot" } });
+            fireEvent.keyDown(screen.getByTestId("ingest-tags"), { key: "Enter" });
+            await clickSubmit();
+
+            await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
+            expect(mockCreate.mock.calls[0][0]).toMatchObject({
+                content: "Exact pilot memory text.",
+                tags: ["pilot"],
+                category: "general",
+                ingestion_mode: "verbatim",
+            });
+        } finally {
+            if (previous === undefined) delete process.env.REACT_APP_PILOT_MODE;
+            else process.env.REACT_APP_PILOT_MODE = previous;
+        }
+    });
 });

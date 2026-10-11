@@ -39,6 +39,7 @@ import AttributionBar from "../components/widgets/AttributionBar";
 import HealthGauge from "../components/widgets/HealthGauge";
 
 beforeEach(() => {
+    delete process.env.REACT_APP_PILOT_MODE;
     jest.clearAllMocks();
     document.documentElement.classList.remove("dark");
     mockGetOverview.mockResolvedValue({
@@ -68,6 +69,22 @@ beforeEach(() => {
             avatarColor: "#4F7EFF",
         }],
     });
+});
+
+afterEach(() => {
+    delete process.env.REACT_APP_PILOT_MODE;
+});
+
+test("pilot mode hides analytics scores without requesting them", () => {
+    process.env.REACT_APP_PILOT_MODE = "true";
+
+    render(<Analytics />);
+
+    expect(screen.getByTestId("pilot-analytics-hidden")).toBeTruthy();
+    expect(screen.queryByTestId("health-gauge-score")).toBeNull();
+    expect(screen.queryByTestId("analytics-tabs")).toBeNull();
+    expect(mockGetOverview).not.toHaveBeenCalled();
+    expect(mockListContributors).not.toHaveBeenCalled();
 });
 
 test("keeps successful analytics panels when another panel fails", async () => {

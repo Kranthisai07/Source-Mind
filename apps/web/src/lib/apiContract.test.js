@@ -286,6 +286,83 @@ describe("creating a memory matches the route's actual signature", () => {
             .toBe(explicit);
         expect(JSON.parse(create.init.body)).not.toHaveProperty("workspace_id");
     });
+
+    test("pilot verbatim mode is preserved in the request body", async () => {
+        resetIdentityScopedCaches();
+        const calls = captureRouted({ workspaces: WORKSPACES, created: CREATED });
+
+        await realApi.createMemory({
+            content: "Exact pilot text.",
+            tags: ["pilot"],
+            category: "decision",
+            ingestion_mode: "verbatim",
+        });
+
+        const sent = JSON.parse(calls[calls.length - 1].init.body);
+        expect(sent).toEqual({
+            content: "Exact pilot text.",
+            tags: ["pilot"],
+            category: "decision",
+            ingestion_mode: "verbatim",
+        });
+    });
+});
+
+describe("pilot mutation and export contracts", () => {
+    test("PATCH memory sends content, tags and a retry-safe idempotency key", async () => {
+        const response = { data: { id: "22222222-2222-4222-8222-222222222222", version: 2 } };
+        const calls = captureRouted({ workspaces: WORKSPACES, created: response });
+        const key = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+
+        await realApi.updateMemory("11111111-1111-4111-8111-111111111111", {
+            content: "Edited text.",
+            tags: ["edited"],
+            idempotencyKey: key,
+        });
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].init.method).toBe("PATCH");
+        expect(calls[0].init.headers["Idempotency-Key"]).toBe(key);
+        expect(JSON.parse(calls[0].init.body)).toEqual({ content: "Edited text.", tags: ["edited"] });
+        expect(calls[0].url).toContain("/v1/memories/11111111-1111-4111-8111-111111111111");
+    });
+
+    test("rating submission scopes the route and keeps control fields out of the body", async () => {
+        const response = { data: { id: "rating-1" } };
+        const calls = captureRouted({ workspaces: WORKSPACES, created: response });
+        const workspaceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const key = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+        const payload = {
+            search_event_id: "11111111-1111-4111-8111-111111111111",
+            memory_id: "22222222-2222-4222-8222-222222222222",
+            rater_user_id: "33333333-3333-4333-8333-333333333333",
+            rater_pseudonym: null,
+            rating_source: "independent",
+            allocation: 35,
+            exclusion_reason: null,
+        };
+
+        await realApi.createPilotRating({ workspace_id: workspaceId, idempotencyKey: key, ...payload });
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].url).toContain(`/v1/workspaces/${workspaceId}/pilot-ratings`);
+        expect(calls[0].init.method).toBe("POST");
+        expect(calls[0].init.headers["Idempotency-Key"]).toBe(key);
+        expect(JSON.parse(calls[0].init.body)).toEqual(payload);
+        expect(JSON.parse(calls[0].init.body)).not.toHaveProperty("workspace_id");
+    });
+
+    test("pilot export uses the admin workspace route", async () => {
+        const response = { data: { schema_version: 2, canonical_sha256: "abc" } };
+        const calls = captureRouted({ workspaces: WORKSPACES, created: response });
+        const workspaceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+        await realApi.getPilotExport(workspaceId);
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].init.method).toBe("GET");
+        expect(calls[0].url).toContain(`/v1/workspaces/${workspaceId}/pilot-export`);
+    });
 });
 
 describe("automatic retry is confined to safe reads", () => {

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import ContributorAvatar from "./ContributorAvatar";
 import AttributionBar from "./AttributionBar";
 import { relativeTime, stripMarkdown } from "../../lib/format";
+import { isPilotMode } from "../../lib/pilotMode";
 
 const TAG_COLORS = [
     { bg: "#4F7EFF18", text: "#93B3FF", border: "#4F7EFF33" },
@@ -18,7 +19,7 @@ const hashTag = (value) => {
     return TAG_COLORS[Math.abs(hash) % TAG_COLORS.length];
 };
 
-export default function MemoryCard({ memory, score, rank, matchType }) {
+export default function MemoryCard({ memory, score, rank, matchType, pilotMode = isPilotMode() }) {
     const navigate = useNavigate();
     if (!memory) return null;
 
@@ -47,7 +48,7 @@ export default function MemoryCard({ memory, score, rank, matchType }) {
             className="sm-card p-5 flex flex-col gap-4 cursor-pointer group fade-in-up"
         >
             <div className="flex items-start gap-3">
-                {typeof rank === "number" && <span className="font-mono text-[10.5px] text-sm-text-muted pt-0.5">{rank}</span>}
+                {!pilotMode && typeof rank === "number" && <span className="font-mono text-[10.5px] text-sm-text-muted pt-0.5">{rank}</span>}
                 <p className="text-[13.5px] text-sm-text leading-relaxed line-clamp-2 flex-1">
                     {stripMarkdown(memory.content || "")}
                 </p>
@@ -65,10 +66,10 @@ export default function MemoryCard({ memory, score, rank, matchType }) {
                 {memory.category && <span className="text-[10.5px] font-mono px-2 py-0.5 rounded-md border border-sm-border text-sm-text-secondary ml-auto">{memory.category}</span>}
             </div>
 
-            {attribution.length > 0 && <AttributionBar attribution={attribution} />}
+            {!pilotMode && attribution.length > 0 && <AttributionBar attribution={attribution} />}
 
             <div className="flex items-center justify-between pt-1 gap-4">
-                <div className="flex items-center gap-2 min-w-0">
+                {!pilotMode && <div className="flex items-center gap-2 min-w-0">
                     {contributor ? <>
                         <ContributorAvatar contributor={contributor} size={22} />
                         <div className="min-w-0">
@@ -78,10 +79,15 @@ export default function MemoryCard({ memory, score, rank, matchType }) {
                     </> : (
                         <div data-testid="memory-attribution-unattributed" className="text-[12px] font-medium text-sm-text-secondary">Unattributed</div>
                     )}
-                </div>
+                </div>}
+                {pilotMode && (
+                    <span data-testid="pilot-attribution-hidden" className="text-[11.5px] text-sm-text-secondary">
+                        Attribution hidden during pilot ratings
+                    </span>
+                )}
                 <div className="flex items-center gap-3 shrink-0">
                     {matchType && <span className="font-mono text-[10px] text-sm-text-secondary">{matchType}</span>}
-                    {typeof score === "number" && <span data-testid="result-score" className="font-mono text-[10.5px] text-sm-blue">{score.toFixed(3)}</span>}
+                    {!pilotMode && typeof score === "number" && <span data-testid="result-score" className="font-mono text-[10.5px] text-sm-blue">{score.toFixed(3)}</span>}
                     <span className="font-mono text-[10.5px] text-sm-text-secondary">{memory.created_at ? relativeTime(memory.created_at) : "—"}</span>
                     <span className="text-[11px] text-sm-blue opacity-0 group-hover:opacity-100 transition-opacity">View →</span>
                 </div>

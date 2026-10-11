@@ -4,6 +4,12 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer components {
+    .pilot-input {
+        @apply h-10 w-full rounded-md border border-sm-border bg-sm-bg px-3 text-[12.5px] text-sm-text outline-none focus:border-sm-blue;
+    }
+}
+
 /* ─────────────────────────────────────────────────────────────
    SourceMind — dual theme tokens.
    Light is the default (Supermemory editorial paper feel);

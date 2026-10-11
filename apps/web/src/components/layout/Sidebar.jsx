@@ -15,6 +15,7 @@ import {
 } from "../ui/dropdown-menu";
 import api from "../../lib/api";
 import { initials } from "../../lib/format";
+import { isPilotMode } from "../../lib/pilotMode";
 
 const NAV = [
     { to: "/dashboard",  label: "Dashboard",   icon: Home,           testId: "nav-dashboard"  },
@@ -27,6 +28,7 @@ const NAV = [
 ];
 
 export default function Sidebar({ collapsed, onToggle }) {
+    const pilotMode = isPilotMode();
     const navigate = useNavigate();
     const { isSignedIn, user } = useUser();
     const { signOut } = useClerk();
@@ -71,7 +73,7 @@ export default function Sidebar({ collapsed, onToggle }) {
             <div className="h-16 flex items-center px-3 border-b border-sm-border">
                 <button
                     data-testid="workspace-switcher"
-                    onClick={() => navigate("/dashboard")}
+                    onClick={() => navigate(pilotMode ? "/memories" : "/dashboard")}
                     className="flex items-center gap-2.5 w-full overflow-hidden"
                     title={wsName}
                 >
@@ -89,7 +91,7 @@ export default function Sidebar({ collapsed, onToggle }) {
 
             {/* Nav */}
             <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto">
-                {NAV.map((item) => (
+                {NAV.filter((item) => !pilotMode || ["/memories", "/settings"].includes(item.to)).map((item) => (
                     <NavLink
                         key={item.to}
                         to={item.to}
