@@ -11,6 +11,14 @@ REACT_APP_DEFAULT_WORKSPACE_ID=<isolated-pilot-workspace-uuid>
 
 These are build-time Create React App values. Do not use the production API, database, Redis, frontend URL, or Clerk application for the pilot.
 
+The isolated API/backend must also run with:
+
+```text
+PILOT_SEARCH_EVIDENCE_ENABLED=true
+```
+
+Ratings require persisted search events. Without backend evidence mode and a recorded `search_event_id`, rating submission will fail validation.
+
 ## Participant workflow
 
 1. Open **Memories**, choose **Ingest**, and confirm the panel says that pilot verbatim mode is active.
@@ -29,3 +37,5 @@ This is UI blinding for the bounded pilot, not a new backend authorization bound
 3. Use **Download pilot export** to call the admin-only workspace export endpoint and save its JSON. Participants have no export control.
 
 The operator page does not display candidate names, attribution scores, percentages, ranks, or signal values. Backend permission, workspace-membership, event/result membership, source classification, and idempotency validation remain authoritative.
+
+Known backend follow-up: PATCH idempotent replay against a superseded memory ID needs backend support.

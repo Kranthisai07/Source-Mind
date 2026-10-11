@@ -179,6 +179,8 @@ describe("memory actions", () => {
         fireEvent.click(screen.getByTestId("memory-edit-save"));
 
         expect(screen.getByTestId("memory-edit-save").textContent).toContain("Saving");
+        expect(screen.getByTestId("memory-edit-content").disabled).toBe(true);
+        expect(screen.getByTestId("memory-edit-tags").disabled).toBe(true);
         await act(async () => { rejectUpdate(new Error("save failed")); });
         expect(await screen.findByTestId("memory-edit-error")).toBeTruthy();
         expect(screen.getByTestId("memory-edit-save").disabled).toBe(false);

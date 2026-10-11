@@ -52,6 +52,7 @@ export default function PilotTools() {
     const [ratingState, setRatingState] = useState({ saving: false, submitted: false, error: null, success: null });
     const [exportState, setExportState] = useState({ saving: false, error: null, success: null });
     const ratingKeyHolder = useRef(createSubmissionKeyHolder());
+    const ratingLocked = ratingState.saving || ratingState.submitted;
 
     useEffect(() => {
         let cancelled = false;
@@ -83,7 +84,12 @@ export default function PilotTools() {
     }, []);
 
     const updateForm = (field, value) => {
+        if (ratingLocked) return;
         setForm((current) => ({ ...current, [field]: value }));
+        setRatingState({ saving: false, submitted: false, error: null, success: null });
+    };
+
+    const startNewRating = () => {
         setRatingState({ saving: false, submitted: false, error: null, success: null });
     };
 
@@ -179,25 +185,25 @@ export default function PilotTools() {
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <Field label="Search event ID">
-                            <TextInput testId="rating-search-event" value={form.searchEventId} onChange={(value) => updateForm("searchEventId", value)} />
+                            <TextInput testId="rating-search-event" value={form.searchEventId} onChange={(value) => updateForm("searchEventId", value)} disabled={ratingLocked} />
                         </Field>
                         <Field label="Memory ID">
-                            <TextInput testId="rating-memory" value={form.memoryId} onChange={(value) => updateForm("memoryId", value)} />
+                            <TextInput testId="rating-memory" value={form.memoryId} onChange={(value) => updateForm("memoryId", value)} disabled={ratingLocked} />
                         </Field>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <Field label="Rating source">
-                            <select data-testid="rating-source" value={form.ratingSource} onChange={(event) => updateForm("ratingSource", event.target.value)} className="pilot-input">
+                            <select data-testid="rating-source" value={form.ratingSource} onChange={(event) => updateForm("ratingSource", event.target.value)} disabled={ratingLocked} className="pilot-input">
                                 {SOURCES.map((source) => <option key={source} value={source}>{source}</option>)}
                             </select>
                         </Field>
                         {form.ratingSource === "external" ? (
                             <Field label="External pseudonym">
-                                <TextInput testId="rating-pseudonym" value={form.raterPseudonym} onChange={(value) => updateForm("raterPseudonym", value)} />
+                                <TextInput testId="rating-pseudonym" value={form.raterPseudonym} onChange={(value) => updateForm("raterPseudonym", value)} disabled={ratingLocked} />
                             </Field>
                         ) : (
                             <Field label="Workspace rater">
-                                <select data-testid="rating-rater" value={form.raterUserId} onChange={(event) => updateForm("raterUserId", event.target.value)} className="pilot-input">
+                                <select data-testid="rating-rater" value={form.raterUserId} onChange={(event) => updateForm("raterUserId", event.target.value)} disabled={ratingLocked} className="pilot-input">
                                     <option value="">Choose a rater</option>
                                     {members.map((membership) => {
                                         const member = membership.user || membership;
@@ -208,25 +214,30 @@ export default function PilotTools() {
                         )}
                     </div>
                     <Field label="Rating result">
-                        <select data-testid="rating-kind" value={form.ratingKind} onChange={(event) => updateForm("ratingKind", event.target.value)} className="pilot-input">
+                        <select data-testid="rating-kind" value={form.ratingKind} onChange={(event) => updateForm("ratingKind", event.target.value)} disabled={ratingLocked} className="pilot-input">
                             <option value="allocation">Allocation</option>
                             <option value="exclusion">Cannot judge / exclude</option>
                         </select>
                     </Field>
                     {form.ratingKind === "allocation" ? (
                         <Field label="Allocation (0–100)">
-                            <input data-testid="rating-allocation" type="number" min="0" max="100" step="0.01" value={form.allocation} onChange={(event) => updateForm("allocation", event.target.value)} className="pilot-input" />
+                            <input data-testid="rating-allocation" type="number" min="0" max="100" step="0.01" value={form.allocation} onChange={(event) => updateForm("allocation", event.target.value)} disabled={ratingLocked} className="pilot-input" />
                         </Field>
                     ) : (
                         <Field label="Exclusion reason">
-                            <Textarea data-testid="rating-exclusion" value={form.exclusionReason} onChange={(event) => updateForm("exclusionReason", event.target.value)} className="bg-sm-bg/60 border-sm-border text-sm-text" />
+                            <Textarea data-testid="rating-exclusion" value={form.exclusionReason} onChange={(event) => updateForm("exclusionReason", event.target.value)} disabled={ratingLocked} className="bg-sm-bg/60 border-sm-border text-sm-text" />
                         </Field>
                     )}
                     {ratingState.error && <p role="alert" data-testid="rating-error" className="text-[12px] text-sm-red">{ratingState.error}</p>}
                     {ratingState.success && <p data-testid="rating-success" className="text-[12px] text-sm-green">{ratingState.success}</p>}
-                    <Button data-testid="rating-submit" type="submit" disabled={ratingState.saving || ratingState.submitted} className="bg-sm-blue text-white">
+                    <Button data-testid="rating-submit" type="submit" disabled={ratingLocked} className="bg-sm-blue text-white">
                         {ratingState.saving ? "Recording…" : ratingState.submitted ? "Rating recorded" : "Record rating"}
                     </Button>
+                    {ratingState.submitted && (
+                        <Button data-testid="rating-start-new" type="button" variant="outline" onClick={startNewRating}>
+                            Start new or changed rating
+                        </Button>
+                    )}
                 </form>
 
                 <section className="sm-card p-6 h-fit" data-testid="pilot-export-panel">
@@ -247,6 +258,6 @@ function Field({ label, children }) {
     return <label className="block text-[12px] text-sm-text-secondary space-y-2"><span>{label}</span>{children}</label>;
 }
 
-function TextInput({ testId, value, onChange }) {
-    return <input data-testid={testId} value={value} onChange={(event) => onChange(event.target.value)} className="pilot-input" />;
+function TextInput({ testId, value, onChange, disabled = false }) {
+    return <input data-testid={testId} value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled} className="pilot-input" />;
 }

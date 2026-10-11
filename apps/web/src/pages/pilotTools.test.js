@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const mockGetCurrentUser = jest.fn();
 const mockListMembers = jest.fn();
@@ -120,6 +120,33 @@ test("repeated submit after success sends only one request", async () => {
     expect(mockCreateRating).toHaveBeenCalledTimes(1);
 });
 
+test("edits during a pending submit stay locked and cannot send a second request", async () => {
+    let resolveRating;
+    mockCreateRating.mockImplementation(() => new Promise((resolve) => { resolveRating = resolve; }));
+    await renderOperator();
+    fillSharedFields();
+    fireEvent.change(screen.getByTestId("rating-rater"), { target: { value: RATER_ID } });
+    fireEvent.change(screen.getByTestId("rating-allocation"), { target: { value: "35.5" } });
+    fireEvent.click(screen.getByTestId("rating-submit"));
+
+    await waitFor(() => expect(mockCreateRating).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId("rating-search-event").disabled).toBe(true);
+    expect(screen.getByTestId("rating-memory").disabled).toBe(true);
+    expect(screen.getByTestId("rating-source").disabled).toBe(true);
+    expect(screen.getByTestId("rating-rater").disabled).toBe(true);
+    expect(screen.getByTestId("rating-kind").disabled).toBe(true);
+    expect(screen.getByTestId("rating-allocation").disabled).toBe(true);
+    expect(screen.getByTestId("rating-submit").disabled).toBe(true);
+
+    fireEvent.change(screen.getByTestId("rating-allocation"), { target: { value: "40" } });
+    fireEvent.click(screen.getByTestId("rating-submit"));
+    expect(screen.getByTestId("rating-allocation").value).toBe("35.5");
+    expect(mockCreateRating).toHaveBeenCalledTimes(1);
+
+    await act(async () => { resolveRating({ id: "rating-1" }); });
+    expect(await screen.findByTestId("rating-success")).toBeTruthy();
+});
+
 test("changing a submitted rating enables a new request with a new key", async () => {
     await renderOperator();
     fillSharedFields();
@@ -129,6 +156,9 @@ test("changing a submitted rating enables a new request with a new key", async (
 
     expect(await screen.findByTestId("rating-success")).toBeTruthy();
     const firstKey = mockCreateRating.mock.calls[0][0].idempotencyKey;
+    expect(screen.getByTestId("rating-allocation").disabled).toBe(true);
+    fireEvent.click(screen.getByTestId("rating-start-new"));
+    expect(screen.getByTestId("rating-allocation").disabled).toBe(false);
     fireEvent.change(screen.getByTestId("rating-allocation"), { target: { value: "40" } });
     expect(screen.getByTestId("rating-submit").disabled).toBe(false);
     fireEvent.click(screen.getByTestId("rating-submit"));

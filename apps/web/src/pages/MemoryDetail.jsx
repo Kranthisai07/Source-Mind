@@ -294,6 +294,7 @@ export default function MemoryDetail() {
                                 data-testid="memory-edit-content"
                                 value={draftContent}
                                 onChange={(event) => { setDraftContent(event.target.value); setEditError(null); }}
+                                disabled={editSaving}
                                 rows={12}
                                 className="bg-sm-bg/60 border-sm-border text-sm-text font-mono text-[12.5px]"
                             />
@@ -305,6 +306,7 @@ export default function MemoryDetail() {
                                 data-testid="memory-edit-tags"
                                 value={draftTags}
                                 onChange={(event) => { setDraftTags(event.target.value); setEditError(null); }}
+                                disabled={editSaving}
                                 className="h-10 w-full rounded-md border border-sm-border bg-sm-bg/60 px-3 text-[12.5px] text-sm-text outline-none focus:border-sm-blue"
                             />
                         </div>
