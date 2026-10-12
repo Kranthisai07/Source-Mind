@@ -2805,3 +2805,71 @@ tests added to `test_security_foundation_real_db.py` (Security Acceptance node l
 76 -> 88). `.env.example` CORS_ORIGINS comment corrected: the setting is a JSON array
 and a comma-separated string fails to parse (verified against `Settings`).
 `rate_limit_member_add_per_hour` was also added to the shared positivity validator.
+## D-026 — Web: workspace picker, creation, explicit no-workspace state, add member, switch-safe API layer
+
+**Status:** Implemented in the web app; not deployed by this change.
+
+### Decision
+
+1. **Picker instead of an oldest-workspace default.** `resolveWorkspaceId` is now
+   explicit UUID, then `REACT_APP_DEFAULT_WORKSPACE_ID` (unset in the release
+   build), then the user's remembered choice validated against the fresh
+   `GET /v1/workspaces` list, then `list[0]`. The choice is stored per user id in
+   `localStorage` (try/catch; also held in memory for the session), and a stale
+   id is cleared and ignored. The sidebar switcher is a dropdown with a "Create
+   workspace" dialog.
+2. **Zero workspaces is an explicit state.** `AppLayout` gates on the list:
+   loading, error (a failed lookup is shown as an error, never as empty), empty
+   (full page naming the signed-in email, "Check again", and the create form, with
+   sign-out and theme controls) or ready. Friends can sign in before the owner
+   adds them.
+3. **Add member** (owner/admin only; `POST /v1/workspaces/{id}/members`, roles
+   member/viewer, UUIDv4 Idempotency-Key). Enabled from the caller's role in the
+   members list (same rule as `PilotTools`). Errors are mapped from
+   `error.code` / `error.details.reason`; success is only reported on the 201.
+   Create-workspace and add-member have in-flight guards because the backend does
+   not de-duplicate on the key.
+4. **Switching cancels or ignores in-flight work.** A workspace-scope generation
+   counter plus an `AbortController` live in `realApi`. Every scoped request
+   captures the generation, is sent with the signal, and a response or failure
+   arriving after the generation moved throws `StaleWorkspaceError`, which
+   `useApiResource` and the pages ignore silently. Workspace resolution itself is
+   checked the same way. The generation also moves on identity change, and both
+   events use the existing identity-reset listener registry (listeners now get
+   `(identityGeneration, kind)`), so existing subscribers need no rewiring. The
+   page outlet is keyed on the generation, so Memories (search results, selection,
+   ingest sheet, job polling timers, idempotency key holder), Settings dialogs and
+   every other page start clean in the new workspace; detail routes redirect to
+   their list because their ids are workspace-specific. Requests about the user
+   (`/team/me`, list/create workspace, add member) are not scoped and are not
+   aborted by a switch.
+
+### Alternatives considered
+
+- **Build-time pinning** (`REACT_APP_DEFAULT_WORKSPACE_ID`): cannot serve five
+  people who each need the workspace the owner creates after the build, and would
+  hard-code one workspace into a public bundle.
+- **A second account for the shared space:** avoids UI work but defeats per-person
+  attribution, which is the product.
+- **Only clearing caches on switch:** leaves requests already on the wire free to
+  resolve into the new screen (the same hazard D-009 closed for identity).
+  Clearing is necessary but not sufficient; the generation check is what drops
+  the late response, the abort just saves the bandwidth.
+- **Radix `Select` for the role field:** a native `<select>` is simpler,
+  accessible and testable for two options.
+
+### Deliberate limits
+
+- Only member and viewer can be added from the UI; promotion is not offered.
+- Mock mode keeps one demo workspace plus any created in the session.
+- Dropped mutations (an ingest started just before a switch) may still be
+  processed by the server; the UI only guarantees it will not show their result in
+  the wrong workspace.
+
+### D-026 addendum - review fixes
+
+- A workspace lookup is bound to the user and identity generation that started it; a late answer for a previous user is discarded and never validates or clears another user's saved choice.
+- Response bodies are read inside the stale guard, so a switch that aborts a body read is the stale result, not a failure.
+- Dismissing the create dialog mid-request lists the new workspace and toasts but does not switch or navigate. Mounted flags are re-armed on effect setup (StrictMode).
+- A build with REACT_APP_DEFAULT_WORKSPACE_ID is pinned: the picker and create entry points are replaced by a fixed label and selectWorkspace is a no-op, so the UI cannot claim a workspace the requests do not use.
+- Add member against a server without the route (405, or 404 with no error code) says the server does not support it yet. Merge order: the API route (PR #20) must land before this PR for real-mode add member.

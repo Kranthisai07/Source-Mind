@@ -9,6 +9,8 @@
 import { mockApi } from "./mockApi";
 import { getAuthToken, logTokenFingerprintOnce } from "./authToken";
 import { newIdempotencyKey } from "./idempotency";
+import { getCurrentUserId } from "./currentUser";
+import { chooseWorkspaceId, writeSelection } from "./workspaceSelection";
 
 const BASE = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
 
@@ -90,18 +92,92 @@ export async function resolveWorkspace(explicit) {
     return resolveWorkspaceId(explicit);
 }
 
-export function resetIdentityScopedCaches() {
-    _identityGeneration += 1;
+// ---------- workspace scope ----------
+//
+// Switching workspace is the same hazard as switching user, one level down: a
+// response issued for workspace A must never be stored or rendered once the
+// user is in B. Clearing caches is not enough — requests already on the wire
+// still resolve. So every workspace-scoped request captures the scope
+// generation when it starts and carries an AbortSignal; a response (or
+// failure) that lands after the generation moved is DROPPED by throwing a
+// StaleWorkspaceError, which callers ignore silently.
+//
+// The generation also moves on an identity change (a different user is a
+// different scope), and both events use the one listener registry above, so
+// every existing subscriber (useApiResource, Conflicts) is told with no new
+// wiring. Listeners receive (identityGeneration, kind) where kind is
+// "identity" or "workspace".
+let _workspaceGeneration = 0;
+let _abort = new AbortController();
+// The choice made this session, bound to the user who made it.
+let _selected = null;
+
+export class StaleWorkspaceError extends Error {
+    constructor() {
+        super("Workspace changed while this request was in flight");
+        this.name = "StaleWorkspaceError";
+        this.stale = true;
+    }
+}
+
+export const isStaleWorkspaceError = (err) => Boolean(err && err.stale === true);
+
+/** True when the build fixes the workspace (REACT_APP_DEFAULT_WORKSPACE_ID). */
+export function isWorkspacePinned() {
+    return Boolean(CONFIGURED_WS);
+}
+
+/** Current workspace-scope generation. Moves on any workspace or identity change. */
+export function workspaceGeneration() {
+    return _workspaceGeneration;
+}
+
+/** Same registry as onIdentityReset; named for what the caller cares about. */
+export function onWorkspaceScopeChange(listener) {
+    return onIdentityReset(listener);
+}
+
+function advanceScope(kind) {
+    _workspaceGeneration += 1;
     _wsPromise = null;
+    // Abort everything still on the wire for the old scope.
+    const old = _abort;
+    _abort = new AbortController();
+    try {
+        old.abort();
+    } catch {
+        // Aborting is best effort; the generation check is the real guard.
+    }
     // Copy first: a listener may unsubscribe itself while being notified.
     for (const listener of Array.from(_identityListeners)) {
         try {
-            listener(_identityGeneration);
+            listener(_identityGeneration, kind);
         } catch {
             // A broken subscriber must not stop the others from being told the
-            // identity changed — that is the failure mode this exists to stop.
+            // scope changed — that is the failure mode this exists to stop.
         }
     }
+}
+
+export function resetIdentityScopedCaches() {
+    _identityGeneration += 1;
+    _selected = null;
+    advanceScope("identity");
+}
+
+/**
+ * Make `workspaceId` the current workspace. Persists the choice for this user
+ * (best effort), invalidates in-flight work and notifies subscribers.
+ */
+export function selectWorkspace(workspaceId) {
+    // A build pinned to one workspace sends every request there; a selection
+    // would only make the UI claim otherwise.
+    if (!workspaceId || CONFIGURED_WS) return;
+    const userId = getCurrentUserId();
+    _selected = { userId, id: workspaceId };
+    writeSelection(userId, workspaceId);
+    mockApi.selectWorkspace(workspaceId);
+    advanceScope("workspace");
 }
 
 /**
@@ -132,22 +208,34 @@ async function resolveWorkspaceId(explicit) {
     }
     if (CONFIGURED_WS) return CONFIGURED_WS;
 
+    // The scope this resolution belongs to. If it moves while the lookup is in
+    // flight the answer is for the old scope and must not be handed out.
+    const startedIn = _workspaceGeneration;
     if (!_wsPromise) {
         // Captured with the memo, checked before the memo is cleared below.
-        const generation = _identityGeneration;
-        _wsPromise = request("/v1/workspaces")
+        const generation = _workspaceGeneration;
+        // Whose lookup this is. The selection read/validated/cleared below is
+        // THIS user's, even if someone else has signed in by the time the
+        // answer arrives; otherwise A's list would be used to judge (and
+        // delete) B's saved choice.
+        const lookupUser = getCurrentUserId();
+        const lookupIdentity = _identityGeneration;
+        _wsPromise = request("/v1/workspaces", { scoped: false })
             .then((r) => {
+                if (lookupIdentity !== _identityGeneration) throw new StaleWorkspaceError();
                 // This route IS enveloped: {data: [...], meta: {...}}.
                 const list = Array.isArray(r.data) ? r.data : [];
                 if (!list.length) {
                     throw new ApiError(
                         404,
-                        "This account has no workspaces. Create one, or set " +
-                        "REACT_APP_DEFAULT_WORKSPACE_ID in apps/web/.env.",
+                        "This account has no workspaces. Create one, or ask a " +
+                        "workspace owner to add you.",
                         r
                     );
                 }
-                return list[0].id;
+                const userId = lookupUser;
+                const preferred = _selected && _selected.userId === userId ? _selected.id : null;
+                return chooseWorkspaceId(list, userId, preferred);
             })
             .catch((err) => {
                 // Only clear the memo if it is still the one this lookup
@@ -156,11 +244,13 @@ async function resolveWorkspaceId(explicit) {
                 // here would discard a live request and force a duplicate.
                 // A failure is the likely case, not a rare one: the previous
                 // user's token is gone, so this call typically ends in 401.
-                if (generation === _identityGeneration) _wsPromise = null;
+                if (generation === _workspaceGeneration) _wsPromise = null;
                 throw err;
             });
     }
-    return _wsPromise;
+    const id = await _wsPromise;
+    if (startedIn !== _workspaceGeneration) throw new StaleWorkspaceError();
+    return id;
 }
 
 // Deterministic palette — used when the backend doesn't include a color.
@@ -235,7 +325,16 @@ function parseRetryAfter(raw) {
     return Math.max(0, Math.ceil((when - Date.now()) / 1000));
 }
 
-async function request(path, { method = "GET", body, params, headers: extraHeaders } = {}) {
+// `scoped` (default true): the request belongs to the current workspace scope.
+// It is aborted, and its outcome discarded as stale, if the scope changes
+// before it settles. Requests about the USER rather than a workspace (who am
+// I, list my workspaces, create a workspace, add a member) pass scoped:false.
+async function request(path, { method = "GET", body, params, headers: extraHeaders, scoped = true } = {}) {
+    // Captured synchronously, before the first await: callers resolve the
+    // workspace id (which itself verifies the scope) and call straight in.
+    const startedIn = _workspaceGeneration;
+    const signal = scoped ? _abort.signal : undefined;
+    const isStale = () => scoped && startedIn !== _workspaceGeneration;
     const url = new URL(BASE + path, window.location.origin);
     if (params) {
         for (const [k, v] of Object.entries(params)) {
@@ -258,6 +357,10 @@ async function request(path, { method = "GET", body, params, headers: extraHeade
     };
     if (token) headers.Authorization = `Bearer ${token}`;
 
+    // The scope may have moved while the token was being fetched; do not send
+    // a request that is already for the wrong workspace.
+    if (isStale()) throw new StaleWorkspaceError();
+
     const t0 = performance.now();
     let res;
     try {
@@ -266,8 +369,13 @@ async function request(path, { method = "GET", body, params, headers: extraHeade
             credentials: "include",
             headers,
             body: body ? JSON.stringify(body) : undefined,
+            ...(signal ? { signal } : {}),
         });
     } catch (cause) {
+        // An abort caused by a scope change is not a network failure.
+        if (isStale() || (cause && cause.name === "AbortError" && signal)) {
+            throw new StaleWorkspaceError();
+        }
         // fetch() rejects only on a transport failure. Surfacing it as an
         // ApiError with network:true lets callers tell "could not reach the
         // API" apart from "the API answered with an error", which need
@@ -277,7 +385,18 @@ async function request(path, { method = "GET", body, params, headers: extraHeade
         });
     }
     const latency = Math.round(performance.now() - t0);
-    const text = await res.text();
+    let text;
+    try {
+        text = await res.text();
+    } catch (cause) {
+        // A switch can abort the body while it is still being read.
+        if (isStale() || (cause && cause.name === "AbortError" && signal)) {
+            throw new StaleWorkspaceError();
+        }
+        throw cause;
+    }
+    // The response is for a workspace the user has left: drop it unread.
+    if (isStale()) throw new StaleWorkspaceError();
     const data = text ? JSON.parse(text) : {};
     if (!res.ok) {
         throw new ApiError(res.status, `${res.status} ${res.statusText}`, data, {
@@ -428,7 +547,41 @@ function adaptContributor(c, i) {
 
 export const realApi = {
     // ----- session -----
-    getCurrentUser: async () => unwrapOne(await request(`/v1/team/me`)),
+    getCurrentUser: async () => unwrapOne(await request(`/v1/team/me`, { scoped: false })),
+
+    // ----- workspaces -----
+    // GET /v1/workspaces is enveloped: {data: [...], meta}. Not workspace
+    // scoped (it is how the scope is chosen), so it is never aborted by a switch.
+    listWorkspaces: async () => {
+        const r = unwrapList(await request(`/v1/workspaces`, { scoped: false }));
+        return { items: r.items, __latency_ms: r.__latency_ms };
+    },
+    // The backend does NOT de-duplicate on the key, so the caller must guard
+    // against double submits; the key is still required (UUIDv4).
+    createWorkspace: async ({ name, slug, description } = {}) =>
+        unwrapOne(
+            await request(`/v1/workspaces`, {
+                method: "POST",
+                scoped: false,
+                headers: { "Idempotency-Key": newIdempotencyKey() },
+                body: {
+                    name,
+                    slug,
+                    ...(description ? { description } : {}),
+                },
+            })
+        ),
+    // Owner/admin only. `role` is member or viewer; the backend rejects
+    // anything else and any extra field.
+    addWorkspaceMember: async (workspaceId, { email, role = "member" } = {}) =>
+        unwrapOne(
+            await request(`/v1/workspaces/${encodeURIComponent(workspaceId)}/members`, {
+                method: "POST",
+                scoped: false,
+                headers: { "Idempotency-Key": newIdempotencyKey() },
+                body: { email, role },
+            })
+        ),
     getWorkspace: async (wsId) =>
         unwrapOne(await request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}`)),
 

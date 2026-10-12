@@ -12,6 +12,7 @@ import { classifyApiError } from "../lib/apiError";
 import { createSubmissionKeyHolder, submissionIdentity } from "../lib/submissionKey";
 import { getCurrentUserId } from "../lib/currentUser";
 import { isPilotMode } from "../lib/pilotMode";
+import { isStaleWorkspaceError, workspaceGeneration } from "../lib/realApi";
 import { toast } from "sonner";
 
 const MODES = ["hybrid", "semantic", "keyword"];
@@ -52,7 +53,8 @@ export default function Memories() {
                     setLoading(false);
                 })
                 .catch((requestError) => {
-                    if (cancelled) return;
+                    // Dropped because the workspace changed: show nothing.
+                    if (cancelled || isStaleWorkspaceError(requestError)) return;
                     setError(classifyApiError(requestError));
                     setResults([]);
                     setTotal(0);
@@ -232,7 +234,8 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
                     setJob(response);
                     if (response.status === "done" || response.status === "failed") return stop();
                 } catch (requestError) {
-                    if (cancelled) return;
+                    // A workspace switch ends the poll silently.
+                    if (cancelled || isStaleWorkspaceError(requestError)) return stop();
                     setJob(null);
                     setJobError(requestError?.body?.error?.message || classifyApiError(requestError).title);
                     return stop();
@@ -258,6 +261,9 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
     const submit = async () => {
         if (!content.trim() || inFlight.current) return;
         inFlight.current = true;
+        // The workspace this submission belongs to. If the user switches
+        // before it settles, its outcome is not theirs to see in the new one.
+        const scope = workspaceGeneration();
         try {
             const workspaceId = await resolveCurrentWorkspace();
             const payload = {
@@ -277,8 +283,10 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
                 idempotencyKey,
             });
             keyHolder.current.clear();
+            if (scope !== workspaceGeneration()) return;
             setJobId(response.job_id);
         } catch (requestError) {
+            if (isStaleWorkspaceError(requestError) || scope !== workspaceGeneration()) return;
             const classified = classifyApiError(requestError);
             toast.error(classified.title, {
                 description: requestError?.body?.error?.message || classified.detail,
