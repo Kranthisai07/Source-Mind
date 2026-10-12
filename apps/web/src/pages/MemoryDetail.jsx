@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Edit3, Trash2, AlertTriangle, Share2 } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
@@ -19,7 +19,7 @@ import {
 import useApiResource from "../hooks/useApiResource";
 import api from "../lib/api";
 import { classifyApiError } from "../lib/apiError";
-import { getCurrentUserId } from "../lib/currentUser";
+import { getCurrentUserId, onCurrentUserChange } from "../lib/currentUser";
 import { isStaleWorkspaceError } from "../lib/realApi";
 import { carryDraft, clearCarriedDraft, clearDraft, loadCarriedDraft, loadDraft, saveDraft } from "../lib/editDrafts";
 import { relativeTime, formatDate } from "../lib/format";
@@ -67,18 +67,34 @@ function MemoryDetailView({ id }) {
     const navigate = useNavigate();
     const location = useLocation();
     const pilotMode = isPilotMode();
-    const userId = getCurrentUserId();
+    // Subscribed, not snapshotted: on a hard refresh the auth bridge publishes
+    // the user id after this component's first render.
+    const userId = useSyncExternalStore(onCurrentUserChange, getCurrentUserId);
     const [editOpen, setEditOpen] = useState(false);
     // The unsaved draft, per (user, memory id). Component state is primary;
     // sessionStorage lets it survive a remount. null means "no draft".
     const [draft, setDraftState] = useState(() => loadDraft(userId, id));
     // A draft handed over from an older version; offered, never auto-applied.
-    const [carried, setCarried] = useState(() => loadCarriedDraft(userId, id));
+    // Router state is the fallback transport when sessionStorage refuses writes.
+    const [carried, setCarried] = useState(
+        () => loadCarriedDraft(userId, id) ?? location.state?.carriedDraft ?? null
+    );
+    // True once the user has typed or accepted something in this page: such a
+    // draft is never replaced by one reloaded after the identity settles.
+    const dirty = useRef(false);
+    const seenUser = useRef(userId);
     const [editSaving, setEditSaving] = useState(false);
     const [saveError, setSaveError] = useState(null);
     const [history, setHistory] = useState(null);
     const [editSuccess, setEditSuccess] = useState(location.state?.editSuccess ?? null);
     const saveInFlight = useRef(false);
+
+    useEffect(() => {
+        if (seenUser.current === userId) return;
+        seenUser.current = userId;
+        if (!dirty.current) setDraftState(loadDraft(userId, id));
+        setCarried((current) => current ?? loadCarriedDraft(userId, id));
+    }, [userId, id]);
     // Best effort only: the backend does not replay on this key, so reusing it
     // after an unknown outcome does not make a resend safe.
     const editKeyHolder = useRef(createSubmissionKeyHolder());
@@ -128,6 +144,7 @@ function MemoryDetailView({ id }) {
     const tagsValue = draft?.tags ?? tags.join(", ");
 
     const setDraft = (patch) => {
+        dirty.current = true;
         const next = { content: contentValue, tags: tagsValue, ...patch };
         setDraftState(next);
         saveDraft(userId, id, next);
@@ -148,28 +165,42 @@ function MemoryDetailView({ id }) {
     // Navigation only. The draft travels via sessionStorage and the target page
     // merely offers it; nothing is opened or sent from here.
     const viewLatest = (targetId) => {
-        if (draft) carryDraft(userId, id, targetId, draft);
+        // Also passed in router state: if storage refuses the write the draft
+        // still reaches the next page instead of dying with this one.
+        const carriedDraft = draft ? { content: draft.content, tags: draft.tags, fromId: id } : null;
+        if (carriedDraft) carryDraft(userId, id, targetId, draft);
         setEditOpen(false);
-        navigate(`/memories/${targetId}`);
+        navigate(`/memories/${targetId}`, carriedDraft ? { state: { carriedDraft } } : undefined);
     };
 
-    const openCarriedDraft = () => {
+    // Router state outlives the in-memory offer (reload, back/forward), so
+    // settling an offer also clears it from the current history entry.
+    const settleCarried = () => {
+        clearCarriedDraft(userId, id);
+        if (carried?.fromId) clearDraft(userId, carried.fromId);
+        setCarried(null);
+        if (location.state?.carriedDraft) navigate(location.pathname, { replace: true, state: null });
+    };
+
+    // mode: "replace" (no draft here yet, or the user chose the carried one),
+    // "append" (keep this version's draft and add the carried text below it).
+    const openCarriedDraft = (mode = "replace") => {
         if (!carried) return;
-        const next = { content: carried.content, tags: carried.tags };
+        const next = mode === "append" && draft
+            ? {
+                content: `${draft.content}\n\n--- Draft carried from an earlier version ---\n\n${carried.content}`,
+                tags: draft.tags,
+            }
+            : { content: carried.content, tags: carried.tags };
+        dirty.current = true;
         setDraftState(next);
         saveDraft(userId, id, next);
-        clearCarriedDraft(userId, id);
-        if (carried.fromId) clearDraft(userId, carried.fromId);
-        setCarried(null);
+        settleCarried();
         setEditSuccess(null);
         setEditOpen(true);
     };
 
-    const discardCarriedDraft = () => {
-        clearCarriedDraft(userId, id);
-        if (carried?.fromId) clearDraft(userId, carried.fromId);
-        setCarried(null);
-    };
+    const discardCarriedDraft = () => settleCarried();
 
     // Reads only. Reports what the server holds and never decides whether the
     // unconfirmed save was applied.
@@ -266,14 +297,43 @@ function MemoryDetailView({ id }) {
             {carried && !superseded && (
                 <div data-testid="memory-carried-draft" className="mx-8 mt-5 rounded-lg border border-sm-blue/30 bg-sm-blue/10 px-4 py-3 text-[12.5px] text-sm-text">
                     <p>You have an unsaved draft from an earlier version of this memory. It has not been sent anywhere.</p>
-                    <div className="mt-2 flex gap-2">
-                        <Button size="sm" onClick={openCarriedDraft} data-testid="memory-carried-open" className="bg-sm-blue text-white">
-                            Open editor with my unsaved draft
-                        </Button>
-                        <Button size="sm" variant="outline" onClick={discardCarriedDraft} data-testid="memory-carried-discard" className="bg-white/[0.03] border-sm-border text-sm-text">
-                            Discard draft
-                        </Button>
-                    </div>
+                    {draft ? (
+                        <>
+                            <p data-testid="memory-carried-conflict" className="mt-2 font-medium">
+                                This version already has its own unsaved draft. Nothing is replaced unless you choose.
+                            </p>
+                            <div className="mt-2 grid gap-2 md:grid-cols-2">
+                                <div>
+                                    <p className="text-[11px] text-sm-text-secondary">Draft already on this version</p>
+                                    <pre data-testid="memory-existing-draft-preview" className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap font-sans">{draft.content}</pre>
+                                </div>
+                                <div>
+                                    <p className="text-[11px] text-sm-text-secondary">Draft carried from the earlier version</p>
+                                    <pre data-testid="memory-carried-preview" className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap font-sans">{carried.content}</pre>
+                                </div>
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                                <Button size="sm" onClick={discardCarriedDraft} data-testid="memory-carried-keep-mine" className="bg-sm-blue text-white">
+                                    Keep this version's draft
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={() => openCarriedDraft("append")} data-testid="memory-carried-append" className="bg-white/[0.03] border-sm-border text-sm-text">
+                                    Keep both (add carried text below)
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={() => openCarriedDraft("replace")} data-testid="memory-carried-use" className="bg-white/[0.03] border-sm-border text-sm-text">
+                                    Replace it with the carried draft
+                                </Button>
+                            </div>
+                        </>
+                    ) : (
+                        <div className="mt-2 flex gap-2">
+                            <Button size="sm" onClick={() => openCarriedDraft("replace")} data-testid="memory-carried-open" className="bg-sm-blue text-white">
+                                Open editor with my unsaved draft
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={discardCarriedDraft} data-testid="memory-carried-discard" className="bg-white/[0.03] border-sm-border text-sm-text">
+                                Discard draft
+                            </Button>
+                        </div>
+                    )}
                 </div>
             )}
             {draft && !editOpen && (
@@ -506,6 +566,7 @@ function SaveErrorBanner({ error, onViewLatest, onCheckHistory, history }) {
         return (
             <div role="alert" data-testid="memory-edit-unknown" className="rounded-lg border border-sm-amber/30 bg-sm-amber/10 px-3 py-2 text-[12.5px] text-sm-amber">
                 <p>Save outcome unknown. Your draft is kept. We can't tell whether it was applied until you check.</p>
+                <p data-testid="memory-edit-check-first" className="mt-1">Check history before saving again: saving again sends another edit, and the server does not recognise it as a repeat.</p>
                 <Button size="sm" variant="outline" onClick={onCheckHistory} disabled={history?.loading} data-testid="memory-edit-check-history" className="mt-2 bg-white/[0.03] border-sm-border text-sm-text">
                     {history?.loading ? "Checking…" : "Check history"}
                 </Button>

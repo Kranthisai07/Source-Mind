@@ -152,13 +152,33 @@ export const mockApi = {
         return { versions, total: versions.length };
     }),
 
-    // POST /v1/memories (returns job_id)
-    createMemory: (_payload) => request(() => ({
-        job_id: `job_${Date.now().toString(36)}`,
-        status: "queued",
-        message: "Document is queued and will be processed shortly.",
-        memory_count: null,
-    }), { min: 120, max: 240 }),
+    // POST /v1/memories (returns job_id). Like the real API: the text is
+    // trimmed, and identical text returns the ORIGINAL job with
+    // `already_exists: true` instead of creating anything.
+    _jobs: {},
+    createMemory(payload = {}) {
+        const content = String(payload.content ?? "").trim();
+        const existing = Object.entries(this._jobs).find(([, job]) => job.content === content);
+        let jobId;
+        if (existing) {
+            jobId = existing[0];
+        } else {
+            jobId = `job_${Date.now().toString(36)}_${Object.keys(this._jobs).length}`;
+            this._jobs[jobId] = {
+                content,
+                tags: Array.isArray(payload.tags) ? payload.tags : [],
+                category: payload.category || "general",
+                memoryId: null,
+            };
+        }
+        return request(() => ({
+            job_id: jobId,
+            status: existing ? "completed" : "queued",
+            message: existing ? "Document already ingested." : "Document is queued and will be processed shortly.",
+            memory_count: existing ? 1 : null,
+            already_exists: Boolean(existing),
+        }), { min: 120, max: 240 });
+    },
 
     updateMemory: (id, payload) => request(() => {
         const memory = MEMORIES.find((item) => item.memory_id === id || item.id === id);
@@ -196,7 +216,25 @@ export const mockApi = {
         ];
         const step = steps.find(([until]) => elapsed < until);
         const done = !step;
-        const memoryIds = done && MEMORIES[0] ? [MEMORIES[0].memory_id] : [];
+        // The memory the "pipeline" produced is the submitted text itself, so
+        // the success link opens exactly what was ingested and search finds it.
+        const submitted = this._jobs[jobId];
+        if (done && submitted && !submitted.memoryId) {
+            submitted.memoryId = `mem_new_${jobId}`;
+            MEMORIES.unshift({
+                memory_id: submitted.memoryId,
+                content: submitted.content,
+                tags: submitted.tags,
+                category: submitted.category,
+                workspace_id: WORKSPACE.id,
+                created_at: new Date().toISOString(),
+                is_latest: true,
+                attribution: [],
+                version: 1,
+                versions: [],
+            });
+        }
+        const memoryIds = done && submitted?.memoryId ? [submitted.memoryId] : [];
         return request(() => ({
             job_id: jobId,
             status: done ? "done" : step[1],

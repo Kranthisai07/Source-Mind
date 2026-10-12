@@ -2803,3 +2803,11 @@ never infers outcomes.
   same result") and asks for an edit rather than hiding it.
 - Pilot mode shares the new outcome/retry logic (it creates one verbatim memory,
   so success renders as "Created 1 memory"); only the pre-submit copy is untouched.
+
+### D-027 review follow-ups
+
+- **`already_exists`.** The POST response's `already_exists` decides the wording: `false` is "Created N", `true` is "This exact text was already submitted — here are the memories from that earlier submission" (never "Created"), absent is neutral "Processed — N memories". The panel does not infer duplication from the polled status. The mock mirrors both and stores the submitted text as its own mock memory, so success links never open unrelated seed content.
+- **Carried drafts are never applied silently.** If the latest version already has its own draft, both are shown and the user picks keep mine / keep both (carried text appended below) / replace. The carry also travels in router state, so a sessionStorage failure cannot lose it.
+- **Draft identity.** The user id is read through a subscription (`onCurrentUserChange`) because the auth bridge publishes it after the first render; drafts are reloaded when it settles, unless the user has already typed in the page.
+- **"Same text" is the trimmed text**, matching the API, which strips surrounding whitespace before hashing.
+- After an unknown save outcome the UI cautions to check history before saving again (a repeat PATCH is not recognised server-side).

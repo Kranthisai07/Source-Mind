@@ -424,3 +424,136 @@ describe("carrying a draft to the latest version", () => {
         expect((await screen.findByTestId("memory-carried-draft"))).toBeTruthy();
     });
 });
+
+const conflictToLatest = () =>
+    mockUpdateMemory.mockRejectedValue(apiError(409, "SM035", {
+        memory_id: OLD, latest_memory_id: NEW, reason: "superseded",
+    }));
+
+async function carryToLatest(text) {
+    conflictToLatest();
+    renderAt();
+    await openAndType(text);
+    await save();
+    const viewLatest = await screen.findByTestId("memory-edit-view-latest");
+    await act(async () => { fireEvent.click(viewLatest); });
+    await screen.findByTestId("memory-carried-draft");
+}
+
+describe("a carried draft never silently replaces the latest version's own draft", () => {
+    const seedLatestDraft = () =>
+        require("../lib/editDrafts").saveDraft("user-a", NEW, { content: "Fix typo", tags: "t" });
+
+    test("both drafts are shown and nothing is replaced until the user chooses", async () => {
+        seedLatestDraft();
+        await carryToLatest("Rewrite paragraph");
+
+        expect(screen.getByTestId("memory-carried-conflict")).toBeTruthy();
+        expect(screen.getByTestId("memory-existing-draft-preview").textContent).toBe("Fix typo");
+        expect(screen.getByTestId("memory-carried-preview").textContent).toBe("Rewrite paragraph");
+        expect(screen.queryByTestId("memory-carried-open")).toBeNull();
+        expect(loadDraft("user-a", NEW).content).toBe("Fix typo");
+    });
+
+    test("Keep this version's draft keeps it and drops the offer", async () => {
+        seedLatestDraft();
+        await carryToLatest("Rewrite paragraph");
+        fireEvent.click(screen.getByTestId("memory-carried-keep-mine"));
+
+        expect(screen.queryByTestId("memory-carried-draft")).toBeNull();
+        expect(loadDraft("user-a", NEW).content).toBe("Fix typo");
+        fireEvent.click(screen.getByTestId("mem-edit"));
+        expect(screen.getByTestId("memory-edit-content").value).toBe("Fix typo");
+    });
+
+    test("Keep both appends the carried text below the existing draft", async () => {
+        seedLatestDraft();
+        await carryToLatest("Rewrite paragraph");
+        await act(async () => { fireEvent.click(screen.getByTestId("memory-carried-append")); });
+
+        const value = screen.getByTestId("memory-edit-content").value;
+        expect(value.startsWith("Fix typo")).toBe(true);
+        expect(value).toContain("Rewrite paragraph");
+        expect(loadDraft("user-a", NEW).content).toBe(value);
+    });
+
+    test("Replace is an explicit choice", async () => {
+        seedLatestDraft();
+        await carryToLatest("Rewrite paragraph");
+        await act(async () => { fireEvent.click(screen.getByTestId("memory-carried-use")); });
+
+        expect(screen.getByTestId("memory-edit-content").value).toBe("Rewrite paragraph");
+    });
+});
+
+describe("storage failure while carrying a draft", () => {
+    test("the draft still reaches the latest page through router state", async () => {
+        jest.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
+        jest.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("denied"); });
+        await carryToLatest("Survives without storage.");
+
+        await act(async () => { fireEvent.click(screen.getByTestId("memory-carried-open")); });
+        expect(screen.getByTestId("memory-edit-content").value).toBe("Survives without storage.");
+        expect(mockUpdateMemory).toHaveBeenCalledTimes(1);
+    });
+
+    test("discarding the offer removes it for good", async () => {
+        jest.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
+        jest.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("denied"); });
+        await carryToLatest("Discard via state.");
+        fireEvent.click(screen.getByTestId("memory-carried-discard"));
+
+        await settle(100);
+        expect(screen.queryByTestId("memory-carried-draft")).toBeNull();
+    });
+});
+
+describe("hard refresh: the user id is published after first render", () => {
+    test("the stored per-user draft is loaded once the identity settles", async () => {
+        require("../lib/editDrafts").saveDraft("user-a", OLD, { content: "Stored for user-a.", tags: "" });
+        setCurrentUserId(null);
+        renderAt();
+        await screen.findByTestId("mem-edit");
+        expect(screen.queryByTestId("memory-draft-notice")).toBeNull();
+
+        await act(async () => { setCurrentUserId("user-a"); });
+        expect(screen.getByTestId("memory-draft-notice")).toBeTruthy();
+        fireEvent.click(screen.getByTestId("mem-edit"));
+        expect(screen.getByTestId("memory-edit-content").value).toBe("Stored for user-a.");
+    });
+
+    test("a draft typed before the identity settled is not overwritten", async () => {
+        require("../lib/editDrafts").saveDraft("user-a", OLD, { content: "Stored for user-a.", tags: "" });
+        setCurrentUserId(null);
+        renderAt();
+        fireEvent.click(await screen.findByTestId("mem-edit"));
+        fireEvent.change(screen.getByTestId("memory-edit-content"), { target: { value: "Typed early." } });
+
+        await act(async () => { setCurrentUserId("user-a"); });
+        expect(screen.getByTestId("memory-edit-content").value).toBe("Typed early.");
+    });
+
+    test("a carried draft stored for the settled user is offered too", async () => {
+        require("../lib/editDrafts").carryDraft("user-a", OLD, NEW, { content: "Carried.", tags: "" });
+        setCurrentUserId(null);
+        renderAt(NEW);
+        await screen.findByTestId("mem-edit");
+        expect(screen.queryByTestId("memory-carried-draft")).toBeNull();
+
+        await act(async () => { setCurrentUserId("user-a"); });
+        expect(screen.getByTestId("memory-carried-draft")).toBeTruthy();
+    });
+});
+
+describe("saving again after an unknown outcome", () => {
+    test("a caution says to check history first, and Save still needs an explicit click", async () => {
+        mockUpdateMemory.mockRejectedValue({ status: 0, network: true, body: null });
+        renderAt();
+        await openAndType("Maybe applied.");
+        await save();
+
+        expect((await screen.findByTestId("memory-edit-check-first")).textContent).toMatch(/Check history before saving again/);
+        await settle(300);
+        expect(mockUpdateMemory).toHaveBeenCalledTimes(1);
+    });
+});

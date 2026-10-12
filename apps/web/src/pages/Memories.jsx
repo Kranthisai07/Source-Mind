@@ -212,6 +212,9 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
     const [retryNonce, setRetryNonce] = useState(0);
     // The API said the POST itself matched an earlier submission.
     const [duplicateNotice, setDuplicateNotice] = useState(null);
+    // The POST's `already_exists`: true = an earlier submission's job was
+    // returned, false = new work, null = the API did not say.
+    const [alreadyExists, setAlreadyExists] = useState(null);
     // Set when the POST may or may not have been received (no job id came back).
     const [submitFailure, setSubmitFailure] = useState(null);
     // The exact text of the last submission that reached a terminal outcome
@@ -290,7 +293,7 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
 
     const submit = async () => {
         if (!content.trim() || inFlight.current) return;
-        if (content === blockedContent) return;
+        if (content.trim() === blockedContent) return;
         inFlight.current = true;
         setSubmitFailure(null);
         // The workspace this submission belongs to. If the user switches
@@ -321,7 +324,9 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
             keyHolder.current.clear();
             if (scope !== workspaceGeneration()) return;
             submittedContent.current = content;
-            setDuplicateNotice(response?.status === "duplicate" ? response : null);
+            const existing = response?.already_exists === true;
+            setAlreadyExists(typeof response?.already_exists === "boolean" ? response.already_exists : null);
+            setDuplicateNotice(existing || response?.status === "duplicate" ? response : null);
             setJobId(response.job_id);
         } catch (requestError) {
             if (isStaleWorkspaceError(requestError) || scope !== workspaceGeneration()) return;
@@ -354,6 +359,7 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
         setJobError(null);
         setRetryNonce(0);
         setDuplicateNotice(null);
+        setAlreadyExists(null);
         setSubmitFailure(null);
         setBlockedContent(null);
         setSlow(false);
@@ -365,18 +371,21 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
     // only return this same record.
     const editAndSubmitAgain = () => {
         keyHolder.current?.clear();
-        setBlockedContent(submittedContent.current);
+        // Trimmed: the API strips surrounding whitespace before hashing, so a
+        // whitespace-only edit is the same document.
+        setBlockedContent(submittedContent.current.trim());
         setJobId(null);
         setJob(null);
         setJobError(null);
         setRetryNonce(0);
         setDuplicateNotice(null);
+        setAlreadyExists(null);
         setSlow(false);
         setTimedOut(false);
         setElapsedMs(null);
     };
 
-    const sameTextBlocked = blockedContent !== null && content === blockedContent;
+    const sameTextBlocked = blockedContent !== null && content.trim() === blockedContent;
     const elapsedText = elapsedMs != null ? ` Measured in your browser: ${(elapsedMs / 1000).toFixed(1)} s from submit.` : "";
 
     return (
@@ -494,7 +503,9 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
                     <div className="p-6 space-y-4" aria-live="polite">
                         {duplicateNotice && (
                             <div data-testid="ingest-duplicate" className="rounded-lg border border-sm-amber/30 bg-sm-amber/10 px-3 py-2 text-[12.5px] text-sm-amber">
-                                <p className="font-medium">This exact text was already submitted.</p>
+                                <p className="font-medium">
+                                    This exact text was already submitted{alreadyExists ? " — here are the memories from that earlier submission." : "."}
+                                </p>
                                 {duplicateNotice.message && <p className="mt-1">{duplicateNotice.message}</p>}
                             </div>
                         )}
@@ -516,7 +527,11 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
                         ) : outcome?.kind === "success" ? (
                             <div data-testid="ingest-success" className="space-y-3">
                                 <p className="text-[13px] font-medium text-sm-green">
-                                    Created {outcome.count} {outcome.count === 1 ? "memory" : "memories"}
+                                    {alreadyExists === false
+                                        ? `Created ${outcome.count} ${outcome.count === 1 ? "memory" : "memories"}`
+                                        : alreadyExists === true
+                                            ? `${outcome.count} ${outcome.count === 1 ? "memory" : "memories"} from the earlier submission`
+                                            : `Processed — ${outcome.count} ${outcome.count === 1 ? "memory" : "memories"}`}
                                 </p>
                                 <ul data-testid="ingest-memory-links" className="space-y-1.5">
                                     {outcome.ids.map((memoryId, index) => (

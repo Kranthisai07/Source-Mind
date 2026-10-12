@@ -73,7 +73,7 @@ const timing = { ...INGEST_TIMING };
 
 beforeEach(() => {
     mockSearch.mockReset().mockResolvedValue({ results: [], total_found: 0, latency_ms: 1 });
-    mockCreate.mockReset().mockResolvedValue({ job_id: "job-1", status: "queued" });
+    mockCreate.mockReset().mockResolvedValue({ job_id: "job-1", status: "queued", already_exists: false });
     mockResolve.mockReset().mockResolvedValue(WS);
     mockJobStatus.mockReset();
     setCurrentUserId("user-a");
@@ -242,14 +242,49 @@ describe("terminal outcomes are explicit and distinct", () => {
         expect(screen.queryByTestId("ingest-success")).toBeNull();
     });
 
-    test("a duplicate reported by the POST is shown above the polled outcome", async () => {
+    test("an identical earlier submission (already_exists) is not claimed as created", async () => {
+        mockCreate.mockResolvedValue({ job_id: "job-0", status: "completed", already_exists: true });
+        mockJobStatus.mockResolvedValue({ status: "done", memory_ids: [ID_A], memory_count: 1 });
+        await submitText();
+        await settle();
+
+        const dup = screen.getByTestId("ingest-duplicate").textContent;
+        expect(dup).toContain("This exact text was already submitted — here are the memories from that earlier submission");
+        const success = screen.getByTestId("ingest-success").textContent;
+        expect(success).not.toMatch(/Created/);
+        expect(success).toContain("1 memory from the earlier submission");
+        expect(screen.getByTestId("ingest-memory-link-0").getAttribute("href")).toBe(`/memories/${ID_A}`);
+    });
+
+    test("already_exists false says Created", async () => {
+        mockJobStatus.mockResolvedValue({ status: "done", memory_ids: [ID_A], memory_count: 1 });
+        await submitText();
+        await settle();
+
+        expect(screen.getByTestId("ingest-success").textContent).toContain("Created 1 memory");
+        expect(screen.queryByTestId("ingest-duplicate")).toBeNull();
+    });
+
+    test("when the API does not say, the wording is neutral and never claims creation", async () => {
+        mockCreate.mockResolvedValue({ job_id: "job-1", status: "queued" });
+        mockJobStatus.mockResolvedValue({ status: "done", memory_ids: [ID_A, ID_B], memory_count: 2 });
+        await submitText();
+        await settle();
+
+        const success = screen.getByTestId("ingest-success").textContent;
+        expect(success).toContain("Processed — 2 memories");
+        expect(success).not.toMatch(/Created/);
+        expect(screen.queryByTestId("ingest-duplicate")).toBeNull();
+    });
+
+    test("a duplicate status from the POST with no already_exists still shows the notice", async () => {
         mockCreate.mockResolvedValue({ job_id: "job-1", status: "duplicate", message: "Already submitted earlier." });
         mockJobStatus.mockResolvedValue({ status: "done", memory_ids: [ID_A], memory_count: 1 });
         await submitText();
         await settle();
 
         expect(screen.getByTestId("ingest-duplicate").textContent).toContain("Already submitted earlier.");
-        expect(screen.getByTestId("ingest-success").textContent).toContain("Created 1 memory");
+        expect(screen.getByTestId("ingest-success").textContent).not.toMatch(/Created/);
     });
 });
 
@@ -358,6 +393,28 @@ describe("retry controls match what the backend does", () => {
         expect(mockCreate).toHaveBeenCalledTimes(2);
         expect(mockCreate.mock.calls[1][0].content).toBe("exact text, edited");
         expect(mockCreate.mock.calls[1][0].idempotencyKey).not.toBe(mockCreate.mock.calls[0][0].idempotencyKey);
+    });
+
+    test("whitespace-only edits are the same text: the API trims before hashing", async () => {
+        mockJobStatus.mockResolvedValue({ status: "failed", error: "Provider unavailable" });
+        await submitText("exact text");
+        await settle();
+        await act(async () => { fireEvent.click(screen.getByTestId("ingest-edit-again")); });
+
+        for (const variant of ["exact text  ", "\n exact text", "  exact text\n\n"]) {
+            await act(async () => {
+                fireEvent.change(screen.getByTestId("ingest-content"), { target: { value: variant } });
+            });
+            expect(screen.getByTestId("ingest-submit").disabled).toBe(true);
+            expect(screen.getByTestId("ingest-same-text-note")).toBeTruthy();
+        }
+        await act(async () => { fireEvent.click(screen.getByTestId("ingest-submit")); });
+        expect(mockCreate).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            fireEvent.change(screen.getByTestId("ingest-content"), { target: { value: "exact text!" } });
+        });
+        expect(screen.getByTestId("ingest-submit").disabled).toBe(false);
     });
 
     test("after a zero-memory job the same text is blocked and edit-and-resubmit is offered", async () => {

@@ -25,11 +25,14 @@ function read(key) {
     }
 }
 
+/** @returns {boolean} whether the value was actually stored */
 function write(key, value) {
     try {
         window.sessionStorage.setItem(key, JSON.stringify(value));
+        return true;
     } catch {
-        // Persistence is best effort.
+        // Persistence is best effort; the caller learns it failed.
+        return false;
     }
 }
 
@@ -57,10 +60,12 @@ export function clearDraft(userId, memoryId) {
 
 /**
  * Hand a draft to another memory id (the latest version). The target page only
- * OFFERS it; nothing is opened or sent until the user chooses.
+ * OFFERS it; nothing is opened or sent until the user chooses. Returns whether
+ * storage accepted it; callers also pass the draft in router state so a storage
+ * failure cannot lose it.
  */
 export function carryDraft(userId, fromId, toId, draft) {
-    write(carryKey(userId, toId), { content: draft.content, tags: draft.tags, fromId });
+    return write(carryKey(userId, toId), { content: draft.content, tags: draft.tags, fromId });
 }
 
 /** @returns {{content: string, tags: string, fromId: string|null}|null} */
