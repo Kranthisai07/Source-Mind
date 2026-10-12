@@ -557,3 +557,63 @@ describe("saving again after an unknown outcome", () => {
         expect(mockUpdateMemory).toHaveBeenCalledTimes(1);
     });
 });
+
+describe("Check history never claims there is no newer version", () => {
+  test("a superseded version with no listed current version says so truthfully", async () => {
+    mockUpdateMemory.mockRejectedValue({ status: 0, network: true, body: null });
+    renderAt();
+    await openAndType("Draft.");
+    await save();
+    await screen.findByTestId("memory-edit-unknown");
+
+    mockGetMemory.mockResolvedValue(memory({ is_current: false, latest_memory_id: NEW, supersession_reason: "superseded" }));
+    // The versions endpoint walks ancestors only: nothing is marked current.
+    mockGetVersions.mockResolvedValue({
+      versions: [{ id: "v1", version: 1, is_current: false, content: "Original text.", created_at: "2026-09-01T00:00:00Z" }],
+      total: 1,
+    });
+    await act(async () => { fireEvent.click(screen.getByTestId("memory-edit-check-history")); });
+
+    const line = (await screen.findByTestId("memory-history-current")).textContent;
+    expect(line).toMatch(/no longer current/);
+    expect(line).not.toMatch(/No current version is listed/);
+    expect(screen.getByTestId("memory-history-view-latest")).toBeTruthy();
+  });
+});
+
+describe("viewers", () => {
+  const withRole = (role) => {
+    const api = require("../lib/api").default;
+    api.getCurrentUser = async () => ({ id: "u-1" });
+    api.listTeamMembers = async () => ({ members: [{ user: { id: "u-1" }, role }] });
+  };
+  afterEach(() => {
+    const api = require("../lib/api").default;
+    delete api.getCurrentUser;
+    delete api.listTeamMembers;
+  });
+
+  test("Edit is disabled with an explanation for a viewer", async () => {
+    withRole("viewer");
+    renderAt();
+    await screen.findByTestId("mem-edit");
+    await waitFor(() => expect(screen.getByTestId("mem-edit").disabled).toBe(true));
+    expect(screen.getByTestId("mem-edit").getAttribute("title")).toMatch(/read-only/);
+  });
+
+  test("Edit stays enabled for a member", async () => {
+    withRole("member");
+    renderAt();
+    await screen.findByTestId("mem-edit");
+    await settle(200);
+    expect(screen.getByTestId("mem-edit").disabled).toBe(false);
+  });
+
+  test("an unknown role leaves Edit enabled and a 403 on Save is still shown", async () => {
+    mockUpdateMemory.mockRejectedValue(apiError(403, "SM005", null, "Your role is 'viewer'."));
+    renderAt();
+    await openAndType("Try.");
+    await save();
+    expect((await screen.findByTestId("memory-edit-error")).textContent).toBe("Your role is 'viewer'.");
+  });
+});

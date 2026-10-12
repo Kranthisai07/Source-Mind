@@ -88,6 +88,25 @@ function MemoryDetailView({ id }) {
     const [history, setHistory] = useState(null);
     const [editSuccess, setEditSuccess] = useState(location.state?.editSuccess ?? null);
     const saveInFlight = useRef(false);
+    // The caller's role in the current workspace, same lookup as Settings. Only
+    // used to disable Edit for a viewer up front; unknown means "do not
+    // disable", and the server's 403 stays the backstop.
+    const [isViewer, setIsViewer] = useState(false);
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const [me, team] = await Promise.all([api.getCurrentUser(), api.listTeamMembers()]);
+                const members = Array.isArray(team?.members) ? team.members : [];
+                const mine = me ? members.find((item) => (item.user || item).id === me.id) : null;
+                if (!cancelled) setIsViewer(String(mine?.role || "").toLowerCase() === "viewer");
+            } catch {
+                // Role unknown: leave Edit enabled; the server still decides.
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [userId]);
 
     useEffect(() => {
         if (seenUser.current === userId) return;
@@ -271,7 +290,7 @@ function MemoryDetailView({ id }) {
                         <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="text-sm-text-secondary" data-testid="mem-back">
                             <ArrowLeft className="w-4 h-4" /> Back
                         </Button>
-                        <Button variant="outline" size="sm" onClick={openEditor} disabled={superseded} title={superseded ? "This version has been replaced; editing it would be rejected" : undefined} data-testid="mem-edit" className="bg-white/[0.04] border-sm-border text-sm-text disabled:opacity-40 disabled:cursor-not-allowed"><Edit3 className="w-3.5 h-3.5" /> Edit</Button>
+                        <Button variant="outline" size="sm" onClick={openEditor} disabled={superseded || isViewer} title={superseded ? "This version has been replaced; editing it would be rejected" : isViewer ? "You have read-only access to this workspace, so you can't edit memories" : undefined} data-testid="mem-edit" className="bg-white/[0.04] border-sm-border text-sm-text disabled:opacity-40 disabled:cursor-not-allowed"><Edit3 className="w-3.5 h-3.5" /> Edit</Button>
                         <Button variant="outline" size="sm" disabled data-testid="mem-share" title="Sharing a memory isn't available on this screen yet" className="bg-white/[0.04] border-sm-border text-sm-text disabled:opacity-40 disabled:cursor-not-allowed"><Share2 className="w-3.5 h-3.5" /> Share</Button>
                         <Button variant="outline" size="sm" disabled data-testid="mem-delete" title="Deleting a memory isn't available on this screen yet" className="bg-white/[0.04] border-sm-border text-sm-red hover:text-sm-red disabled:opacity-40 disabled:cursor-not-allowed"><Trash2 className="w-3.5 h-3.5" /> Delete</Button>
                     </>
@@ -603,7 +622,11 @@ function HistoryFacts({ history, onViewLatest }) {
             )}
             {versions && (
                 <p data-testid="memory-history-current" className="text-[12px]">
-                    {current ? `Current version: v${current.version}${current.created_at ? `, created ${formatDate(current.created_at)}` : ""}.` : "No current version is listed."}
+                    {current
+                        ? `Current version: v${current.version}${current.created_at ? `, created ${formatDate(current.created_at)}` : ""}.`
+                        : memory?.is_current === false
+                            ? "This version is no longer current. The history list only goes back from this version, so a newer version is not in it."
+                            : "The history list does not mark a current version."}
                 </p>
             )}
             {versions && versions.length > 0 && (
