@@ -90,6 +90,8 @@ function MemoryDetailView({ id }) {
     // draft is never replaced by one reloaded after the identity settles.
     const dirty = useRef(false);
     const seenUser = useRef(userId);
+    // History state as this page was entered (read once; effects use the ref).
+    const entryState = useRef(location.state);
     const [editSaving, setEditSaving] = useState(false);
     const [saveError, setSaveError] = useState(null);
     const [history, setHistory] = useState(null);
@@ -125,7 +127,7 @@ function MemoryDetailView({ id }) {
         if (seenUser.current === userId) return;
         seenUser.current = userId;
         if (!dirty.current) setDraftState(loadDraft(userId, id));
-        setCarried((current) => current ?? loadCarriedDraft(userId, id) ?? stateCarried(location.state, userId));
+        setCarried((current) => current ?? loadCarriedDraft(userId, id) ?? stateCarried(entryState.current, userId));
     }, [userId, id]);
     // Best effort only: the backend does not replay on this key, so reusing it
     // after an unknown outcome does not make a resend safe.
@@ -210,6 +212,7 @@ function MemoryDetailView({ id }) {
         clearCarriedDraft(userId, id);
         if (carried?.fromId) clearDraft(userId, carried.fromId);
         setCarried(null);
+        entryState.current = null;
         if (location.state?.carriedDraft) navigate(location.pathname, { replace: true, state: null });
     };
 
