@@ -56,6 +56,13 @@ function classifySaveError(error) {
     return { kind: "other", message: body?.message || classified.detail || classified.title };
 }
 
+// History state outlives a sign-out (Back reaches it for the next person), so a
+// carried draft in it counts only for the user who stamped it.
+function stateCarried(state, userId) {
+    const carried = state?.carriedDraft;
+    return userId && carried && carried.userId === userId ? carried : null;
+}
+
 export default function MemoryDetail() {
     const { id } = useParams();
     // Keyed on the id: moving to another version starts with fresh page state
@@ -77,7 +84,7 @@ function MemoryDetailView({ id }) {
     // A draft handed over from an older version; offered, never auto-applied.
     // Router state is the fallback transport when sessionStorage refuses writes.
     const [carried, setCarried] = useState(
-        () => loadCarriedDraft(userId, id) ?? location.state?.carriedDraft ?? null
+        () => loadCarriedDraft(userId, id) ?? stateCarried(location.state, userId)
     );
     // True once the user has typed or accepted something in this page: such a
     // draft is never replaced by one reloaded after the identity settles.
@@ -93,11 +100,17 @@ function MemoryDetailView({ id }) {
     // disable", and the server's 403 stays the backstop.
     const [isViewer, setIsViewer] = useState(false);
 
+    const memoryResource = useApiResource(() => api.getMemory(id), { resetKey: id });
+    const memoryWorkspaceId = memoryResource.data?.workspace_id;
+    const memoryLoaded = Boolean(memoryResource.data);
     useEffect(() => {
+        // The role that counts is the one in the memory's OWN workspace, which
+        // can differ from the selected one (deep links).
+        if (!memoryLoaded) return undefined;
         let cancelled = false;
         (async () => {
             try {
-                const [me, team] = await Promise.all([api.getCurrentUser(), api.listTeamMembers()]);
+                const [me, team] = await Promise.all([api.getCurrentUser(), api.listTeamMembers(memoryWorkspaceId)]);
                 const members = Array.isArray(team?.members) ? team.members : [];
                 const mine = me ? members.find((item) => (item.user || item).id === me.id) : null;
                 if (!cancelled) setIsViewer(String(mine?.role || "").toLowerCase() === "viewer");
@@ -106,18 +119,17 @@ function MemoryDetailView({ id }) {
             }
         })();
         return () => { cancelled = true; };
-    }, [userId]);
+    }, [userId, memoryLoaded, memoryWorkspaceId]);
 
     useEffect(() => {
         if (seenUser.current === userId) return;
         seenUser.current = userId;
         if (!dirty.current) setDraftState(loadDraft(userId, id));
-        setCarried((current) => current ?? loadCarriedDraft(userId, id));
+        setCarried((current) => current ?? loadCarriedDraft(userId, id) ?? stateCarried(location.state, userId));
     }, [userId, id]);
     // Best effort only: the backend does not replay on this key, so reusing it
     // after an unknown outcome does not make a resend safe.
     const editKeyHolder = useRef(createSubmissionKeyHolder());
-    const memoryResource = useApiResource(() => api.getMemory(id), { resetKey: id });
     const versionsResource = useApiResource(() => api.getMemoryVersions(id), { resetKey: id });
     const mem = memoryResource.data;
     const versions = Array.isArray(versionsResource.data?.versions) ? versionsResource.data.versions : [];
@@ -186,7 +198,7 @@ function MemoryDetailView({ id }) {
     const viewLatest = (targetId) => {
         // Also passed in router state: if storage refuses the write the draft
         // still reaches the next page instead of dying with this one.
-        const carriedDraft = draft ? { content: draft.content, tags: draft.tags, fromId: id } : null;
+        const carriedDraft = draft && userId ? { content: draft.content, tags: draft.tags, fromId: id, userId } : null;
         if (carriedDraft) carryDraft(userId, id, targetId, draft);
         setEditOpen(false);
         navigate(`/memories/${targetId}`, carriedDraft ? { state: { carriedDraft } } : undefined);
