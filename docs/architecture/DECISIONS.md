@@ -2982,6 +2982,7 @@ query embedding, the attribution scorer); no network is used.
 - Dismissing the create dialog mid-request lists the new workspace and toasts but does not switch or navigate. Mounted flags are re-armed on effect setup (StrictMode).
 - A build with REACT_APP_DEFAULT_WORKSPACE_ID is pinned: the picker and create entry points are replaced by a fixed label and selectWorkspace is a no-op, so the UI cannot claim a workspace the requests do not use.
 - Add member against a server without the route (405, or 404 with no error code) says the server does not support it yet. Merge order: the API route (PR #20) must land before this PR for real-mode add member.
+
 ## D-027 — Web: explicit memory-creation outcomes, retry controls that match dedup, and stale-edit handling
 
 **Status:** Accepted (PR4 of the friends release; stacked on D-026)
@@ -3069,6 +3070,7 @@ never infers outcomes.
 - **Draft identity.** The user id is read through a subscription (`onCurrentUserChange`) because the auth bridge publishes it after the first render; drafts are reloaded when it settles, unless the user has already typed in the page.
 - **"Same text" is the trimmed text**, matching the API, which strips surrounding whitespace before hashing.
 - After an unknown save outcome the UI cautions to check history before saving again (a repeat PATCH is not recognised server-side).
+- **Drafts do not cross people, and do not survive sign-out.** The carried-draft copy in router history state is stamped with the user id and ignored unless it matches the current user (Back after a sign-out reaches the previous person's entry). Stored drafts and carries are purged whenever the published user id is first set, changes or becomes null (everything not belonging to the new user), and the draft store is a no-op without a user id, so nothing is ever written under an anonymous key. The accepted cost is that a draft is lost on sign-out; it still survives a reload of the same signed-in session. The Edit role check now asks for the members of the memory's own workspace (`memory.workspace_id`), not the selected one; the server still enforces.
 ## D-028 — Frontend releases are published as a parentless commit pushed with a lease, after a bundle check
 
 **Status:** Documented procedure; the publish itself is a manual release step.

@@ -510,8 +510,9 @@ describe("storage failure while carrying a draft", () => {
 
 describe("hard refresh: the user id is published after first render", () => {
     test("the stored per-user draft is loaded once the identity settles", async () => {
-        require("../lib/editDrafts").saveDraft("user-a", OLD, { content: "Stored for user-a.", tags: "" });
+        // Signed out first (a fresh page load), then the draft is in storage.
         setCurrentUserId(null);
+        require("../lib/editDrafts").saveDraft("user-a", OLD, { content: "Stored for user-a.", tags: "" });
         renderAt();
         await screen.findByTestId("mem-edit");
         expect(screen.queryByTestId("memory-draft-notice")).toBeNull();
@@ -523,8 +524,8 @@ describe("hard refresh: the user id is published after first render", () => {
     });
 
     test("a draft typed before the identity settled is not overwritten", async () => {
-        require("../lib/editDrafts").saveDraft("user-a", OLD, { content: "Stored for user-a.", tags: "" });
         setCurrentUserId(null);
+        require("../lib/editDrafts").saveDraft("user-a", OLD, { content: "Stored for user-a.", tags: "" });
         renderAt();
         fireEvent.click(await screen.findByTestId("mem-edit"));
         fireEvent.change(screen.getByTestId("memory-edit-content"), { target: { value: "Typed early." } });
@@ -534,8 +535,8 @@ describe("hard refresh: the user id is published after first render", () => {
     });
 
     test("a carried draft stored for the settled user is offered too", async () => {
-        require("../lib/editDrafts").carryDraft("user-a", OLD, NEW, { content: "Carried.", tags: "" });
         setCurrentUserId(null);
+        require("../lib/editDrafts").carryDraft("user-a", OLD, NEW, { content: "Carried.", tags: "" });
         renderAt(NEW);
         await screen.findByTestId("mem-edit");
         expect(screen.queryByTestId("memory-carried-draft")).toBeNull();
@@ -616,4 +617,118 @@ describe("viewers", () => {
     await save();
     expect((await screen.findByTestId("memory-edit-error")).textContent).toBe("Your role is 'viewer'.");
   });
+});
+
+const renderWithState = (carriedDraft) =>
+    render(
+        <MemoryRouter initialEntries={[{ pathname: `/memories/${NEW}`, state: { carriedDraft } }]}>
+            <Routes><Route path="/memories/:id" element={<MemoryDetail />} /></Routes>
+        </MemoryRouter>
+    );
+
+describe("drafts never cross people", () => {
+    const keys = () => Object.keys(window.sessionStorage).filter((k) => k.startsWith("sm.editDraft"));
+
+    test("user A's carried draft in history state is ignored for user B (Back after sign-out)", async () => {
+        setCurrentUserId("user-b");
+        renderWithState({ content: "PRIVATE-A-TEXT", tags: "a-tag", fromId: OLD, userId: "user-a" });
+        await screen.findByTestId("mem-edit");
+        await settle(200);
+
+        expect(screen.queryByTestId("memory-carried-draft")).toBeNull();
+        fireEvent.click(screen.getByTestId("mem-edit"));
+        expect(screen.getByTestId("memory-edit-content").value).not.toContain("PRIVATE-A-TEXT");
+        expect(document.body.textContent).not.toContain("PRIVATE-A-TEXT");
+    });
+
+    test("the same user's history-state draft is still offered", async () => {
+        renderWithState({ content: "Mine", tags: "", fromId: OLD, userId: "user-a" });
+        expect(await screen.findByTestId("memory-carried-draft")).toBeTruthy();
+    });
+
+    test("a state draft is not honoured before the user id is known", async () => {
+        setCurrentUserId(null);
+        renderWithState({ content: "A-text", tags: "", fromId: OLD, userId: "user-a" });
+        await screen.findByTestId("mem-edit");
+        expect(screen.queryByTestId("memory-carried-draft")).toBeNull();
+    });
+
+    test("sign-out purges every stored draft and carry; the next user and a returning A see none", async () => {
+        const drafts = require("../lib/editDrafts");
+        drafts.saveDraft("user-a", OLD, { content: "A draft", tags: "" });
+        drafts.carryDraft("user-a", OLD, NEW, { content: "A carry", tags: "" });
+        expect(keys()).toHaveLength(2);
+
+        setCurrentUserId(null);
+        expect(keys()).toHaveLength(0);
+
+        setCurrentUserId("user-b");
+        expect(drafts.loadDraft("user-b", OLD)).toBeNull();
+        setCurrentUserId("user-a");
+        expect(drafts.loadDraft("user-a", OLD)).toBeNull();
+        expect(drafts.loadCarriedDraft("user-a", NEW)).toBeNull();
+    });
+
+    test("switching directly from A to B purges A's drafts but keeps B's own", async () => {
+        const drafts = require("../lib/editDrafts");
+        drafts.saveDraft("user-a", OLD, { content: "A draft", tags: "" });
+        setCurrentUserId("user-b");
+        drafts.saveDraft("user-b", OLD, { content: "B draft", tags: "" });
+        expect(keys().some((k) => k.includes("user-a"))).toBe(false);
+        expect(drafts.loadDraft("user-b", OLD).content).toBe("B draft");
+    });
+
+    test("nothing is ever written without a signed-in user", async () => {
+        const drafts = require("../lib/editDrafts");
+        setCurrentUserId(null);
+        expect(drafts.saveDraft(null, OLD, { content: "x", tags: "" })).toBe(false);
+        expect(drafts.carryDraft(null, OLD, NEW, { content: "x", tags: "" })).toBe(false);
+        expect(keys()).toHaveLength(0);
+
+        // Typing while signed out stays in memory only.
+        renderAt();
+        fireEvent.click(await screen.findByTestId("mem-edit"));
+        fireEvent.change(screen.getByTestId("memory-edit-content"), { target: { value: "typed anonymously" } });
+        expect(Object.keys(window.sessionStorage).some((k) => k.includes("anon"))).toBe(false);
+        expect(keys()).toHaveLength(0);
+    });
+});
+
+describe("role lookup follows the memory's own workspace", () => {
+    const W1 = "11111111-1111-4111-8111-111111111111";
+    const W2 = "22222222-2222-4222-8222-222222222222";
+    afterEach(() => {
+        const api = require("../lib/api").default;
+        delete api.getCurrentUser;
+        delete api.listTeamMembers;
+    });
+
+    test("viewer in the memory's workspace but member of the selected one: Edit is gated", async () => {
+        const api = require("../lib/api").default;
+        const asked = [];
+        api.getCurrentUser = async () => ({ id: "u-1" });
+        api.listTeamMembers = async (workspaceId) => {
+            asked.push(workspaceId);
+            return { members: [{ user: { id: "u-1" }, role: workspaceId === W2 ? "viewer" : "member" }] };
+        };
+        mockGetMemory.mockImplementation(async (id) => memory({ id, workspace_id: W2 }));
+        renderAt();
+        await screen.findByTestId("mem-edit");
+        await waitFor(() => expect(screen.getByTestId("mem-edit").disabled).toBe(true));
+        expect(asked).toContain(W2);
+        expect(asked).not.toContain(W1);
+    });
+
+    test("member of the memory's workspace keeps Edit even if a viewer elsewhere", async () => {
+        const api = require("../lib/api").default;
+        api.getCurrentUser = async () => ({ id: "u-1" });
+        api.listTeamMembers = async (workspaceId) => ({
+            members: [{ user: { id: "u-1" }, role: workspaceId === W2 ? "member" : "viewer" }],
+        });
+        mockGetMemory.mockImplementation(async (id) => memory({ id, workspace_id: W2 }));
+        renderAt();
+        await screen.findByTestId("mem-edit");
+        await settle(200);
+        expect(screen.getByTestId("mem-edit").disabled).toBe(false);
+    });
 });
