@@ -2829,3 +2829,13 @@ missing/deleted stay 404). Six new real-PostgreSQL nodes plus two updated
 (`...409_on_stale_id` rename, retried content patch, concurrent PATCH loser now 409
 with the winner's id) in `test_attribution_history_real_db.py`. Security Acceptance
 node list 85 -> 91.
+
+A single end-to-end journey test (`test_friends_release_journey_over_http_with_signed_tokens`,
+node list 91 -> 92) drives the ordinary flow over HTTP with signed Clerk tokens against
+real PostgreSQL and Redis: two users sign in, A creates a workspace, A adds B by
+email, B lists it, B creates a memory (extract mode; the ingestion worker runs in
+process), B edits it, A searches and finds the edited version, B's stale PATCH gets
+409 with the latest id, and a never-added C is blind to the workspace (404). All
+provider calls are replaced in process (Clerk profile and email verification,
+extraction, chunking, fact extraction, embeddings, relation detection, the search
+query embedding, the attribution scorer); no network is used.
