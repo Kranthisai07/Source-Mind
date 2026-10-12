@@ -2,9 +2,10 @@
 
 import re
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from sourcemind.models.workspace import WorkspaceRole
 from sourcemind.schemas.user import UserSummary
@@ -51,6 +52,32 @@ class WorkspaceResponse(BaseModel):
     member_count: int | None = None  # Populated by service layer
 
     model_config = {"from_attributes": True}
+
+
+class WorkspaceMemberAdd(BaseModel):
+    """
+    Input for adding an existing user to a workspace by email.
+
+    Only ordinary roles can be granted here: admin/owner promotion and
+    ownership transfer are deliberately not reachable through this endpoint.
+    extra="forbid" also rejects a client-supplied user_id or any
+    "verified" flag - the server resolves and verifies the target itself.
+    """
+
+    email: EmailStr
+    role: Literal["member", "viewer"] = "member"
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    @field_validator("email")
+    @classmethod
+    def _ascii_only(cls, value: str) -> str:
+        # The match is case-insensitive via lower() in SQL and in Python. For
+        # non-ASCII text lower() and casefold() disagree, so an address could
+        # compare equal in one place and not the other; refuse rather than guess.
+        if not value.isascii():
+            raise ValueError("Only ASCII email addresses can be used to add a member.")
+        return value
 
 
 class WorkspaceMemberResponse(BaseModel):

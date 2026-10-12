@@ -32,6 +32,7 @@ from sourcemind.core.exceptions import (
     InternalError,
     InvalidIdempotencyKeyError,
     MemoryNotFoundError,
+    ServiceUnavailableError,
     TokenExpiredError,
     TokenInvalidError,
     UnauthorizedError,
@@ -293,6 +294,79 @@ async def _verify_clerk_token(
 _user_profile_cache: dict[str, tuple[str, str | None]] = {}
 
 
+async def _fetch_clerk_user_json(clerk_id: str, secret_key: str) -> dict:
+    """GET the Clerk user object. Raises httpx errors; callers map them."""
+    async with httpx.AsyncClient(timeout=5) as client:
+        resp = await client.get(
+            f"https://api.clerk.com/v1/users/{clerk_id}",
+            headers={"Authorization": f"Bearer {secret_key}"},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+def _primary_email_entry(data: dict) -> dict | None:
+    """Return the email_addresses entry that is the user's primary address."""
+    email_id = data.get("primary_email_address_id")
+    if not email_id:
+        # A missing primary id must never match an entry that also lacks an id.
+        return None
+    return next(
+        (
+            entry
+            for entry in data.get("email_addresses", [])
+            if entry.get("id") == email_id and entry.get("email_address")
+        ),
+        None,
+    )
+
+
+async def fetch_clerk_primary_email_verification(
+    clerk_id: str, secret_key: str
+) -> tuple[str, str | None]:
+    """
+    Fetch (primary email, verification status) for a Clerk user, UNCACHED.
+
+    Used to trust an email-to-user association before granting access (member
+    add). Deliberately bypasses _user_profile_cache: that cache has no TTL and
+    stores the email captured at first login, so it cannot prove the address is
+    still the verified primary. Fails closed: any transport/HTTP/shape problem
+    raises ServiceUnavailableError (503). A missing primary entry, or Clerk
+    answering 404 (user deleted there), returns an empty email and no status,
+    which callers treat as "not verified" (422).
+    """
+    try:
+        data = await _fetch_clerk_user_json(clerk_id, secret_key)
+        entry = _primary_email_entry(data)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            # The user no longer exists in Clerk: nothing can be verified, which
+            # is a definite answer (422 for the caller), not an outage.
+            return "", None
+        logger.warning(
+            "auth.clerk_email_verification_failed",
+            clerk_id=clerk_id,
+            error=type(exc).__name__,
+        )
+        raise ServiceUnavailableError(
+            "Unable to verify the user's email with the identity provider."
+        ) from exc
+    except Exception as exc:
+        logger.warning(
+            "auth.clerk_email_verification_failed",
+            clerk_id=clerk_id,
+            error=type(exc).__name__,
+        )
+        raise ServiceUnavailableError(
+            "Unable to verify the user's email with the identity provider."
+        ) from exc
+    if entry is None:
+        return "", None
+    verification = entry.get("verification") or {}
+    status = verification.get("status") if isinstance(verification, dict) else None
+    return str(entry["email_address"]), status
+
+
 async def _fetch_clerk_user_profile(
     clerk_id: str, secret_key: str
 ) -> tuple[str, str | None]:
@@ -306,24 +380,11 @@ async def _fetch_clerk_user_profile(
         return _user_profile_cache[clerk_id]
 
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(
-                f"https://api.clerk.com/v1/users/{clerk_id}",
-                headers={"Authorization": f"Bearer {secret_key}"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        data = await _fetch_clerk_user_json(clerk_id, secret_key)
 
         # Primary email address
-        email_id = data.get("primary_email_address_id")
-        email = next(
-            (
-                entry["email_address"]
-                for entry in data.get("email_addresses", [])
-                if entry.get("id") == email_id and entry.get("email_address")
-            ),
-            None,
-        )
+        entry = _primary_email_entry(data)
+        email = entry["email_address"] if entry else None
         if email is None:
             raise UnauthorizedError("Clerk user has no verified primary email.")
         first = data.get("first_name") or ""
