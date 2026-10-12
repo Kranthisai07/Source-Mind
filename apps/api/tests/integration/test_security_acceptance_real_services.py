@@ -651,6 +651,7 @@ async def test_friends_release_journey_over_http_with_signed_tokens(
                     },
                 )
                 assert queued.status_code == 202, queued.text
+                assert queued.json()["data"]["already_exists"] is False
                 job_id = queued.json()["data"]["job_id"]
                 document_id = queued.json()["data"]["document_id"]
 
@@ -670,6 +671,22 @@ async def test_friends_release_journey_over_http_with_signed_tokens(
                 assert job.json()["data"]["status"] == "completed"
                 assert job.json()["data"]["memory_count"] == 1
                 v1 = job.json()["data"]["memory_ids"][0]
+
+                # Submitting the identical text again is recognised as the same
+                # document: same job, no new memories, and the client is told so.
+                resubmitted = await client.post(
+                    f"/v1/memories?workspace_id={workspace_id}",
+                    headers=_mutation_headers(tokens["b"]),
+                    json={
+                        "content": "Notes from the release meeting about deploy freezes.",
+                        "source_type": "text",
+                        "ingestion_mode": "extract",
+                    },
+                )
+                assert resubmitted.status_code == 202, resubmitted.text
+                assert resubmitted.json()["data"]["already_exists"] is True
+                assert resubmitted.json()["data"]["job_id"] == job_id
+                assert resubmitted.json()["data"]["document_id"] == document_id
 
                 # 6. B edits it; the old version is now superseded.
                 edited = await client.patch(

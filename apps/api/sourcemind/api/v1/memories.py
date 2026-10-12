@@ -116,6 +116,10 @@ async def create_memory(
         status=result["status"],
         message=result["message"],
         memory_count=result.get("memory_count"),
+        # The receiver already knew this; it used to be dropped here. Status and
+        # message semantics are unchanged - the flag only lets a client avoid
+        # claiming that an identical earlier submission created new memories.
+        already_exists=bool(result.get("already_exists", False)),
     )
 
     return APIResponse(data=job_resp, meta=_make_meta(request_id, start))

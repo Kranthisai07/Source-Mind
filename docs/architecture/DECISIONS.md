@@ -2860,6 +2860,16 @@ the bound: that would alter the edit path, which is out of scope for this fix.
 Covered by unit tests with synthetic aggregates and a real-DB test with the bound
 patched to 3 over a six-version chain.
 
+### Related small change: `already_exists` on the ingestion POST
+
+`POST /v1/memories` now returns `already_exists: bool` (default false). The receiver
+already knew when a submission matched a document ingested earlier in the workspace
+(dedup returns the existing record, even a failed or zero-memory one, and nothing is
+re-queued) but the route dropped the flag, so a client could not avoid saying that
+an identical earlier submission "created" new memories. Status code, `status` and
+`message` are unchanged; polling `GET /v1/memories/jobs/:id` always reports false.
+Additive and optional, so existing clients are unaffected. Own commit.
+
 ### Deliberately not done
 
 - No version is created and the edit is never auto-applied to the latest version:

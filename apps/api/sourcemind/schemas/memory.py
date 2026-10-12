@@ -165,6 +165,14 @@ class IngestionJobResponse(BaseModel):
     error: str | None = Field(
         default=None, description="Error message if status=failed"
     )
+    already_exists: bool = Field(
+        default=False,
+        description=(
+            "POST /v1/memories only: true when the submission matched a document "
+            "already ingested in this workspace, so nothing new was created and "
+            "the existing record is returned. Always false when polling a job."
+        ),
+    )
 
 
 class UnresolvedAuthor(BaseModel):
