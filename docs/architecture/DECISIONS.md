@@ -2724,3 +2724,82 @@ and a deterministic SHA-256 of the canonical payload. The hash excludes
 - Dropped mutations (an ingest started just before a switch) may still be
   processed by the server; the UI only guarantees it will not show their result in
   the wrong workspace.
+## D-027 — Web: explicit memory-creation outcomes, retry controls that match dedup, and stale-edit handling
+
+**Status:** Accepted (PR4 of the friends release; stacked on D-026)
+
+### What changed
+
+1. **Ingest sheet copy (normal mode only).** The sheet says that text is processed
+   into searchable facts, is not stored word for word, and that one submission may
+   produce several memories, one, or none. Pilot copy and behaviour are unchanged;
+   normal mode still sends no `ingestion_mode`.
+2. **Outcomes come from the polled job**, not from the word "done".
+   `lib/ingestOutcome.js` maps `status`, `memory_ids`, `memory_count`, `error` and
+   `message` to: progress (honest label per status, no invented stage list),
+   retrying, success (`memory_count > 0`: "Created N memories" with a router link
+   per id that closes the sheet), zero memories (amber "Processing finished but no
+   searchable memory was created", never a success), failed (the reported error),
+   duplicate (what the API reports). The dead "Pipeline complete · ms total" is
+   replaced by browser-measured elapsed time from submit. After ~60 s the panel
+   says it is still processing; polling backs off and stops after 10 minutes with a
+   non-failure "taking longer than expected" state and a Check again button. A
+   failed status request is a distinct state from a failed job. Polling stops on
+   unmount, close, identity change and workspace-scope change (PR3's generation).
+3. **Retry controls match the backend (owner correction 4).** Identical content in
+   a workspace returns the same deduplicated record, even a failed or zero-memory
+   one, so after failed, zero-memory or duplicate outcomes there is no Retry. The
+   user gets "Edit text and submit again": the text stays, Submit is disabled while
+   it is unchanged, with the reason shown. A same-key "Retry" exists only for an
+   ambiguous submit failure (network error or 5xx on the POST, so no job id); the
+   key holder is kept across that failure so the retry carries the same key.
+4. **MemoryDetail stale edits** (consumes the superseded-versions contract,
+   written defensively so older responses without the new fields behave as
+   "current"). Drafts are kept per (user, memory id) in component state and
+   sessionStorage (all storage calls wrapped), surviving close, error and reopen;
+   cleared on a successful save or explicit discard. `409 SM035` says the version
+   was replaced; only `reason: superseded` with a `latest_memory_id` renders a
+   "View latest version" button, the other reasons explain that there is no single
+   newer version and render no link. `404` is generic. Network/timeout/5xx is
+   "Save outcome unknown" with a Check history button that refetches the memory
+   and versions and shows facts (version numbers, timestamps, content) without
+   deciding whether the save landed, even if text matches the draft. Other 4xx show
+   the server message. "View latest version" is navigation only: the draft is
+   carried via sessionStorage and the latest page offers "Open editor with my
+   unsaved draft" as an explicit click. A page loaded with `is_current === false`
+   shows a superseded banner and disables Edit. `updateMemory` is called only by a
+   Save click, once per click (in-flight ref guard). The page is keyed on the
+   memory id so moving between versions never carries an open dialog.
+5. The mock API now mirrors `memory_ids` / `memory_count` / `is_current`.
+
+### Why this approach
+
+The earlier UI turned every finished job into a success tick and offered Retry for
+states where Retry returns the identical record, so the owner's friends could be
+told something worked that created nothing. The wording is driven by facts the API
+reports, and the retry controls follow what the server actually does with a
+resubmission. For edits, the dangerous failure is overwriting someone else's newer
+version or implying a save happened; the design never resubmits automatically and
+never infers outcomes.
+
+### Alternatives considered
+
+- **Keep Retry after failure:** misleading, it only returns the same failed record.
+- **Auto-open the editor with the carried draft on the latest page:** risks saving
+  over the newer version unseen; an explicit click is required instead.
+- **Compare the draft to server content in Check history and say "saved":** equal
+  text can be another person's identical edit; facts only.
+- **A real stage tracker:** the API reports no stages, so it would be invented.
+
+### Known limitations
+
+- **No idempotent replay.** The Idempotency-Key is validated by the backend but not
+  used to deduplicate. Reusing the key on a retry is best effort and is not a
+  guarantee that a repeated PATCH or POST is safe; creation is protected by content
+  dedup, edits only by the user's explicit decision after Check history.
+- **Failed-document dead end.** A document that fails (for example during a
+  transient provider outage) is returned for identical text and nothing re-queues
+  it. This is a backend limitation; the UI says so ("identical text returns the
+  same result") and asks for an edit rather than hiding it.
+- Pilot mode shares the new outcome/retry logic (it creates one verbatim memory,
+  so success renders as "Created 1 memory"); only the pre-submit copy is untouched.
