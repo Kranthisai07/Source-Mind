@@ -2678,10 +2678,12 @@ reachable through this endpoint (RLS alone does not stop admin-adds-admin, so th
 schema does).
 
 Handler order: Idempotency-Key dependency, per-user rate limit
-(`MEMBER_ADD`, `RATE_LIMIT_MEMBER_ADD_PER_HOUR`, default 20), `ADMINISTER` check,
-`SELECT ... FOR SHARE` on the CALLER's own membership row (re-verified active
-admin/owner after the lock), target resolution, Clerk verification, then the
-membership state machine in one transaction.
+(`MEMBER_ADD`, `RATE_LIMIT_MEMBER_ADD_PER_HOUR`, default 20, plus a per-workspace
+`MEMBER_ADD_WORKSPACE` ceiling), `ADMINISTER` check, target resolution and Clerk
+verification, then, in one transaction, `FOR SHARE` on the CALLER's own membership
+row (re-verified active admin/owner after the lock) and `FOR UPDATE` on the
+target's row, taken in ascending user-id order (see the review round below), and
+the membership state machine.
 
 - **Target resolution.** `lower(users.email) = lower(requested)` and
   `deleted_at IS NULL`, `LIMIT 2`. None: 404 `SM023 user_not_found` (the person must
@@ -2727,6 +2729,54 @@ membership state machine in one transaction.
   revocation stay failed.
 - `joined_at` is the row's `created_at` (first join), not the re-add time.
 
+### Review round (deadlock, oracle, parser)
+
+- **Lock-order deadlock (found by Devin and Codex review; reproduced).** As first
+  written, the handler took `FOR SHARE` on the caller's row and then `FOR UPDATE`
+  on the target's row. Two administrators adding each other (or adding
+  themselves) formed a lock cycle and PostgreSQL aborted one request with
+  `DeadlockDetectedError`, an uncaught 500. A real-DB test with two administrators
+  and a barrier-style delay failed against that code with exactly that error and
+  passes now. (An owner/admin pair cannot form the cycle: RLS hides an owner's row
+  from an administrator's `FOR UPDATE`, so the test uses two administrators.)
+  Fix: the target is now resolved and verified with Clerk BEFORE any membership row
+  is locked, then the two rows are locked in ONE global order (ascending user id;
+  caller share, target exclusive), so no request holds a row another one wants.
+  Adding yourself is refused immediately as `already_member`, with no locks and no
+  Clerk call. Any remaining Postgres deadlock or serialization abort
+  (`40P01`/`40001`) is mapped to a retryable 503 `SM055` with
+  `details.reason = "concurrent_update_retry"`, never a 500.
+- **Clerk call and the lock (accepted trade-off, now smaller).** The Clerk request
+  (up to 5 s) used to run while the caller's share lock was held. With the reorder
+  it runs before any membership lock, so a slow Clerk no longer delays a concurrent
+  revoke of the caller. The caller is still re-verified under the lock. A caller
+  revoked during the Clerk call is refused by that re-check.
+- **Email-registered oracle (accepted limitation, mitigated).** Any signed-in user
+  who owns a workspace can learn whether an email belongs to a signed-in user
+  (404 `user_not_found` versus 422/409), and can add more workspaces (5 per hour)
+  and accounts. Mitigations: per-user limit (20/hour) plus a new per-workspace limit
+  (`RATE_LIMIT_MEMBER_ADD_WORKSPACE_PER_HOUR`, default 40, keyed by workspace id) so
+  admins of one workspace cannot multiply the budget by taking turns. This does not
+  stop many accounts each creating workspaces; it only bounds the rate. The
+  responses for unknown versus unverified emails stay distinct because the client
+  needs "ask them to sign in first". Recorded as an accepted limitation.
+- **Parser hardening.** Clerk answering 404 (user deleted there) is a definite
+  "not verified" (422 `email_not_verified`), not a 503. A missing
+  `primary_email_address_id` never matches an entry that also lacks an id. Direct
+  tests mock only the HTTP layer and call the real parser: verified, unverified and
+  expired, verification absent or null, primary id matching nothing, transport
+  error, malformed body, 404 and other HTTP errors.
+- **Non-ASCII emails are rejected** (422) by `WorkspaceMemberAdd`. Matching uses
+  `lower()` in SQL and Python, which disagree with `casefold()` for non-ASCII text;
+  refusing is simpler and safer than guessing. Cost: an address with a non-ASCII
+  local part or IDN domain cannot be used for member add.
+- **IntegrityError is checked by constraint name.** Only
+  `uq_workspace_members_workspace_user` becomes `already_member`; any other
+  integrity failure (for example a foreign key) is re-raised, not mislabelled.
+- Real-DB tests added: reciprocal and self adds (fails with a deadlock on the
+  earlier code), crossing re-adds of two departed members, and a `departing` member
+  returning `handoff_in_progress`.
+
 ### Why this and not the alternatives
 
 - *Trust the stored email only:* rejected; unverified, never refreshed, and a second
@@ -2746,9 +2796,9 @@ membership state machine in one transaction.
 
 ### Verification
 
-New unit file `tests/unit/api/test_workspace_member_add.py`; nine real-PostgreSQL
+New unit file `tests/unit/api/test_workspace_member_add.py`; twelve real-PostgreSQL
 tests added to `test_security_foundation_real_db.py` (Security Acceptance node list
-76 -> 85). `.env.example` CORS_ORIGINS comment corrected: the setting is a JSON array
+76 -> 88). `.env.example` CORS_ORIGINS comment corrected: the setting is a JSON array
 and a comma-separated string fails to parse (verified against `Settings`).
 `rate_limit_member_add_per_hour` was also added to the shared positivity validator.
 

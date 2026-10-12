@@ -286,13 +286,19 @@ async def list_workspace_members(
 
 
 _RLS_INSUFFICIENT_PRIVILEGE = "42501"
+_UNIQUE_MEMBERSHIP = "uq_workspace_members_workspace_user"
+# deadlock_detected, serialization_failure
+_RETRYABLE_SQLSTATES = frozenset({"40P01", "40001"})
+
+
+def _pg_sqlstate(exc: DBAPIError) -> str | None:
+    orig = getattr(exc, "orig", None)
+    return getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
 
 
 def _is_rls_denial(exc: DBAPIError) -> bool:
     """True for an RLS WITH CHECK / policy denial (SQLSTATE 42501)."""
-    orig = getattr(exc, "orig", None)
-    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
-    return code == _RLS_INSUFFICIENT_PRIVILEGE or "row-level security" in str(exc)
+    return _pg_sqlstate(exc) == _RLS_INSUFFICIENT_PRIVILEGE or "row-level security" in str(exc)
 
 
 @router.post(
@@ -326,35 +332,36 @@ async def add_workspace_member(
     """
     start = time.perf_counter()
     requested_email = body.email.lower()
+    caller_id = current_user.user_id
 
-    await enforce_rate_limit(RateLimitedOperation.MEMBER_ADD, current_user.user_id)
+    await enforce_rate_limit(RateLimitedOperation.MEMBER_ADD, caller_id)
+    # Workspace-wide ceiling on top of the per-user one (the counter is keyed by
+    # the workspace id, passed as both scope and subject), so admins of one
+    # workspace cannot multiply the probe/Clerk budget by taking turns.
+    await enforce_rate_limit(
+        RateLimitedOperation.MEMBER_ADD_WORKSPACE, workspace_id, workspace_id
+    )
     await require_workspace_permission(
         db,
-        current_user.user_id,
+        caller_id,
         workspace_id,
         WorkspacePermission.ADMINISTER,
     )
 
-    # Shared lock on the CALLER's own membership row. A concurrent revoke of
-    # the caller takes FOR UPDATE on this row, so it waits until this request
-    # commits; a revoke that already committed is seen here and refuses the add.
-    caller = (
-        await db.execute(
-            select(WorkspaceMember.role, WorkspaceMember.status)
-            .where(
-                WorkspaceMember.workspace_id == workspace_id,
-                WorkspaceMember.user_id == current_user.user_id,
+    def _conflict(existing_status: str | None) -> WorkspaceMemberExistsError:
+        if existing_status == WorkspaceMembershipStatus.DEPARTING.value:
+            return WorkspaceMemberExistsError(
+                "A handoff for this member is in progress.",
+                details={"reason": "handoff_in_progress"},
             )
-            .with_for_update(read=True)
+        return WorkspaceMemberExistsError(
+            "That user is already a member of this workspace.",
+            details={"reason": "already_member"},
         )
-    ).first()
-    if caller is None or caller.status != WorkspaceMembershipStatus.ACTIVE.value:
-        raise WorkspaceNotFoundError(str(workspace_id))
-    if caller.role not in (WorkspaceRole.ADMIN.value, WorkspaceRole.OWNER.value):
-        raise WorkspaceAccessDeniedError("Administrator access is required.")
-    caller_is_owner = caller.role == WorkspaceRole.OWNER.value
 
     # Resolve the target. Case-insensitive; two matches are never disambiguated.
+    # This happens BEFORE any membership row is locked so the lock order below
+    # can be decided from both user ids.
     candidates = (
         (
             await db.execute(
@@ -378,6 +385,13 @@ async def add_workspace_member(
             details={"reason": "email_ambiguous"},
         )
     target = candidates[0]
+    target_id = target.id
+
+    # An active administrator adding themselves is an already-existing member by
+    # definition; refuse without locking or asking Clerk (and so without ever
+    # needing a share->exclusive upgrade on one row).
+    if target_id == caller_id:
+        raise _conflict(WorkspaceMembershipStatus.ACTIVE.value)
 
     # Trust the association only if Clerk (server-side, uncached) confirms the
     # stored user's PRIMARY email is verified and equals stored and requested
@@ -397,149 +411,184 @@ async def add_workspace_member(
                 details={"reason": "email_not_verified"},
             )
 
-    target_id = target.id
-    reactivated = False
-    existing = (
-        await db.execute(
-            select(WorkspaceMember.id, WorkspaceMember.role, WorkspaceMember.status)
-            .where(
-                WorkspaceMember.workspace_id == workspace_id,
-                WorkspaceMember.user_id == target_id,
-            )
-            .with_for_update()
-        )
-    ).first()
-
-    def _conflict(existing_status: str | None) -> WorkspaceMemberExistsError:
-        if existing_status == WorkspaceMembershipStatus.DEPARTING.value:
-            return WorkspaceMemberExistsError(
-                "A handoff for this member is in progress.",
-                details={"reason": "handoff_in_progress"},
-            )
-        return WorkspaceMemberExistsError(
-            "That user is already a member of this workspace.",
-            details={"reason": "already_member"},
-        )
-
     former_owner_denied = WorkspaceAccessDeniedError(
         "Only an owner can re-add a former owner."
     )
+    reactivated = False
+    try:
+        # Lock the two membership rows (caller: FOR SHARE, target: FOR UPDATE) in
+        # ONE global order - ascending user id - so two requests can never each
+        # hold the row the other wants (A adds B while B adds A). The caller lock
+        # makes a concurrent revoke of the caller wait for this request, or, if
+        # the revoke already committed, makes this request refuse.
+        caller_role = ""
+        existing = None
+        for user_id in sorted({caller_id, target_id}, key=str):
+            if user_id == caller_id:
+                caller = (
+                    await db.execute(
+                        select(WorkspaceMember.role, WorkspaceMember.status)
+                        .where(
+                            WorkspaceMember.workspace_id == workspace_id,
+                            WorkspaceMember.user_id == caller_id,
+                        )
+                        .with_for_update(read=True)
+                    )
+                ).first()
+                if caller is None or caller.status != WorkspaceMembershipStatus.ACTIVE.value:
+                    raise WorkspaceNotFoundError(str(workspace_id))
+                if caller.role not in (WorkspaceRole.ADMIN.value, WorkspaceRole.OWNER.value):
+                    raise WorkspaceAccessDeniedError("Administrator access is required.")
+                caller_role = caller.role
+            else:
+                existing = (
+                    await db.execute(
+                        select(
+                            WorkspaceMember.id,
+                            WorkspaceMember.role,
+                            WorkspaceMember.status,
+                        )
+                        .where(
+                            WorkspaceMember.workspace_id == workspace_id,
+                            WorkspaceMember.user_id == target_id,
+                        )
+                        .with_for_update()
+                    )
+                ).first()
+        caller_is_owner = caller_role == WorkspaceRole.OWNER.value
 
-    if existing is None:
-        savepoint = await db.begin_nested()
-        try:
-            db.add(
-                WorkspaceMember(
-                    workspace_id=workspace_id,
-                    user_id=target_id,
-                    role=body.role,
-                    status=WorkspaceMembershipStatus.ACTIVE.value,
-                    invited_by_id=current_user.user_id,
-                )
-            )
-            await db.flush()
-            await savepoint.commit()
-        except IntegrityError as exc:
-            await savepoint.rollback()
-            # Lost a race (or the row is invisible to FOR UPDATE because RLS
-            # filters a former-owner row for a non-owner). Classify the winner.
-            winner = (
-                await db.execute(
-                    select(WorkspaceMember.role, WorkspaceMember.status).where(
-                        WorkspaceMember.workspace_id == workspace_id,
-                        WorkspaceMember.user_id == target_id,
-                    )
-                )
-            ).first()
-            if (
-                winner is not None
-                and winner.status == WorkspaceMembershipStatus.DEPARTED.value
-                and winner.role == WorkspaceRole.OWNER.value
-                and not caller_is_owner
-            ):
-                raise former_owner_denied from exc
-            raise _conflict(winner.status if winner is not None else None) from exc
-        except DBAPIError as exc:
-            await savepoint.rollback()
-            if _is_rls_denial(exc):
-                raise WorkspaceAccessDeniedError(
-                    "Administrator access is required."
-                ) from exc
-            raise
-    elif existing.status in (
-        WorkspaceMembershipStatus.ACTIVE.value,
-        WorkspaceMembershipStatus.DEPARTING.value,
-    ):
-        raise _conflict(existing.status)
-    else:
-        # departed: reactivate with the REQUESTED role. The old role (possibly
-        # admin or owner) is never restored.
-        try:
-            updated = (
-                await db.execute(
-                    update(WorkspaceMember)
-                    .where(
-                        WorkspaceMember.id == existing.id,
-                        WorkspaceMember.status == WorkspaceMembershipStatus.DEPARTED.value,
-                    )
-                    .values(
+        if existing is None:
+            savepoint = await db.begin_nested()
+            try:
+                db.add(
+                    WorkspaceMember(
+                        workspace_id=workspace_id,
+                        user_id=target_id,
                         role=body.role,
                         status=WorkspaceMembershipStatus.ACTIVE.value,
-                        departed_at=None,
-                        invited_by_id=current_user.user_id,
+                        invited_by_id=caller_id,
                     )
-                    .returning(WorkspaceMember.id)
                 )
-            ).first()
-        except DBAPIError as exc:
-            if _is_rls_denial(exc):
-                raise WorkspaceAccessDeniedError(
-                    "Administrator access is required."
-                ) from exc
-            raise
-        if updated is None:
-            # RLS USING filtered the row (former owner, non-owner caller) or
-            # it changed under us. Never a silent no-op.
-            if existing.role == WorkspaceRole.OWNER.value and not caller_is_owner:
-                raise former_owner_denied
-            raise _conflict(None)
-        reactivated = True
+                await db.flush()
+                await savepoint.commit()
+            except IntegrityError as exc:
+                await savepoint.rollback()
+                if _UNIQUE_MEMBERSHIP not in str(getattr(exc, "orig", exc)):
+                    # Some other integrity failure (e.g. a foreign key): not a
+                    # duplicate membership, so do not report it as one.
+                    raise
+                # Lost a race (or the row is invisible to FOR UPDATE because RLS
+                # filters a former-owner row for a non-owner). Classify the winner.
+                winner = (
+                    await db.execute(
+                        select(WorkspaceMember.role, WorkspaceMember.status).where(
+                            WorkspaceMember.workspace_id == workspace_id,
+                            WorkspaceMember.user_id == target_id,
+                        )
+                    )
+                ).first()
+                if (
+                    winner is not None
+                    and winner.status == WorkspaceMembershipStatus.DEPARTED.value
+                    and winner.role == WorkspaceRole.OWNER.value
+                    and not caller_is_owner
+                ):
+                    raise former_owner_denied from exc
+                raise _conflict(winner.status if winner is not None else None) from exc
+            except DBAPIError as exc:
+                await savepoint.rollback()
+                if _is_rls_denial(exc):
+                    raise WorkspaceAccessDeniedError(
+                        "Administrator access is required."
+                    ) from exc
+                raise
+        elif existing.status in (
+            WorkspaceMembershipStatus.ACTIVE.value,
+            WorkspaceMembershipStatus.DEPARTING.value,
+        ):
+            raise _conflict(existing.status)
+        else:
+            # departed: reactivate with the REQUESTED role. The old role (possibly
+            # admin or owner) is never restored.
+            try:
+                updated = (
+                    await db.execute(
+                        update(WorkspaceMember)
+                        .where(
+                            WorkspaceMember.id == existing.id,
+                            WorkspaceMember.status
+                            == WorkspaceMembershipStatus.DEPARTED.value,
+                        )
+                        .values(
+                            role=body.role,
+                            status=WorkspaceMembershipStatus.ACTIVE.value,
+                            departed_at=None,
+                            invited_by_id=caller_id,
+                        )
+                        .returning(WorkspaceMember.id)
+                    )
+                ).first()
+            except DBAPIError as exc:
+                if _is_rls_denial(exc):
+                    raise WorkspaceAccessDeniedError(
+                        "Administrator access is required."
+                    ) from exc
+                raise
+            if updated is None:
+                # RLS USING filtered the row (former owner, non-owner caller) or
+                # it changed under us. Never a silent no-op.
+                if existing.role == WorkspaceRole.OWNER.value and not caller_is_owner:
+                    raise former_owner_denied
+                raise _conflict(None)
+            reactivated = True
 
-    stored = (
-        await db.execute(
-            select(
-                WorkspaceMember.role,
-                WorkspaceMember.status,
-                WorkspaceMember.departed_at,
-                WorkspaceMember.created_at,
-            ).where(
-                WorkspaceMember.workspace_id == workspace_id,
-                WorkspaceMember.user_id == target_id,
+        stored = (
+            await db.execute(
+                select(
+                    WorkspaceMember.role,
+                    WorkspaceMember.status,
+                    WorkspaceMember.departed_at,
+                    WorkspaceMember.created_at,
+                ).where(
+                    WorkspaceMember.workspace_id == workspace_id,
+                    WorkspaceMember.user_id == target_id,
+                )
             )
-        )
-    ).first()
-    if (
-        stored is None
-        or stored.role != body.role
-        or stored.status != WorkspaceMembershipStatus.ACTIVE.value
-        or stored.departed_at is not None
-    ):
-        # Not reachable unless a policy or trigger changed the write.
-        raise ServiceUnavailableError("Membership could not be confirmed.")
+        ).first()
+        if (
+            stored is None
+            or stored.role != body.role
+            or stored.status != WorkspaceMembershipStatus.ACTIVE.value
+            or stored.departed_at is not None
+        ):
+            # Not reachable unless a policy or trigger changed the write.
+            raise ServiceUnavailableError("Membership could not be confirmed.")
 
-    response = WorkspaceMemberResponse(
-        user=UserSummary.model_validate(target),
-        role=WorkspaceRole(stored.role),
-        joined_at=stored.created_at,
-    )
-    await db.commit()
+        response = WorkspaceMemberResponse(
+            user=UserSummary.model_validate(target),
+            role=WorkspaceRole(stored.role),
+            joined_at=stored.created_at,
+        )
+        await db.commit()
+    except DBAPIError as exc:
+        if _pg_sqlstate(exc) in _RETRYABLE_SQLSTATES or "deadlock detected" in str(exc):
+            # Defence in depth behind the ordered locking above: a deadlock or
+            # serialization abort is a clean, retryable 503, never a 500.
+            await db.rollback()
+            log = logger.bind(workspace_id=str(workspace_id), actor_id=str(caller_id))
+            log.warning("workspace.member_add_retryable_conflict", sqlstate=_pg_sqlstate(exc))
+            raise ServiceUnavailableError(
+                "The membership changed concurrently. Please retry.",
+                details={"reason": "concurrent_update_retry"},
+            ) from exc
+        raise
 
     logger.info(
         "workspace.member_added",
         workspace_id=str(workspace_id),
         target_user_id=str(target_id),
         role=body.role,
-        actor_id=str(current_user.user_id),
+        actor_id=str(caller_id),
         reactivated=reactivated,
     )
     return APIResponse(data=response, meta=_make_meta(request_id, start))

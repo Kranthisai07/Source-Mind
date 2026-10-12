@@ -69,6 +69,16 @@ class WorkspaceMemberAdd(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    @field_validator("email")
+    @classmethod
+    def _ascii_only(cls, value: str) -> str:
+        # The match is case-insensitive via lower() in SQL and in Python. For
+        # non-ASCII text lower() and casefold() disagree, so an address could
+        # compare equal in one place and not the other; refuse rather than guess.
+        if not value.isascii():
+            raise ValueError("Only ASCII email addresses can be used to add a member.")
+        return value
+
 
 class WorkspaceMemberResponse(BaseModel):
     """Workspace member with role information."""
