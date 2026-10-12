@@ -335,17 +335,21 @@ async def add_workspace_member(
     caller_id = current_user.user_id
 
     await enforce_rate_limit(RateLimitedOperation.MEMBER_ADD, caller_id)
-    # Workspace-wide ceiling on top of the per-user one (the counter is keyed by
-    # the workspace id, passed as both scope and subject), so admins of one
-    # workspace cannot multiply the probe/Clerk budget by taking turns.
-    await enforce_rate_limit(
-        RateLimitedOperation.MEMBER_ADD_WORKSPACE, workspace_id, workspace_id
-    )
     await require_workspace_permission(
         db,
         caller_id,
         workspace_id,
         WorkspacePermission.ADMINISTER,
+    )
+    # Workspace-wide ceiling on top of the per-user one (the counter is keyed by
+    # the workspace id, passed as both scope and subject), so admins of one
+    # workspace cannot multiply the probe/Clerk budget by taking turns. It sits
+    # AFTER the ADMINISTER check on purpose: the bucket is shared, so only an
+    # authorized administrator may spend it. Otherwise any signed-in user who
+    # knows a workspace id could exhaust it and lock the real admins out. (A
+    # retried request consumes a token from both limiters.)
+    await enforce_rate_limit(
+        RateLimitedOperation.MEMBER_ADD_WORKSPACE, workspace_id, workspace_id
     )
 
     def _conflict(existing_status: str | None) -> WorkspaceMemberExistsError:
