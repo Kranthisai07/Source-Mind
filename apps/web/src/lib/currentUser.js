@@ -12,10 +12,25 @@
  */
 
 let _userId = null;
+const _listeners = new Set();
 
 /** Called from inside the Clerk provider tree whenever the user changes. */
 export function setCurrentUserId(id) {
-    _userId = id ?? null;
+    const next = id ?? null;
+    if (next === _userId) return;
+    _userId = next;
+    // Copy first: a listener may unsubscribe while being told.
+    for (const listener of Array.from(_listeners)) listener();
+}
+
+/**
+ * Subscribe to the id being published or changed. The bridge publishes from an
+ * effect AFTER first render, so anything that keyed state on the id at mount
+ * (a per-user draft, say) must hear about the settled value.
+ */
+export function onCurrentUserChange(listener) {
+    _listeners.add(listener);
+    return () => { _listeners.delete(listener); };
 }
 
 export function getCurrentUserId() {

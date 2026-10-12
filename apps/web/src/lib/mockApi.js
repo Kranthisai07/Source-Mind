@@ -134,7 +134,11 @@ export const mockApi = {
     // GET /v1/memories/:id
     getMemory: (id) => request(() => {
         const m = MEMORIES.find(x => x.memory_id === id);
-        return m || { error: "not_found" };
+        // is_current / latest_memory_id / supersession_reason mirror the
+        // superseded-versions contract; an in-memory mock edit is always current.
+        return m
+            ? { is_current: true, latest_memory_id: null, supersession_reason: null, ...m }
+            : { error: "not_found" };
     }),
 
     // GET /v1/memories/:id/versions — mirrors MemoryVersionsResponse so mock
@@ -151,10 +155,33 @@ export const mockApi = {
         return { versions, total: versions.length };
     }),
 
-    // POST /v1/memories (returns job_id)
-    createMemory: (_payload) => request(() => ({
-        job_id: `job_${Date.now().toString(36)}`,
-    }), { min: 120, max: 240 }),
+    // POST /v1/memories (returns job_id). Like the real API: the text is
+    // trimmed, and identical text returns the ORIGINAL job with
+    // `already_exists: true` instead of creating anything.
+    _jobs: {},
+    createMemory(payload = {}) {
+        const content = String(payload.content ?? "").trim();
+        const existing = Object.entries(this._jobs).find(([, job]) => job.content === content);
+        let jobId;
+        if (existing) {
+            jobId = existing[0];
+        } else {
+            jobId = `job_${Date.now().toString(36)}_${Object.keys(this._jobs).length}`;
+            this._jobs[jobId] = {
+                content,
+                tags: Array.isArray(payload.tags) ? payload.tags : [],
+                category: payload.category || "general",
+                memoryId: null,
+            };
+        }
+        return request(() => ({
+            job_id: jobId,
+            status: existing ? "completed" : "queued",
+            message: existing ? "Document already ingested." : "Document is queued and will be processed shortly.",
+            memory_count: existing ? 1 : null,
+            already_exists: Boolean(existing),
+        }), { min: 120, max: 240 });
+    },
 
     updateMemory: (id, payload) => request(() => {
         const memory = MEMORIES.find((item) => item.memory_id === id || item.id === id);
@@ -178,33 +205,46 @@ export const mockApi = {
         datasets: {},
     })),
 
-    // GET /v1/memories/jobs/:id — progressive pipeline status
-    // We use an in-memory job tracker so the same job id returns advancing stages.
+    // GET /v1/memories/jobs/:id — mirrors IngestionJobResponse: a `status`
+    // that advances through the worker's stages, then `done` (realApi rewrites
+    // `completed` to `done`), with `memory_ids` / `memory_count`. Like the real
+    // API there is no stage list and no elapsed time.
     _jobStart: {},
     getJobStatus(jobId) {
         if (!this._jobStart[jobId]) this._jobStart[jobId] = Date.now();
         const elapsed = Date.now() - this._jobStart[jobId];
-        const stages = ["receive", "extract", "chunk", "embed", "store", "attribute", "done"];
-        const stageDurations = [200, 450, 300, 700, 250, 400, 100]; // ms
-        let total = 0;
-        let currentIdx = 0;
-        for (let i = 0; i < stages.length; i++) {
-            total += stageDurations[i];
-            if (elapsed < total) { currentIdx = i; break; }
-            currentIdx = i;
+        const steps = [
+            [300, "extracting"], [700, "chunking"], [1200, "extracting_facts"],
+            [1700, "embedding"], [2100, "indexing"],
+        ];
+        const step = steps.find(([until]) => elapsed < until);
+        const done = !step;
+        // The memory the "pipeline" produced is the submitted text itself, so
+        // the success link opens exactly what was ingested and search finds it.
+        const submitted = this._jobs[jobId];
+        if (done && submitted && !submitted.memoryId) {
+            submitted.memoryId = `mem_new_${jobId}`;
+            MEMORIES.unshift({
+                memory_id: submitted.memoryId,
+                content: submitted.content,
+                tags: submitted.tags,
+                category: submitted.category,
+                workspace_id: WORKSPACE.id,
+                created_at: new Date().toISOString(),
+                is_latest: true,
+                attribution: [],
+                version: 1,
+                versions: [],
+            });
         }
-        const stageStatuses = stages.map((name, i) => {
-            let status = "pending";
-            if (i < currentIdx) status = "done";
-            else if (i === currentIdx) status = elapsed >= total ? "done" : "running";
-            return { name, status, elapsed_ms: i <= currentIdx ? Math.min(elapsed - stageDurations.slice(0, i).reduce((a, b) => a + b, 0), stageDurations[i]) : 0 };
-        });
+        const memoryIds = done && submitted?.memoryId ? [submitted.memoryId] : [];
         return request(() => ({
             job_id: jobId,
-            status: elapsed >= total ? "done" : "running",
-            stage: stages[currentIdx],
-            elapsed_ms: elapsed,
-            stages: stageStatuses,
+            status: done ? "done" : step[1],
+            message: done ? "Ingestion complete." : null,
+            memory_ids: memoryIds,
+            memory_count: memoryIds.length,
+            chunk_count: done ? 1 : 0,
             error: null,
         }), { min: 60, max: 120 });
     },

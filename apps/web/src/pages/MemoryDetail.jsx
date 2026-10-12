@@ -1,5 +1,5 @@
-import React, { useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Edit3, Trash2, AlertTriangle, Share2 } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import TopBar from "../components/layout/TopBar";
@@ -19,21 +19,103 @@ import {
 import useApiResource from "../hooks/useApiResource";
 import api from "../lib/api";
 import { classifyApiError } from "../lib/apiError";
-import { getCurrentUserId } from "../lib/currentUser";
+import { getCurrentUserId, onCurrentUserChange } from "../lib/currentUser";
+import { isStaleWorkspaceError } from "../lib/realApi";
+import { carryDraft, clearCarriedDraft, clearDraft, loadCarriedDraft, loadDraft, saveDraft } from "../lib/editDrafts";
 import { relativeTime, formatDate } from "../lib/format";
 import { isPilotMode } from "../lib/pilotMode";
 import { createSubmissionKeyHolder, submissionIdentity } from "../lib/submissionKey";
 
+const NO_SINGLE_NEWER = {
+    ambiguous_successor: "More than one newer version exists, so there is no single latest version to open.",
+    no_current_version: "This memory currently has no current version, so there is nothing newer to open.",
+    superseded_without_successor: "This version was retired and has no newer version to open.",
+};
+
+/**
+ * Turn a failed PATCH into what the page must say. Only the error class
+ * decides; nothing here infers whether the edit was applied.
+ */
+function classifySaveError(error) {
+    const status = typeof error?.status === "number" ? error.status : null;
+    const body = error?.body?.error;
+    if (status === 409 && body?.code === "SM035") {
+        const reason = body.details?.reason ?? null;
+        return {
+            kind: "conflict",
+            reason,
+            // Only a "superseded" reason names exactly one newer version.
+            latestId: reason === "superseded" ? body.details?.latest_memory_id ?? null : null,
+        };
+    }
+    if (status === 404) return { kind: "notfound" };
+    if (error?.network === true || status === 0 || (status !== null && status >= 500)) {
+        return { kind: "unknown" };
+    }
+    const classified = classifyApiError(error);
+    return { kind: "other", message: body?.message || classified.detail || classified.title };
+}
+
 export default function MemoryDetail() {
     const { id } = useParams();
+    // Keyed on the id: moving to another version starts with fresh page state
+    // instead of carrying an open dialog or an error across.
+    return <MemoryDetailView key={id} id={id} />;
+}
+
+function MemoryDetailView({ id }) {
     const navigate = useNavigate();
+    const location = useLocation();
     const pilotMode = isPilotMode();
+    // Subscribed, not snapshotted: on a hard refresh the auth bridge publishes
+    // the user id after this component's first render.
+    const userId = useSyncExternalStore(onCurrentUserChange, getCurrentUserId);
     const [editOpen, setEditOpen] = useState(false);
-    const [draftContent, setDraftContent] = useState("");
-    const [draftTags, setDraftTags] = useState("");
+    // The unsaved draft, per (user, memory id). Component state is primary;
+    // sessionStorage lets it survive a remount. null means "no draft".
+    const [draft, setDraftState] = useState(() => loadDraft(userId, id));
+    // A draft handed over from an older version; offered, never auto-applied.
+    // Router state is the fallback transport when sessionStorage refuses writes.
+    const [carried, setCarried] = useState(
+        () => loadCarriedDraft(userId, id) ?? location.state?.carriedDraft ?? null
+    );
+    // True once the user has typed or accepted something in this page: such a
+    // draft is never replaced by one reloaded after the identity settles.
+    const dirty = useRef(false);
+    const seenUser = useRef(userId);
     const [editSaving, setEditSaving] = useState(false);
-    const [editError, setEditError] = useState(null);
-    const [editSuccess, setEditSuccess] = useState(null);
+    const [saveError, setSaveError] = useState(null);
+    const [history, setHistory] = useState(null);
+    const [editSuccess, setEditSuccess] = useState(location.state?.editSuccess ?? null);
+    const saveInFlight = useRef(false);
+    // The caller's role in the current workspace, same lookup as Settings. Only
+    // used to disable Edit for a viewer up front; unknown means "do not
+    // disable", and the server's 403 stays the backstop.
+    const [isViewer, setIsViewer] = useState(false);
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const [me, team] = await Promise.all([api.getCurrentUser(), api.listTeamMembers()]);
+                const members = Array.isArray(team?.members) ? team.members : [];
+                const mine = me ? members.find((item) => (item.user || item).id === me.id) : null;
+                if (!cancelled) setIsViewer(String(mine?.role || "").toLowerCase() === "viewer");
+            } catch {
+                // Role unknown: leave Edit enabled; the server still decides.
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [userId]);
+
+    useEffect(() => {
+        if (seenUser.current === userId) return;
+        seenUser.current = userId;
+        if (!dirty.current) setDraftState(loadDraft(userId, id));
+        setCarried((current) => current ?? loadCarriedDraft(userId, id));
+    }, [userId, id]);
+    // Best effort only: the backend does not replay on this key, so reusing it
+    // after an unknown outcome does not make a resend safe.
     const editKeyHolder = useRef(createSubmissionKeyHolder());
     const memoryResource = useApiResource(() => api.getMemory(id), { resetKey: id });
     const versionsResource = useApiResource(() => api.getMemoryVersions(id), { resetKey: id });
@@ -75,44 +157,125 @@ export default function MemoryDetail() {
         mem.created_at ? `created ${relativeTime(mem.created_at)}` : null,
     ].filter(Boolean).join(" · ") || "No metadata recorded";
 
+    const superseded = mem.is_current === false;
+    const latestId = superseded ? mem.latest_memory_id ?? null : null;
+    const contentValue = draft?.content ?? mem.content ?? "";
+    const tagsValue = draft?.tags ?? tags.join(", ");
+
+    const setDraft = (patch) => {
+        dirty.current = true;
+        const next = { content: contentValue, tags: tagsValue, ...patch };
+        setDraftState(next);
+        saveDraft(userId, id, next);
+    };
+
+    const discardDraft = () => {
+        clearDraft(userId, id);
+        setDraftState(null);
+        setSaveError(null);
+        setHistory(null);
+    };
+
     const openEditor = () => {
-        setDraftContent(mem.content || "");
-        setDraftTags(tags.join(", "));
-        setEditError(null);
         setEditSuccess(null);
         setEditOpen(true);
     };
 
+    // Navigation only. The draft travels via sessionStorage and the target page
+    // merely offers it; nothing is opened or sent from here.
+    const viewLatest = (targetId) => {
+        // Also passed in router state: if storage refuses the write the draft
+        // still reaches the next page instead of dying with this one.
+        const carriedDraft = draft ? { content: draft.content, tags: draft.tags, fromId: id } : null;
+        if (carriedDraft) carryDraft(userId, id, targetId, draft);
+        setEditOpen(false);
+        navigate(`/memories/${targetId}`, carriedDraft ? { state: { carriedDraft } } : undefined);
+    };
+
+    // Router state outlives the in-memory offer (reload, back/forward), so
+    // settling an offer also clears it from the current history entry.
+    const settleCarried = () => {
+        clearCarriedDraft(userId, id);
+        if (carried?.fromId) clearDraft(userId, carried.fromId);
+        setCarried(null);
+        if (location.state?.carriedDraft) navigate(location.pathname, { replace: true, state: null });
+    };
+
+    // mode: "replace" (no draft here yet, or the user chose the carried one),
+    // "append" (keep this version's draft and add the carried text below it).
+    const openCarriedDraft = (mode = "replace") => {
+        if (!carried) return;
+        const next = mode === "append" && draft
+            ? {
+                content: `${draft.content}\n\n--- Draft carried from an earlier version ---\n\n${carried.content}`,
+                tags: draft.tags,
+            }
+            : { content: carried.content, tags: carried.tags };
+        dirty.current = true;
+        setDraftState(next);
+        saveDraft(userId, id, next);
+        settleCarried();
+        setEditSuccess(null);
+        setEditOpen(true);
+    };
+
+    const discardCarriedDraft = () => settleCarried();
+
+    // Reads only. Reports what the server holds and never decides whether the
+    // unconfirmed save was applied.
+    const checkHistory = async () => {
+        setHistory({ loading: true });
+        const [memoryResult, versionsResult] = await Promise.allSettled([
+            api.getMemory(id),
+            api.getMemoryVersions(id),
+        ]);
+        setHistory({
+            loading: false,
+            memory: memoryResult.status === "fulfilled" ? memoryResult.value : null,
+            memoryFailed: memoryResult.status === "rejected",
+            versions: versionsResult.status === "fulfilled" && Array.isArray(versionsResult.value?.versions)
+                ? versionsResult.value.versions
+                : null,
+            versionsFailed: versionsResult.status === "rejected",
+        });
+    };
+
     const saveEdit = async () => {
-        if (!draftContent.trim() || editSaving) return;
-        const nextTags = draftTags
+        if (!contentValue.trim() || editSaving || saveInFlight.current) return;
+        const nextTags = tagsValue
             .split(",")
             .map((tag) => tag.trim())
             .filter(Boolean);
-        const payload = { content: draftContent, tags: nextTags };
+        const payload = { content: contentValue, tags: nextTags };
         const idempotencyKey = editKeyHolder.current.keyFor(submissionIdentity({
             payload,
             workspaceId: mem.workspace_id,
-            userId: getCurrentUserId(),
+            userId,
         }));
+        saveInFlight.current = true;
         setEditSaving(true);
-        setEditError(null);
+        setSaveError(null);
+        setHistory(null);
         setEditSuccess(null);
         try {
             const updated = await api.updateMemory(memoryId, { ...payload, idempotencyKey });
             editKeyHolder.current.clear();
+            clearDraft(userId, id);
+            setDraftState(null);
             setEditOpen(false);
-            setEditSuccess(`Saved as version ${updated.version ?? "next"}.`);
+            const message = `Saved as version ${updated.version ?? "next"}.`;
+            setEditSuccess(message);
             if (updated.id && updated.id !== id) {
-                navigate(`/memories/${updated.id}`, { replace: true });
+                navigate(`/memories/${updated.id}`, { replace: true, state: { editSuccess: message } });
             } else {
                 memoryResource.retry();
                 versionsResource.retry();
             }
         } catch (requestError) {
-            const classified = classifyApiError(requestError);
-            setEditError(requestError?.body?.error?.message || classified.detail || classified.title);
+            if (isStaleWorkspaceError(requestError)) return;
+            setSaveError(classifySaveError(requestError));
         } finally {
+            saveInFlight.current = false;
             setEditSaving(false);
         }
     };
@@ -127,7 +290,7 @@ export default function MemoryDetail() {
                         <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="text-sm-text-secondary" data-testid="mem-back">
                             <ArrowLeft className="w-4 h-4" /> Back
                         </Button>
-                        <Button variant="outline" size="sm" onClick={openEditor} data-testid="mem-edit" className="bg-white/[0.04] border-sm-border text-sm-text"><Edit3 className="w-3.5 h-3.5" /> Edit</Button>
+                        <Button variant="outline" size="sm" onClick={openEditor} disabled={superseded || isViewer} title={superseded ? "This version has been replaced; editing it would be rejected" : isViewer ? "You have read-only access to this workspace, so you can't edit memories" : undefined} data-testid="mem-edit" className="bg-white/[0.04] border-sm-border text-sm-text disabled:opacity-40 disabled:cursor-not-allowed"><Edit3 className="w-3.5 h-3.5" /> Edit</Button>
                         <Button variant="outline" size="sm" disabled data-testid="mem-share" title="Sharing a memory isn't available on this screen yet" className="bg-white/[0.04] border-sm-border text-sm-text disabled:opacity-40 disabled:cursor-not-allowed"><Share2 className="w-3.5 h-3.5" /> Share</Button>
                         <Button variant="outline" size="sm" disabled data-testid="mem-delete" title="Deleting a memory isn't available on this screen yet" className="bg-white/[0.04] border-sm-border text-sm-red hover:text-sm-red disabled:opacity-40 disabled:cursor-not-allowed"><Trash2 className="w-3.5 h-3.5" /> Delete</Button>
                     </>
@@ -136,6 +299,65 @@ export default function MemoryDetail() {
             {editSuccess && (
                 <div data-testid="memory-edit-success" className="mx-8 mt-5 rounded-lg border border-sm-green/30 bg-sm-green/10 px-4 py-3 text-[12.5px] text-sm-green">
                     {editSuccess}
+                </div>
+            )}
+            {superseded && (
+                <div data-testid="memory-superseded-banner" role="status" className="mx-8 mt-5 rounded-lg border border-sm-amber/30 bg-sm-amber/10 px-4 py-3 text-[12.5px] text-sm-amber">
+                    <p className="font-medium">This version was replaced by a newer one.</p>
+                    {latestId ? (
+                        <Button size="sm" variant="outline" onClick={() => viewLatest(latestId)} data-testid="memory-superseded-view-latest" className="mt-2 bg-white/[0.03] border-sm-border text-sm-text">
+                            View latest version
+                        </Button>
+                    ) : (
+                        <p className="mt-1">{NO_SINGLE_NEWER[mem.supersession_reason] ?? "There is no single newer version to open."}</p>
+                    )}
+                </div>
+            )}
+            {carried && !superseded && (
+                <div data-testid="memory-carried-draft" className="mx-8 mt-5 rounded-lg border border-sm-blue/30 bg-sm-blue/10 px-4 py-3 text-[12.5px] text-sm-text">
+                    <p>You have an unsaved draft from an earlier version of this memory. It has not been sent anywhere.</p>
+                    {draft ? (
+                        <>
+                            <p data-testid="memory-carried-conflict" className="mt-2 font-medium">
+                                This version already has its own unsaved draft. Nothing is replaced unless you choose.
+                            </p>
+                            <div className="mt-2 grid gap-2 md:grid-cols-2">
+                                <div>
+                                    <p className="text-[11px] text-sm-text-secondary">Draft already on this version</p>
+                                    <pre data-testid="memory-existing-draft-preview" className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap font-sans">{draft.content}</pre>
+                                </div>
+                                <div>
+                                    <p className="text-[11px] text-sm-text-secondary">Draft carried from the earlier version</p>
+                                    <pre data-testid="memory-carried-preview" className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap font-sans">{carried.content}</pre>
+                                </div>
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                                <Button size="sm" onClick={discardCarriedDraft} data-testid="memory-carried-keep-mine" className="bg-sm-blue text-white">
+                                    Keep this version's draft
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={() => openCarriedDraft("append")} data-testid="memory-carried-append" className="bg-white/[0.03] border-sm-border text-sm-text">
+                                    Keep both (add carried text below)
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={() => openCarriedDraft("replace")} data-testid="memory-carried-use" className="bg-white/[0.03] border-sm-border text-sm-text">
+                                    Replace it with the carried draft
+                                </Button>
+                            </div>
+                        </>
+                    ) : (
+                        <div className="mt-2 flex gap-2">
+                            <Button size="sm" onClick={() => openCarriedDraft("replace")} data-testid="memory-carried-open" className="bg-sm-blue text-white">
+                                Open editor with my unsaved draft
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={discardCarriedDraft} data-testid="memory-carried-discard" className="bg-white/[0.03] border-sm-border text-sm-text">
+                                Discard draft
+                            </Button>
+                        </div>
+                    )}
+                </div>
+            )}
+            {draft && !editOpen && (
+                <div data-testid="memory-draft-notice" className="mx-8 mt-5 rounded-lg border border-sm-border bg-white/[0.02] px-4 py-3 text-[12.5px] text-sm-text-secondary">
+                    You have an unsaved edit draft for this version. It is kept in this browser tab only.
                 </div>
             )}
             <div className="flex-1 px-8 py-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -287,13 +509,19 @@ export default function MemoryDetail() {
                         </DialogDescription>
                     </DialogHeader>
                     <div className="space-y-4">
+                        <SaveErrorBanner
+                            error={saveError}
+                            onViewLatest={viewLatest}
+                            onCheckHistory={checkHistory}
+                            history={history}
+                        />
                         <div>
                             <label htmlFor="memory-edit-content" className="mb-2 block text-[12px] text-sm-text-secondary">Content</label>
                             <Textarea
                                 id="memory-edit-content"
                                 data-testid="memory-edit-content"
-                                value={draftContent}
-                                onChange={(event) => { setDraftContent(event.target.value); setEditError(null); }}
+                                value={contentValue}
+                                onChange={(event) => { setDraft({ content: event.target.value }); setSaveError(null); }}
                                 disabled={editSaving}
                                 rows={12}
                                 className="bg-sm-bg/60 border-sm-border text-sm-text font-mono text-[12.5px]"
@@ -304,22 +532,117 @@ export default function MemoryDetail() {
                             <input
                                 id="memory-edit-tags"
                                 data-testid="memory-edit-tags"
-                                value={draftTags}
-                                onChange={(event) => { setDraftTags(event.target.value); setEditError(null); }}
+                                value={tagsValue}
+                                onChange={(event) => { setDraft({ tags: event.target.value }); setSaveError(null); }}
                                 disabled={editSaving}
                                 className="h-10 w-full rounded-md border border-sm-border bg-sm-bg/60 px-3 text-[12.5px] text-sm-text outline-none focus:border-sm-blue"
                             />
                         </div>
-                        {editError && <p role="alert" data-testid="memory-edit-error" className="text-[12px] text-sm-red">{editError}</p>}
                     </div>
                     <DialogFooter>
+                        {draft && (
+                            <Button variant="ghost" onClick={discardDraft} disabled={editSaving} data-testid="memory-edit-discard" className="mr-auto text-sm-text-secondary">
+                                Discard draft
+                            </Button>
+                        )}
                         <Button variant="outline" onClick={() => setEditOpen(false)} disabled={editSaving}>Cancel</Button>
-                        <Button data-testid="memory-edit-save" onClick={saveEdit} disabled={!draftContent.trim() || editSaving} className="bg-sm-blue text-white">
+                        <Button data-testid="memory-edit-save" onClick={saveEdit} disabled={!contentValue.trim() || editSaving} className="bg-sm-blue text-white">
                             {editSaving ? "Saving…" : "Save new version"}
                         </Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
         </>
+    );
+}
+
+function SaveErrorBanner({ error, onViewLatest, onCheckHistory, history }) {
+    if (!error) return null;
+    const keptNote = "Your draft is kept.";
+    if (error.kind === "conflict") {
+        return (
+            <div role="alert" data-testid="memory-edit-conflict" className="rounded-lg border border-sm-amber/30 bg-sm-amber/10 px-3 py-2 text-[12.5px] text-sm-amber">
+                <p className="font-medium">This version was replaced by a newer one.</p>
+                <p className="mt-1">Nothing was saved. {keptNote}</p>
+                {error.latestId ? (
+                    <Button size="sm" variant="outline" onClick={() => onViewLatest(error.latestId)} data-testid="memory-edit-view-latest" className="mt-2 bg-white/[0.03] border-sm-border text-sm-text">
+                        View latest version
+                    </Button>
+                ) : (
+                    <p className="mt-1">{NO_SINGLE_NEWER[error.reason] ?? "There is no single newer version to open."}</p>
+                )}
+            </div>
+        );
+    }
+    if (error.kind === "notfound") {
+        return (
+            <p role="alert" data-testid="memory-edit-notfound" className="text-[12px] text-sm-red">
+                This memory was not found, or you don't have access to it. {keptNote}
+            </p>
+        );
+    }
+    if (error.kind === "unknown") {
+        return (
+            <div role="alert" data-testid="memory-edit-unknown" className="rounded-lg border border-sm-amber/30 bg-sm-amber/10 px-3 py-2 text-[12.5px] text-sm-amber">
+                <p>Save outcome unknown. Your draft is kept. We can't tell whether it was applied until you check.</p>
+                <p data-testid="memory-edit-check-first" className="mt-1">Check history before saving again: saving again sends another edit, and the server does not recognise it as a repeat.</p>
+                <Button size="sm" variant="outline" onClick={onCheckHistory} disabled={history?.loading} data-testid="memory-edit-check-history" className="mt-2 bg-white/[0.03] border-sm-border text-sm-text">
+                    {history?.loading ? "Checking…" : "Check history"}
+                </Button>
+                {history && !history.loading && <HistoryFacts history={history} onViewLatest={onViewLatest} />}
+            </div>
+        );
+    }
+    return <p role="alert" data-testid="memory-edit-error" className="text-[12px] text-sm-red">{error.message}</p>;
+}
+
+// Facts only. Deliberately no comparison with the draft and no verdict: even a
+// latest version whose text equals the draft could be someone else's identical
+// edit, so the user decides what it means.
+function HistoryFacts({ history, onViewLatest }) {
+    const { memory, versions } = history;
+    const latest = memory?.is_current === false ? memory.latest_memory_id : null;
+    const current = (versions ?? []).find((version) => version.is_current);
+    return (
+        <div data-testid="memory-edit-history" className="mt-3 space-y-2 rounded-md border border-sm-border bg-sm-bg/60 p-3 text-sm-text">
+            <p className="text-[12px] text-sm-text-secondary">What the server holds now. Nothing has been resubmitted.</p>
+            {history.memoryFailed && <p className="text-[12px] text-sm-red">The memory could not be loaded.</p>}
+            {history.versionsFailed && <p className="text-[12px] text-sm-red">The version history could not be loaded.</p>}
+            {memory && (
+                <p data-testid="memory-history-viewed" className="text-[12px]">
+                    This page's version: {memory.version != null ? `v${memory.version}` : "unknown version"}
+                    {memory.updated_at ? `, updated ${formatDate(memory.updated_at)}` : ""}
+                    {memory.is_current === false ? ", no longer the current version" : ""}.
+                </p>
+            )}
+            {latest && (
+                <Button size="sm" variant="outline" onClick={() => onViewLatest(latest)} data-testid="memory-history-view-latest" className="bg-white/[0.03] border-sm-border text-sm-text">
+                    View latest version
+                </Button>
+            )}
+            {versions && (
+                <p data-testid="memory-history-current" className="text-[12px]">
+                    {current
+                        ? `Current version: v${current.version}${current.created_at ? `, created ${formatDate(current.created_at)}` : ""}.`
+                        : memory?.is_current === false
+                            ? "This version is no longer current. The history list only goes back from this version, so a newer version is not in it."
+                            : "The history list does not mark a current version."}
+                </p>
+            )}
+            {versions && versions.length > 0 && (
+                <ol className="space-y-2">
+                    {versions.map((version, index) => (
+                        <li key={version.id || `${version.version}-${index}`} data-testid={`memory-history-version-${version.version}`} className="text-[12px]">
+                            <span className="font-mono text-sm-blue">v{version.version}</span>{" "}
+                            <span className="text-sm-text-secondary">
+                                {version.is_current ? "current" : "historical"}
+                                {version.created_at ? `, ${formatDate(version.created_at)}` : ""}
+                            </span>
+                            <pre className="mt-1 whitespace-pre-wrap font-sans text-sm-text">{version.content || "No content recorded."}</pre>
+                        </li>
+                    ))}
+                </ol>
+            )}
+        </div>
     );
 }
