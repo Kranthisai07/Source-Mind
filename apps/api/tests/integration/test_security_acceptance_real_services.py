@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from jose import jwk
 from jose import jwt as jose_jwt
 from redis.asyncio import Redis
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sourcemind.core.config import get_settings
@@ -760,3 +760,71 @@ async def test_friends_release_journey_over_http_with_signed_tokens(
         ).all()
         assert [(v, c) for v, c in versions] == [(1, False), (2, True)]
     get_settings.cache_clear()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_first_requests_create_exactly_one_user(
+    supabase_engine,
+    supabase_url: str,
+    security_test_redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new user's first page load fires several requests at once (regression)."""
+    _configure_environment(monkeypatch, supabase_url, security_test_redis_url)
+    suffix = uuid.uuid4().hex[:12]
+    clerk_id, email = f"race-{suffix}", f"race-{suffix}@example.com"
+    other_clerk_id = f"race-other-{suffix}"
+    private_pem, public_jwk = _signing_material()
+
+    async def fetch_profile(requested: str, _secret: str) -> tuple[str, str]:
+        # Same address for both identities: the second is an email collision.
+        return email, requested
+
+    from sourcemind.core import dependencies
+    from sourcemind.main import create_app
+
+    dependencies._jwks_cache.clear()
+    dependencies._user_profile_cache.clear()
+    app = create_app()
+    with (
+        patch("sourcemind.core.dependencies._fetch_jwks", new=AsyncMock(return_value=[public_jwk])),
+        patch("sourcemind.core.dependencies._fetch_clerk_user_profile", new=fetch_profile),
+    ):
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://race.test"
+            ) as client:
+                headers = _auth(_token(private_pem, clerk_id))
+                paths = ["/v1/team/me", "/v1/workspaces"] * 4
+                responses = await asyncio.gather(
+                    *(client.get(path, headers=headers) for path in paths)
+                )
+                assert [r.status_code for r in responses] == [200] * len(paths), [
+                    r.text for r in responses if r.status_code != 200
+                ]
+                ids = {
+                    r.json()["data"]["id"] for r in responses if r.request.url.path.endswith("/me")
+                }
+                assert len(ids) == 1
+
+                # A different identity claiming the stored email is a handled
+                # 409, never a silent merge and never a 500.
+                dependencies._user_profile_cache.clear()
+                collision = await client.get(
+                    "/v1/team/me", headers=_auth(_token(private_pem, other_clerk_id))
+                )
+                assert collision.status_code == 409, collision.text
+                error = collision.json()["error"]
+                assert error["details"] == {"reason": "email_already_linked"}
+                assert email not in collision.text
+
+    async with supabase_engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text("SELECT clerk_id FROM users WHERE clerk_id IN (:a, :b)"),
+                {"a": clerk_id, "b": other_clerk_id},
+            )
+        ).all()
+    assert [row[0] for row in rows] == [clerk_id]
