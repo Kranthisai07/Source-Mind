@@ -43,6 +43,7 @@ from sourcemind.schemas.memory import (
     MemoryResponse,
     MemoryUpdate,
 )
+from sourcemind.services.attribution.versioning import find_latest_version
 
 logger = structlog.get_logger(__name__)
 
@@ -115,6 +116,10 @@ async def create_memory(
         status=result["status"],
         message=result["message"],
         memory_count=result.get("memory_count"),
+        # The receiver already knew this; it used to be dropped here. Status and
+        # message semantics are unchanged - the flag only lets a client avoid
+        # claiming that an identical earlier submission created new memories.
+        already_exists=bool(result.get("already_exists", False)),
     )
 
     return APIResponse(data=job_resp, meta=_make_meta(request_id, start))
@@ -242,6 +247,12 @@ async def get_memory(
             await _fetch_unresolved_authors(db, [str(memory_id)])
         ).get(str(memory_id))
 
+    # Superseded content stays readable (200); these fields tell the client it
+    # is no longer the editable version and, when unambiguous, where it went.
+    latest = await find_latest_version(
+        db, memory_id, memory.workspace_id, user_id=current_user.user_id
+    )
+
     mem_resp = MemoryResponse(
         id=memory.id,
         workspace_id=memory.workspace_id,
@@ -256,6 +267,9 @@ async def get_memory(
         relation_count=relation_count,
         attribution=attribution,
         unresolved_author=unresolved_author,
+        is_current=latest.reason is None,
+        latest_memory_id=latest.latest_memory_id,
+        supersession_reason=latest.reason.value if latest.reason else None,
     )
 
     return APIResponse(data=mem_resp, meta=_make_meta(request_id, start))
@@ -293,7 +307,10 @@ async def update_memory(
         plan_carry_forward,
         recompute_attribution,
     )
-    from sourcemind.services.attribution.versioning import create_new_version
+    from sourcemind.services.attribution.versioning import (
+        create_new_version,
+        unavailable_version_error,
+    )
     from sourcemind.services.memory.importance import recompute_importance
 
     # Exact string equality defines "unchanged"; no normalisation. The row is
@@ -309,7 +326,14 @@ async def update_memory(
     )
     current = current_result.scalar_one_or_none()
     if current is None:
-        raise MemoryNotFoundError(f"Memory {memory_id} not found or not current version.")
+        # CONTRIBUTE access already passed, so it is safe to say "superseded"
+        # (409 SM035 with the unique latest id when there is one). Missing or
+        # deleted rows stay 404. No version is created and the edit is never
+        # applied to the latest version; idempotent replay success is not
+        # implemented (D-025).
+        raise await unavailable_version_error(
+            db, memory_id, user_id=current_user.user_id
+        )
     content_changed = current.content != body.content
     tags_changed = body.tags is not None and list(body.tags) != list(current.tags or [])
 
@@ -345,6 +369,7 @@ async def update_memory(
         new_content=body.content,
         new_tags=body.tags,
         openai_client=openai_client,
+        user_id=current_user.user_id,
     )
 
     new_mem = version_result.new_memory

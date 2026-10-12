@@ -2805,6 +2805,115 @@ tests added to `test_security_foundation_real_db.py` (Security Acceptance node l
 76 -> 88). `.env.example` CORS_ORIGINS comment corrected: the setting is a JSON array
 and a comma-separated string fails to parse (verified against `Settings`).
 `rate_limit_member_add_per_hour` was also added to the shared positivity validator.
+## D-025 — Editing a superseded memory version is a 409 that names the latest version
+
+**Status:** Implemented in the backend (stacked on D-024); not deployed by this change.
+
+### Problem
+
+`PATCH /v1/memories/{id}` on a version that is no longer current answered the same
+generic `404 SM020` as a missing memory. A client holding an old id (a second tab, a
+teammate who edited first, a retried request) could not tell "gone" from "someone
+else edited this" and had nowhere to go.
+
+### Decision
+
+- `find_latest_version(session, memory_id, workspace_id, *, user_id)` in
+  `services/attribution/versioning.py` walks DOWNWARD through `parent_memory_id`
+  with a recursive CTE, bounded by the existing `MAX_CHAIN_DEPTH`, cycle-guarded by a
+  path array, same workspace only. It aggregates in SQL and returns a small frozen
+  result: exactly one current non-deleted descendant -> `superseded` + its id; more
+  than one (a fork) -> `ambiguous_successor`, id null, never picked; descendants but
+  none current and non-deleted -> `no_current_version`; no descendants and the row is
+  non-current (retired by conflict resolution/merge) -> `superseded_without_successor`.
+- A unique id is returned only after READ access to THAT id is confirmed with the
+  same helper used for memories (`require_memory_access`). If it fails, or the caller
+  is unknown, the result downgrades to `superseded_without_successor` with no id.
+- PATCH (and `create_new_version`) run this only AFTER `require_memory_access(...,
+  CONTRIBUTE)` has passed and the row exists, is non-deleted and non-current; they
+  raise `MemoryVersionStaleError` (409 SM035) with `details = {memory_id,
+  latest_memory_id, reason}`. `latest_memory_id` is non-null only for `superseded`.
+  Missing, deleted and inaccessible memories keep the generic 404 SM020 (a
+  non-member or other-workspace caller gets the same 404 whether or not the memory
+  was superseded; a viewer is refused 403 before any hint). `SourceMindError` already
+  carried `details`, so the exception class needed no change and handoff's existing
+  use is unaffected.
+- `GET /v1/memories/{id}` still returns 200 for superseded content and adds
+  `is_current`, `latest_memory_id`, `supersession_reason` (null/absent semantics per
+  the contract). The fields are optional with `None` defaults on `MemoryResponse`,
+  so search and PATCH responses only gain null keys.
+- Concurrent PATCHes of one version: the loser waits on the existing row lock, then
+  finds the row non-current and now receives 409 with the winner's id (previously a
+  404). Asserted against real PostgreSQL.
+
+### Truncated walks (review round)
+
+Review found that after more than `MAX_CHAIN_DEPTH` (10,000) versions - reachable
+only through tags-only edits, which do not check ancestry depth - the bounded walk
+stopped before the current head and `no_current_version` was reported, a false
+claim. The aggregate now also counts nodes at the depth bound that still have
+children. When that count is non-zero the result is `superseded_without_successor`
+with no id and `truncated = true` (logged, and added to the 409 `details` only
+when true; the contract keys are unchanged). Two live heads actually seen still
+report `ambiguous_successor`. Tags-only edits were not changed to count toward
+the bound: that would alter the edit path, which is out of scope for this fix.
+Covered by unit tests with synthetic aggregates and a real-DB test with the bound
+patched to 3 over a six-version chain.
+
+### Related small change: `already_exists` on the ingestion POST
+
+`POST /v1/memories` now returns `already_exists: bool` (default false). The receiver
+already knew when a submission matched a document ingested earlier in the workspace
+(dedup returns the existing record, even a failed or zero-memory one, and nothing is
+re-queued) but the route dropped the flag, so a client could not avoid saying that
+an identical earlier submission "created" new memories. Status code, `status` and
+`message` are unchanged; polling `GET /v1/memories/jobs/:id` always reports false.
+Additive and optional, so existing clients are unaffected. Own commit.
+
+### Deliberately not done
+
+- No version is created and the edit is never auto-applied to the latest version:
+  that would silently overwrite a teammate's newer text with an edit written against
+  stale content.
+- The Idempotency-Key is not used to claim replay success. Successful idempotent
+  replay of an already-applied PATCH is NOT implemented; a retry of an applied edit
+  gets the same 409 pointing at the version it created. Closing that gap needs
+  persisted keys and is a separate decision.
+- Cross-workspace rows with the same parent are never considered successors.
+
+### Why this approach
+
+- *Resolve the latest in Python by repeated queries:* rejected; one aggregate query
+  over a bounded recursive CTE is a single round trip and cannot be torn by a
+  concurrent edit between steps.
+- *Pick the newest/highest version on a fork:* rejected; guessing which branch is
+  "the" latest sends a user to the wrong text. An explicit `ambiguous_successor` lets
+  the client show the situation honestly.
+- *Return the id without re-checking access:* rejected; the CTE is workspace-scoped
+  and a unique id passes today, but the explicit check keeps the guarantee local to
+  the function rather than dependent on how the query is written.
+- *Reuse 404 with a hint:* rejected; the conflict is a state clash, 409 is its
+  honest status, and SM035 already existed for exactly "version superseded".
+
+### Verification
+
+New unit file `tests/unit/attribution/test_find_latest_version.py` (11 tests: reason
+matrix, unauthorized/unknown caller no-leak, fork, deleted latest, merge-retired,
+missing/deleted stay 404). Six new real-PostgreSQL nodes plus two updated
+(`...409_on_stale_id` rename, retried content patch, concurrent PATCH loser now 409
+with the winner's id) in `test_attribution_history_real_db.py`. Security Acceptance
+node list 85 -> 91 (92 with the journey test).
+
+A single end-to-end journey test (`test_friends_release_journey_over_http_with_signed_tokens`,
+node list 91 -> 92) drives the ordinary flow over HTTP with signed Clerk tokens against
+real PostgreSQL and Redis: two users sign in, A creates a workspace, A adds B by
+email, B lists it, B creates a memory (extract mode; the ingestion worker runs in
+process), B edits it, A searches and finds the edited version, B's stale PATCH gets
+409 with the latest id, and a never-added C is blind to the workspace (404). All
+provider calls are replaced in process (Clerk profile and email verification,
+extraction, chunking, fact extraction, embeddings, relation detection, the search
+query embedding, the attribution scorer); no network is used.
+
 ## D-026 — Web: workspace picker, creation, explicit no-workspace state, add member, switch-safe API layer
 
 **Status:** Implemented in the web app; not deployed by this change.
@@ -2873,3 +2982,57 @@ and a comma-separated string fails to parse (verified against `Settings`).
 - Dismissing the create dialog mid-request lists the new workspace and toasts but does not switch or navigate. Mounted flags are re-armed on effect setup (StrictMode).
 - A build with REACT_APP_DEFAULT_WORKSPACE_ID is pinned: the picker and create entry points are replaced by a fixed label and selectWorkspace is a no-op, so the UI cannot claim a workspace the requests do not use.
 - Add member against a server without the route (405, or 404 with no error code) says the server does not support it yet. Merge order: the API route (PR #20) must land before this PR for real-mode add member.
+## D-029 — First sign-in provisions the user with ON CONFLICT, and an email clash is a handled 409
+
+**Status:** Implemented in the backend (stacked on D-025); not deployed by this change.
+
+### Problem
+
+A brand-new user's first page load fires `GET /v1/team/me` and `GET /v1/workspaces`
+together. Both ran `_get_or_create_user`: select by `clerk_id`, then a plain insert.
+Both saw no row; the loser hit `uq_users_clerk_id` and returned an unhandled 500
+(SM090), so the browser showed "Can't reach SourceMind". The real-browser check
+reproduced it for 4 of 4 fresh identities, so every friend's first sign-in was likely
+to hit it. It predates this branch (present on `origin/main`).
+
+### Decision
+
+- The insert is now `INSERT ... ON CONFLICT (clerk_id) DO NOTHING` inside a savepoint
+  (`begin_nested`), followed by a re-select by `clerk_id`. A losing request blocks on
+  the winner's uncommitted row, inserts nothing, then reads the winner's committed
+  row, so all concurrent first requests resolve to the SAME user and exactly one row
+  exists. The Clerk profile fetch, its in-process cache, the email requirement and
+  `set_rls_user_context` (called by the caller once the user is known) are unchanged.
+- An `IntegrityError` from the insert is swallowed only to re-select: if the
+  `clerk_id` row exists the request proceeds. If no row exists, the only remaining
+  collision is `uq_users_email` (a DIFFERENT Clerk identity already stores that
+  address). That is never merged silently: it raises `ValidationError` with HTTP 409
+  and `details.reason = "email_already_linked"`. The message and log carry no email
+  address (the provisioning log line no longer prints it either).
+
+### Alternatives considered
+
+- *Catch `IntegrityError` around a plain insert (savepoint only):* works, but needs
+  an exception per losing request and cannot tell the two unique constraints apart
+  without parsing the constraint name. `ON CONFLICT (clerk_id)` handles the expected
+  race without raising, and only an email clash reaches the error path.
+- *Serialize the two frontend calls:* rejected as the fix. It hides the race in one
+  client but leaves it for a second tab, a retry, or any other API consumer, and it
+  delays first paint. The server must be safe regardless of caller behavior.
+- *`ON CONFLICT (email)` / upsert on either key:* rejected; matching on email would
+  attach a new Clerk identity to an existing account, which is exactly the silent
+  identity merge this change refuses.
+- *Advisory lock per clerk_id:* correct but adds a lock protocol for something the
+  unique index already arbitrates.
+
+### Verification
+
+Five unit tests (`tests/unit/api/test_first_signin_provisioning.py`) cover existing
+user, normal insert, lost clerk_id race, email clash, and a silent no-row outcome.
+One real-PostgreSQL node (`test_concurrent_first_requests_create_exactly_one_user`,
+in the already-listed `test_security_acceptance_real_services.py`) sends 8 concurrent
+requests (4 `/v1/team/me`, 4 `/v1/workspaces`) with a signed token for a never-seen
+clerk_id: all return 200, one id, one `users` row; then a second identity with the
+same email gets 409 `email_already_linked`. It fails against the previous
+implementation with the same `uq_users_clerk_id` violation. Security Acceptance node
+list 96 -> 97.

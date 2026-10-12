@@ -9,6 +9,7 @@ Never import from the api/ layer in services.
 import base64
 import uuid
 from enum import StrEnum
+from http import HTTPStatus
 from typing import Annotated
 from uuid import UUID
 
@@ -18,6 +19,8 @@ from fastapi import Depends, Header, Query, Request
 from jose import JWTError, jwt
 from redis.asyncio import Redis
 from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sourcemind.core.config import get_settings
@@ -36,6 +39,7 @@ from sourcemind.core.exceptions import (
     TokenExpiredError,
     TokenInvalidError,
     UnauthorizedError,
+    ValidationError,
     WorkspaceAccessDeniedError,
     WorkspaceNotFoundError,
 )
@@ -417,14 +421,34 @@ async def _get_or_create_user(
     user = result.scalar_one_or_none()
 
     if user is None:
-        user = User(
-            clerk_id=clerk_id,
-            email=email,
-            display_name=display_name,
-        )
-        db.add(user)
-        await db.flush()
-        logger.info("auth.user_provisioned", clerk_id=clerk_id, email=email)
+        # A brand-new user's first page load sends several requests at once, so
+        # the insert must tolerate a concurrent insert of the same clerk_id: the
+        # loser blocks until the winner commits, inserts nothing, and re-selects
+        # the winner's row. The savepoint keeps an unrelated unique violation
+        # (email) from poisoning the request transaction.
+        try:
+            async with db.begin_nested():
+                await db.execute(
+                    pg_insert(User)
+                    .values(clerk_id=clerk_id, email=email, display_name=display_name)
+                    .on_conflict_do_nothing(index_elements=[User.clerk_id])
+                )
+        except IntegrityError:
+            # A different arbiter lost the race (e.g. email, raised before the
+            # clerk_id check fired): the clerk_id row may still exist.
+            pass
+        result = await db.execute(select(User).where(User.clerk_id == clerk_id))
+        user = result.scalar_one_or_none()
+        if user is None:
+            # Only the email can have collided: it belongs to another identity.
+            # Never merge identities silently, and never echo the address.
+            logger.warning("auth.email_already_linked", clerk_id=clerk_id)
+            raise ValidationError(
+                "This email address is already linked to another account.",
+                details={"reason": "email_already_linked"},
+                http_status=HTTPStatus.CONFLICT,
+            )
+        logger.info("auth.user_provisioned", clerk_id=clerk_id)
 
     return AuthenticatedUser(
         user_id=user.id,
