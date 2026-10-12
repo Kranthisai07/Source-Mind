@@ -2846,6 +2846,20 @@ else edited this" and had nowhere to go.
   finds the row non-current and now receives 409 with the winner's id (previously a
   404). Asserted against real PostgreSQL.
 
+### Truncated walks (review round)
+
+Review found that after more than `MAX_CHAIN_DEPTH` (10,000) versions - reachable
+only through tags-only edits, which do not check ancestry depth - the bounded walk
+stopped before the current head and `no_current_version` was reported, a false
+claim. The aggregate now also counts nodes at the depth bound that still have
+children. When that count is non-zero the result is `superseded_without_successor`
+with no id and `truncated = true` (logged, and added to the 409 `details` only
+when true; the contract keys are unchanged). Two live heads actually seen still
+report `ambiguous_successor`. Tags-only edits were not changed to count toward
+the bound: that would alter the edit path, which is out of scope for this fix.
+Covered by unit tests with synthetic aggregates and a real-DB test with the bound
+patched to 3 over a six-version chain.
+
 ### Deliberately not done
 
 - No version is created and the edit is never auto-applied to the latest version:
@@ -2878,7 +2892,7 @@ matrix, unauthorized/unknown caller no-leak, fork, deleted latest, merge-retired
 missing/deleted stay 404). Six new real-PostgreSQL nodes plus two updated
 (`...409_on_stale_id` rename, retried content patch, concurrent PATCH loser now 409
 with the winner's id) in `test_attribution_history_real_db.py`. Security Acceptance
-node list 85 -> 91.
+node list 85 -> 91 (92 with the journey test).
 
 A single end-to-end journey test (`test_friends_release_journey_over_http_with_signed_tokens`,
 node list 91 -> 92) drives the ordinary flow over HTTP with signed Clerk tokens against

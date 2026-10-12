@@ -62,6 +62,9 @@ class LatestVersion:
 
     reason: SupersessionReason | None
     latest_memory_id: uuid.UUID | None = None
+    # True when the downward walk hit MAX_CHAIN_DEPTH with unexplored children:
+    # the answer is then "cannot say", never "no current version", and no id.
+    truncated: bool = False
 
 
 async def find_latest_version(
@@ -122,6 +125,13 @@ async def find_latest_version(
                        count(*) FILTER (
                            WHERE current_version AND deleted_at IS NULL
                        ) AS live,
+                       count(*) FILTER (
+                           WHERE depth >= :bound AND EXISTS (
+                               SELECT 1 FROM memories c
+                               WHERE c.parent_memory_id = descendants.id
+                                 AND c.workspace_id = CAST(:ws AS uuid)
+                           )
+                       ) AS cut_off,
                        min(id::text) FILTER (
                            WHERE current_version AND deleted_at IS NULL
                        ) AS only_id
@@ -131,12 +141,24 @@ async def find_latest_version(
         )
     ).one()
 
+    if summary.live > 1:
+        # Two live heads were actually seen, so a fork is a fact even if the
+        # walk was also cut short.
+        return LatestVersion(SupersessionReason.AMBIGUOUS_SUCCESSOR)
+    if summary.cut_off:
+        # The bound ended the walk before every child was seen (more than
+        # MAX_CHAIN_DEPTH versions, reachable through tag-only edits). Neither
+        # "no current version" nor a specific id can be claimed.
+        log.warning(
+            "superseded_successor_search_truncated",
+            memory_id=str(memory_id),
+            bound=MAX_CHAIN_DEPTH,
+        )
+        return LatestVersion(SupersessionReason.SUPERSEDED_WITHOUT_SUCCESSOR, truncated=True)
     if summary.total == 0:
         return LatestVersion(SupersessionReason.SUPERSEDED_WITHOUT_SUCCESSOR)
     if summary.live == 0:
         return LatestVersion(SupersessionReason.NO_CURRENT_VERSION)
-    if summary.live > 1:
-        return LatestVersion(SupersessionReason.AMBIGUOUS_SUCCESSOR)
 
     latest_id = uuid.UUID(summary.only_id)
     if user_id is None:
@@ -184,15 +206,18 @@ async def unavailable_version_error(
     latest = await find_latest_version(
         session, memory_id, row.workspace_id, user_id=user_id
     )
+    details = {
+        "memory_id": str(memory_id),
+        "latest_memory_id": (
+            str(latest.latest_memory_id) if latest.latest_memory_id else None
+        ),
+        "reason": latest.reason.value,
+    }
+    if latest.truncated:
+        details["truncated"] = True  # additive; only present when the walk was cut off
     return MemoryVersionStaleError(
         f"Memory {memory_id} has been superseded and cannot be edited.",
-        details={
-            "memory_id": str(memory_id),
-            "latest_memory_id": (
-                str(latest.latest_memory_id) if latest.latest_memory_id else None
-            ),
-            "reason": latest.reason.value,
-        },
+        details=details,
     )
 
 

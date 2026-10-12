@@ -43,9 +43,16 @@ def _own(current: bool) -> MagicMock:
     return _result(first=SimpleNamespace(current_version=current))
 
 
-def _summary(total: int, live: int, only_id: uuid.UUID | None = None) -> MagicMock:
+def _summary(
+    total: int, live: int, only_id: uuid.UUID | None = None, cut_off: int = 0
+) -> MagicMock:
     return _result(
-        one=SimpleNamespace(total=total, live=live, only_id=str(only_id) if only_id else None)
+        one=SimpleNamespace(
+            total=total,
+            live=live,
+            only_id=str(only_id) if only_id else None,
+            cut_off=cut_off,
+        )
     )
 
 
@@ -158,3 +165,47 @@ async def test_missing_or_deleted_rows_stay_the_generic_404(row) -> None:
     assert isinstance(error, MemoryNotFoundError)
     assert error.code == "SM020"
     assert session.execute.await_count == 1  # no descendant lookup, nothing leaked
+
+
+# ── Truncated walks (more than MAX_CHAIN_DEPTH versions) ─────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("live", "only_id"), [(0, None), (1, LATEST_ID)], ids=["no-live-head", "one-live-head"]
+)
+async def test_truncated_walk_never_claims_no_current_version_or_an_id(live, only_id) -> None:
+    session = _session(_own(False), _summary(10, live, only_id, cut_off=1))
+    with patch(_ACCESS, new=AsyncMock()) as access:
+        latest = await find_latest_version(session, MEMORY_ID, WS_ID, user_id=USER_ID)
+    assert latest.reason is SupersessionReason.SUPERSEDED_WITHOUT_SUCCESSOR
+    assert latest.latest_memory_id is None
+    assert latest.truncated is True
+    access.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_fork_seen_in_a_truncated_walk_is_still_ambiguous() -> None:
+    session = _session(_own(False), _summary(10, 2, LATEST_ID, cut_off=1))
+    latest = await find_latest_version(session, MEMORY_ID, WS_ID, user_id=USER_ID)
+    assert latest.reason is SupersessionReason.AMBIGUOUS_SUCCESSOR
+    assert latest.truncated is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_error_flags_truncation_only_when_it_happened() -> None:
+    row = SimpleNamespace(workspace_id=WS_ID, current_version=False, deleted_at=None)
+    cut = _session(_result(first=row), _own(False), _summary(10, 0, cut_off=1))
+    error = await unavailable_version_error(cut, MEMORY_ID, user_id=USER_ID)
+    assert error.details == {
+        "memory_id": str(MEMORY_ID),
+        "latest_memory_id": None,
+        "reason": "superseded_without_successor",
+        "truncated": True,
+    }
+    normal = _session(_result(first=row), _own(False), _summary(0, 0))
+    error = await unavailable_version_error(normal, MEMORY_ID, user_id=USER_ID)
+    assert "truncated" not in error.details

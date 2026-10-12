@@ -1501,3 +1501,37 @@ async def test_get_reports_currency_and_the_latest_id_for_superseded_content(
     assert new.json()["data"]["is_current"] is True
     assert new.json()["data"]["latest_memory_id"] is None
     assert new.json()["data"]["supersession_reason"] is None
+
+
+async def test_chain_longer_than_the_walk_bound_is_reported_as_cut_off_not_as_no_version(
+    client, db_engine, tenants, scorer, monkeypatch
+) -> None:
+    from sourcemind.services.attribution import versioning
+
+    alice = tenants.admin_id
+    v1 = await _seed_memory(db_engine, tenants, alice, "Very long history.")
+    parent, ids = v1, []
+    for n in range(2, 7):  # v2..v6; only the last is current
+        parent = await _insert_child(
+            db_engine, tenants, parent, current=(n == 6), version=n
+        )
+        ids.append(parent)
+    await _set_state(db_engine, tenants, v1, current=False)
+
+    # Within the bound the walk reaches the head and names it.
+    full = _stale_details(await _patch(client, alice, v1, "Edit the root."))
+    assert (full["latest_memory_id"], full["reason"]) == (str(ids[-1]), "superseded")
+    assert "truncated" not in full
+
+    # Bound smaller than the chain: honest "cannot say", never a false claim.
+    monkeypatch.setattr(versioning, "MAX_CHAIN_DEPTH", 3)
+    cut = _stale_details(await _patch(client, alice, v1, "Edit the root."))
+    assert cut == {
+        "memory_id": str(v1),
+        "latest_memory_id": None,
+        "reason": "superseded_without_successor",
+        "truncated": True,
+    }
+    got = (await _get(client, alice, v1)).json()["data"]
+    assert (got["is_current"], got["latest_memory_id"]) == (False, None)
+    assert got["supersession_reason"] == "superseded_without_successor"
