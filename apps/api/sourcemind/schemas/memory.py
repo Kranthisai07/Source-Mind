@@ -215,6 +215,27 @@ class MemoryResponse(BaseModel):
     # Relationship summary
     relation_count: int = Field(default=0, description="Number of related memories")
 
+    # Version currency. Populated by GET /memories/:id only; None elsewhere
+    # (search, PATCH) so existing consumers are unaffected.
+    is_current: bool | None = Field(
+        default=None,
+        description="False when a newer version supersedes this one (GET only).",
+    )
+    latest_memory_id: UUID | None = Field(
+        default=None,
+        description=(
+            "The unique current, non-deleted, readable successor. Set only when "
+            "supersession_reason is 'superseded'."
+        ),
+    )
+    supersession_reason: str | None = Field(
+        default=None,
+        description=(
+            "superseded | ambiguous_successor | no_current_version | "
+            "superseded_without_successor; null when current."
+        ),
+    )
+
     model_config = {"from_attributes": True}
 
 

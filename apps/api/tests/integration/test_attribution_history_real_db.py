@@ -382,13 +382,16 @@ async def test_retried_content_patch_creates_no_duplicate_event_or_version(
     second = await _patch(client, bob, v1, "Retry me, edited.", key=key)
 
     assert first.status_code == 200
-    assert second.status_code == 404  # stale id; not a successful replay
+    # Stale id: refused with the successor's id, NOT a successful replay (D-025).
+    assert second.status_code == 409
+    assert second.json()["error"]["code"] == "SM035"
+    assert second.json()["error"]["details"]["latest_memory_id"] == first.json()["data"]["id"]
     chain = await _chain_state(db_engine, tenants, v1)
     assert [c[1] for c in chain] == [1, 2] and sum(1 for c in chain if c[2]) == 1
     assert len(await _edits(db_engine, tenants, [uuid.UUID(c[0]) for c in chain])) == 2
 
 
-async def test_retried_metadata_only_patch_is_noop_on_new_id_and_404_on_stale_id(
+async def test_retried_metadata_only_patch_is_noop_on_new_id_and_409_on_stale_id(
     client, db_engine, tenants, scorer
 ) -> None:
     alice, bob = tenants.admin_id, tenants.member_id
@@ -399,7 +402,8 @@ async def test_retried_metadata_only_patch_is_noop_on_new_id_and_404_on_stale_id
     stale = await _patch(client, bob, v1, "Meta text.", tags=["t"])
     on_new = await _patch(client, bob, v2, "Meta text.", tags=["t"])
 
-    assert stale.status_code == 404  # documented behaviour, not idempotency
+    assert stale.status_code == 409  # documented behaviour, not idempotency
+    assert stale.json()["error"]["details"]["latest_memory_id"] == str(v2)
     assert on_new.status_code == 200 and on_new.json()["data"]["id"] == str(v2)
     chain = await _chain_state(db_engine, tenants, v1)
     assert [c[1] for c in chain] == [1, 2]
@@ -816,8 +820,17 @@ async def test_concurrent_patches_of_one_version_settle_without_forking(
     resp_a, resp_b = await asyncio.wait_for(asyncio.gather(task_a, task_b), timeout=30)
 
     statuses = sorted([resp_a.status_code, resp_b.status_code])
-    # Observed contract: the winner succeeds; the loser finds no current version.
-    assert statuses == [200, 404], (resp_a.text, resp_b.text)
+    # Observed contract: the winner succeeds; the loser is told its version was
+    # superseded and is pointed at the winner's version (A is the one held in
+    # its transaction, so A always wins the row lock).
+    assert statuses == [200, 409], (resp_a.text, resp_b.text)
+    loser = resp_b.json()["error"]
+    assert loser["code"] == "SM035"
+    assert loser["details"] == {
+        "memory_id": str(v1),
+        "latest_memory_id": resp_a.json()["data"]["id"],
+        "reason": "superseded",
+    }
     chain = await _chain_state(db_engine, tenants, v1)
     assert [c[1] for c in chain] == [1, 2]
     assert sum(1 for c in chain if c[2]) == 1  # exactly one current version
@@ -1303,3 +1316,188 @@ async def test_invalid_score_input_is_refused_by_the_route_and_the_request_rolls
     assert refused.json()["error"]["code"] == "SM034", refused.text
     assert "invalid_score_input" in refused.json()["error"]["message"], refused.text
     assert await _write_state(db_engine, tenants, v1) == before
+
+
+# ── superseded versions: 409 SM035 with the unique latest id (D-025) ─────────
+
+
+async def _insert_child(
+    engine,
+    data,
+    parent_id: uuid.UUID,
+    *,
+    workspace_id: uuid.UUID | None = None,
+    current: bool = True,
+    deleted: bool = False,
+    version: int = 2,
+) -> uuid.UUID:
+    """Insert a version row directly (forks and retirements the API cannot make)."""
+    ws = workspace_id or data.target_workspace_id
+    child_id = uuid.uuid4()
+    session = await _session(engine, data.owner_id, ws)
+    async with session:
+        await session.execute(
+            text(
+                "INSERT INTO memories (id, workspace_id, parent_memory_id, content, "
+                "content_hash, version, current_version, deleted_at) VALUES "
+                "(CAST(:id AS uuid), CAST(:ws AS uuid), CAST(:p AS uuid), :c, :h, :v, :cur, "
+                "CASE WHEN :del THEN NOW() ELSE NULL END)"
+            ),
+            {
+                "id": str(child_id),
+                "ws": str(ws),
+                "p": str(parent_id),
+                "c": f"child {child_id}",
+                "h": uuid.uuid4().hex,
+                "v": version,
+                "cur": current,
+                "del": deleted,
+            },
+        )
+        await session.commit()
+    return child_id
+
+
+async def _set_state(engine, data, memory_id, *, current=None, deleted=None) -> None:
+    session = await _session(engine, data.owner_id, data.target_workspace_id)
+    async with session:
+        if current is not None:
+            await session.execute(
+                text("UPDATE memories SET current_version = :c WHERE id = CAST(:i AS uuid)"),
+                {"c": current, "i": str(memory_id)},
+            )
+        if deleted:
+            await session.execute(
+                text("UPDATE memories SET deleted_at = NOW() WHERE id = CAST(:i AS uuid)"),
+                {"i": str(memory_id)},
+            )
+        await session.commit()
+
+
+def _stale_details(resp: httpx.Response) -> dict:
+    assert resp.status_code == 409, resp.text
+    error = resp.json()["error"]
+    assert error["code"] == "SM035"
+    return error["details"]
+
+
+async def test_stale_patch_is_409_with_the_unique_latest_id_and_writes_nothing(
+    client, db_engine, tenants, scorer
+) -> None:
+    alice, bob = tenants.admin_id, tenants.member_id
+    v1 = await _seed_memory(db_engine, tenants, alice, "Stale me.")
+    first = await _patch(client, bob, v1, "Stale me, edited.")
+    v2 = first.json()["data"]["id"]
+    # A same-parent row in ANOTHER workspace must never be offered as the latest.
+    await _insert_child(db_engine, tenants, v1, workspace_id=tenants.other_workspace_id)
+    chain_before = await _chain_state(db_engine, tenants, v1)
+    edits_before = await _edits(db_engine, tenants, [v1, uuid.UUID(v2)])
+
+    stale = await _patch(client, alice, v1, "Second writer on the old version.")
+
+    assert _stale_details(stale) == {
+        "memory_id": str(v1),
+        "latest_memory_id": v2,
+        "reason": "superseded",
+    }
+    assert await _chain_state(db_engine, tenants, v1) == chain_before  # no new version
+    assert await _edits(db_engine, tenants, [v1, uuid.UUID(v2)]) == edits_before
+    # The latest version is untouched and still editable.
+    assert (await _patch(client, alice, uuid.UUID(v2), "Edited on the latest.")).status_code == 200
+
+
+async def test_stale_patch_does_not_leak_to_non_members_or_other_workspaces(
+    client, db_engine, tenants, scorer
+) -> None:
+    alice, bob = tenants.admin_id, tenants.member_id
+    v1 = await _seed_memory(db_engine, tenants, alice, "No leaks.")
+    assert (await _patch(client, bob, v1, "No leaks, edited.")).status_code == 200
+
+    for outsider in (tenants.zero_membership_id, tenants.other_workspace_member_id):
+        resp = await _patch(client, outsider, v1, "Probe.")
+        assert resp.status_code == 404, resp.text
+        assert resp.json()["error"]["code"] == "SM020"
+        assert "latest_memory_id" not in str(resp.json()["error"]["details"])
+        got = await client.get(f"/v1/memories/{v1}", headers={"X-Test-User": str(outsider)})
+        assert got.status_code == 404
+    # A viewer can read but not contribute: refused before any version hint.
+    viewer = await _patch(client, tenants.viewer_id, v1, "Probe.")
+    assert viewer.status_code == 403
+    assert "latest_memory_id" not in viewer.text
+
+
+async def test_missing_and_deleted_versions_stay_generic_404(
+    client, db_engine, tenants, scorer
+) -> None:
+    alice, bob = tenants.admin_id, tenants.member_id
+    missing = await _patch(client, bob, uuid.uuid4(), "Nothing here.")
+    assert (missing.status_code, missing.json()["error"]["code"]) == (404, "SM020")
+
+    v1 = await _seed_memory(db_engine, tenants, alice, "Soon deleted.")
+    assert (await _patch(client, bob, v1, "Soon deleted, edited.")).status_code == 200
+    await _set_state(db_engine, tenants, v1, deleted=True)
+    gone = await _patch(client, bob, v1, "Edit a deleted version.")
+    assert (gone.status_code, gone.json()["error"]["code"]) == (404, "SM020")
+
+
+async def test_fork_is_ambiguous_and_never_picks_a_successor(
+    client, db_engine, tenants, scorer
+) -> None:
+    alice, bob = tenants.admin_id, tenants.member_id
+    v1 = await _seed_memory(db_engine, tenants, alice, "Forked.")
+    assert (await _patch(client, bob, v1, "Forked, edited.")).status_code == 200
+    await _insert_child(db_engine, tenants, v1)  # a second CURRENT child of v1
+
+    details = _stale_details(await _patch(client, alice, v1, "Which one?"))
+
+    assert details == {
+        "memory_id": str(v1),
+        "latest_memory_id": None,
+        "reason": "ambiguous_successor",
+    }
+    got = (await _get(client, alice, v1)).json()["data"]
+    assert (got["is_current"], got["latest_memory_id"], got["supersession_reason"]) == (
+        False,
+        None,
+        "ambiguous_successor",
+    )
+
+
+async def test_deleted_latest_and_merge_retired_versions_are_explicit(
+    client, db_engine, tenants, scorer
+) -> None:
+    alice, bob = tenants.admin_id, tenants.member_id
+    v1 = await _seed_memory(db_engine, tenants, alice, "Latest gets deleted.")
+    patched = await _patch(client, bob, v1, "Latest gets deleted, v2.")
+    v2 = uuid.UUID(patched.json()["data"]["id"])
+    await _set_state(db_engine, tenants, v2, deleted=True)
+    details = _stale_details(await _patch(client, alice, v1, "Edit v1."))
+    assert (details["latest_memory_id"], details["reason"]) == (None, "no_current_version")
+
+    retired = await _seed_memory(db_engine, tenants, alice, "Retired by a merge.")
+    await _set_state(db_engine, tenants, retired, current=False)  # no child at all
+    details = _stale_details(await _patch(client, alice, retired, "Edit retired."))
+    assert details == {
+        "memory_id": str(retired),
+        "latest_memory_id": None,
+        "reason": "superseded_without_successor",
+    }
+
+
+async def test_get_reports_currency_and_the_latest_id_for_superseded_content(
+    client, db_engine, tenants, scorer
+) -> None:
+    alice, bob = tenants.admin_id, tenants.member_id
+    v1 = await _seed_memory(db_engine, tenants, alice, "Read me.")
+    v2 = (await _patch(client, bob, v1, "Read me, edited.")).json()["data"]["id"]
+
+    old = await _get(client, alice, v1)
+    new = await _get(client, alice, uuid.UUID(v2))
+
+    assert old.status_code == 200 and old.json()["data"]["content"] == "Read me."
+    assert old.json()["data"]["is_current"] is False
+    assert old.json()["data"]["latest_memory_id"] == v2
+    assert old.json()["data"]["supersession_reason"] == "superseded"
+    assert new.json()["data"]["is_current"] is True
+    assert new.json()["data"]["latest_memory_id"] is None
+    assert new.json()["data"]["supersession_reason"] is None
