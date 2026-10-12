@@ -53,10 +53,32 @@ function conflictDetail(conflict) {
     };
 }
 
+// The demo has one workspace; ones created in the UI live for the page session.
+const mockWorkspaces = [WORKSPACE];
+
 // ----- workspace -----
 export const mockApi = {
     getCurrentUser: () => request(() => CURRENT_USER),
     getWorkspace:   () => request(() => WORKSPACE),
+    listWorkspaces: () => request(() => ({ items: [...mockWorkspaces] })),
+    createWorkspace: async ({ name, slug, description } = {}) =>
+        request(() => {
+            if (mockWorkspaces.some((w) => w.slug === slug)) {
+                const err = new Error("409 Conflict");
+                err.status = 409;
+                err.body = { error: { code: "SM031", message: "Workspace slug already exists" } };
+                throw err;
+            }
+            const created = { id: `ws_${slug}`, name, slug, description: description || null, plan: "Free" };
+            mockWorkspaces.push(created);
+            return created;
+        }),
+    addWorkspaceMember: async (_workspaceId, { email, role = "member" } = {}) =>
+        request(() => ({
+            user: { id: `usr_${String(email).split("@")[0]}`, display_name: String(email).split("@")[0], avatar_url: null },
+            role,
+            joined_at: new Date().toISOString(),
+        })),
 
     // GET /v1/workspaces/:id/analytics/overview
     getAnalyticsOverview: (_wsId) => request(() => ({

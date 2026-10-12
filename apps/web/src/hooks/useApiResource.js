@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { classifyApiError, retryDelayMs, shouldClearData } from "@/lib/apiError";
 import { createRequestGate } from "@/lib/requestGate";
-import { onIdentityReset } from "@/lib/realApi";
+import { onIdentityReset, isStaleWorkspaceError } from "@/lib/realApi";
 
 /**
  * One loading/error/data lifecycle for every page.
@@ -77,6 +77,10 @@ export function useApiResource(fetcher, options = {}) {
                 setRetryAt(null);
             })
             .catch((err) => {
+                // A request dropped because the workspace changed: not an
+                // error to show. The scope-change subscription below has
+                // already invalidated this gate and queued the re-fetch.
+                if (isStaleWorkspaceError(err)) return;
                 if (!g.accept(token)) return;
                 const classified = classifyApiError(err);
 

@@ -4,6 +4,7 @@ import { useClerk, useUser } from "@clerk/clerk-react";
 import {
     Home, Brain, BarChart3, AlertTriangle, ArrowRightLeft,
     Plug, Settings as SettingsIcon, ChevronLeft, ChevronRight, LogOut,
+    ChevronsUpDown, Check, Plus,
 } from "lucide-react";
 import {
     DropdownMenu,
@@ -16,6 +17,8 @@ import {
 import api from "../../lib/api";
 import { initials } from "../../lib/format";
 import { isPilotMode } from "../../lib/pilotMode";
+import { useWorkspaces } from "../workspace/WorkspaceProvider";
+import CreateWorkspaceDialog from "../workspace/CreateWorkspaceDialog";
 
 const NAV = [
     { to: "/dashboard",  label: "Dashboard",   icon: Home,           testId: "nav-dashboard"  },
@@ -34,7 +37,9 @@ export default function Sidebar({ collapsed, onToggle }) {
     const { signOut } = useClerk();
 
     const [fallbackUser, setFallbackUser] = useState(null);
-    const [workspace, setWorkspace] = useState(null);
+    const [createOpen, setCreateOpen] = useState(false);
+    const { list: workspaces, currentId, switchTo } = useWorkspaces();
+    const workspace = workspaces.find((w) => w.id === currentId) || null;
 
     useEffect(() => {
         if (isSignedIn) {
@@ -43,10 +48,6 @@ export default function Sidebar({ collapsed, onToggle }) {
         }
         api.getCurrentUser().then(setFallbackUser).catch(() => setFallbackUser(null));
     }, [isSignedIn]);
-
-    useEffect(() => {
-        api.getWorkspace().then(setWorkspace).catch(() => setWorkspace(null));
-    }, []);
 
     const userName = user?.fullName || fallbackUser?.display_name || fallbackUser?.name || "Signed out";
     const userEmail = user?.primaryEmailAddress?.emailAddress || fallbackUser?.email || "";
@@ -71,22 +72,64 @@ export default function Sidebar({ collapsed, onToggle }) {
         >
             {/* Logo / workspace */}
             <div className="h-16 flex items-center px-3 border-b border-sm-border">
-                <button
-                    data-testid="workspace-switcher"
-                    onClick={() => navigate(pilotMode ? "/memories" : "/dashboard")}
-                    className="flex items-center gap-2.5 w-full overflow-hidden"
-                    title={wsName}
-                >
-                    <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-sm-blue to-sm-purple flex items-center justify-center shrink-0 shadow-[0_0_0_1px_rgba(79,126,255,0.35)_inset]">
-                        <Brain className="w-[18px] h-[18px] text-white" strokeWidth={2.5} />
-                    </div>
-                    {!collapsed && (
-                        <div className="flex-1 text-left overflow-hidden">
-                            <div className="text-[13px] font-semibold text-sm-text truncate leading-tight">SourceMind</div>
-                            <div className="text-[11px] font-mono text-sm-text-secondary truncate leading-tight">{wsSlug}</div>
-                        </div>
-                    )}
-                </button>
+                {/* modal={false}: the "Create workspace" item opens a Dialog; a modal
+                    menu would leave the page inert after handing focus over. */}
+                <DropdownMenu modal={false}>
+                    <DropdownMenuTrigger asChild>
+                        <button
+                            type="button"
+                            data-testid="workspace-switcher"
+                            aria-label={`Workspace: ${wsName || "none"}. Switch workspace`}
+                            className="flex items-center gap-2.5 w-full overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sm-blue/50"
+                            title={wsName}
+                        >
+                            <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-sm-blue to-sm-purple flex items-center justify-center shrink-0 shadow-[0_0_0_1px_rgba(79,126,255,0.35)_inset]">
+                                <Brain className="w-[18px] h-[18px] text-white" strokeWidth={2.5} />
+                            </div>
+                            {!collapsed && (
+                                <>
+                                    <div className="flex-1 text-left overflow-hidden">
+                                        <div className="text-[13px] font-semibold text-sm-text truncate leading-tight">{wsName || "SourceMind"}</div>
+                                        <div className="text-[11px] font-mono text-sm-text-secondary truncate leading-tight">{wsSlug}</div>
+                                    </div>
+                                    <ChevronsUpDown className="w-4 h-4 text-sm-text-secondary shrink-0" />
+                                </>
+                            )}
+                        </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                        side={collapsed ? "right" : "bottom"}
+                        align="start"
+                        sideOffset={8}
+                        data-testid="workspace-menu"
+                        className="w-64 max-h-80 overflow-y-auto bg-sm-surface border-sm-border text-sm-text"
+                    >
+                        <DropdownMenuLabel className="text-[11px] font-medium text-sm-text-secondary">Workspaces</DropdownMenuLabel>
+                        {workspaces.map((w) => (
+                            <DropdownMenuItem
+                                key={w.id}
+                                data-testid={`workspace-option-${w.id}`}
+                                onSelect={() => switchTo(w.id)}
+                                className="cursor-pointer gap-2"
+                            >
+                                <div className="flex-1 min-w-0">
+                                    <div className="text-[12.5px] font-medium truncate">{w.name}</div>
+                                    <div className="text-[11px] font-mono text-sm-text-secondary truncate">{w.slug}</div>
+                                </div>
+                                {w.id === currentId && <Check className="w-4 h-4 text-sm-blue shrink-0" aria-label="Current workspace" />}
+                            </DropdownMenuItem>
+                        ))}
+                        <DropdownMenuSeparator className="bg-sm-border" />
+                        <DropdownMenuItem
+                            data-testid="workspace-create-item"
+                            onSelect={() => setCreateOpen(true)}
+                            className="cursor-pointer gap-2 text-[12.5px]"
+                        >
+                            <Plus className="w-4 h-4" /> Create workspace
+                        </DropdownMenuItem>
+                    </DropdownMenuContent>
+                </DropdownMenu>
+                <CreateWorkspaceDialog open={createOpen} onOpenChange={setCreateOpen} />
             </div>
 
             {/* Nav */}
