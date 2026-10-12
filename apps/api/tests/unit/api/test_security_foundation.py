@@ -437,6 +437,7 @@ def _rate_settings(*, fail_closed: bool = True) -> SimpleNamespace:
         rate_limit_workspace_create_per_hour=1,
         rate_limit_connector_sync_per_hour=1,
         rate_limit_slack_per_minute=1,
+        rate_limit_member_add_per_hour=1,
         rate_limit_fail_closed=fail_closed,
     )
 

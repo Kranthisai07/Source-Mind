@@ -5,6 +5,7 @@ GET  /v1/workspaces              → list workspaces for current user
 POST /v1/workspaces              → create workspace (auto-creates org if needed)
 GET  /v1/workspaces/:id          → get workspace details
 GET  /v1/workspaces/:id/members  → list members with roles
+POST /v1/workspaces/:id/members  → owner/admin adds an ordinary member by email
 GET  /v1/workspaces/:id/analytics → contribution map + knowledge gaps
 """
 
@@ -15,8 +16,10 @@ from uuid import UUID
 
 import structlog
 from fastapi import APIRouter, status
-from sqlalchemy import select
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from sourcemind.core.config import get_settings
 from sourcemind.core.database import set_rls_workspace_context
 from sourcemind.core.dependencies import (
     CurrentUser,
@@ -24,12 +27,16 @@ from sourcemind.core.dependencies import (
     IdempotencyKey,
     RequestID,
     WorkspacePermission,
+    fetch_clerk_primary_email_verification,
     require_workspace_member,
     require_workspace_permission,
 )
 from sourcemind.core.exceptions import (
+    ServiceUnavailableError,
     UserNotFoundError,
+    ValidationError,
     WorkspaceAccessDeniedError,
+    WorkspaceMemberExistsError,
     WorkspaceNotFoundError,
 )
 from sourcemind.core.rate_limit import RateLimitedOperation, enforce_rate_limit
@@ -45,6 +52,7 @@ from sourcemind.schemas.common import APIResponse, ResponseMeta
 from sourcemind.schemas.user import UserSummary
 from sourcemind.schemas.workspace import (
     WorkspaceCreate,
+    WorkspaceMemberAdd,
     WorkspaceMemberResponse,
     WorkspaceResponse,
 )
@@ -275,6 +283,266 @@ async def list_workspace_members(
     ]
 
     return APIResponse(data=members, meta=_make_meta(request_id, start))
+
+
+_RLS_INSUFFICIENT_PRIVILEGE = "42501"
+
+
+def _is_rls_denial(exc: DBAPIError) -> bool:
+    """True for an RLS WITH CHECK / policy denial (SQLSTATE 42501)."""
+    orig = getattr(exc, "orig", None)
+    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    return code == _RLS_INSUFFICIENT_PRIVILEGE or "row-level security" in str(exc)
+
+
+@router.post(
+    "/{workspace_id}/members",
+    status_code=status.HTTP_201_CREATED,
+    response_model=APIResponse[WorkspaceMemberResponse],
+    summary="Add an existing user to a workspace by email",
+)
+async def add_workspace_member(
+    workspace_id: UUID,
+    body: WorkspaceMemberAdd,
+    db: DBSession,
+    current_user: CurrentUser,
+    request_id: RequestID,
+    idempotency_key: IdempotencyKey,
+) -> APIResponse[WorkspaceMemberResponse]:
+    """
+    Add a user who has already signed in to this workspace as member/viewer.
+
+    Notes recorded in D-024:
+    - Idempotency-Key is validated but NOT de-duplicated. Idempotency here is
+      by natural key (workspace_id, user_id): a repeated add returns 409
+      already_member rather than a second row.
+    - The endpoint reveals whether an email belongs to a signed-in user, but
+      only to this workspace's admins/owners and under a per-user rate limit.
+    - A returning (departed) member's attribution history and GitHub author
+      links reactivate with the membership; ingestion documents that were
+      failed at revocation stay failed.
+    - joined_at is the membership row's created_at (first join), not the time
+      of a re-add.
+    """
+    start = time.perf_counter()
+    requested_email = body.email.lower()
+
+    await enforce_rate_limit(RateLimitedOperation.MEMBER_ADD, current_user.user_id)
+    await require_workspace_permission(
+        db,
+        current_user.user_id,
+        workspace_id,
+        WorkspacePermission.ADMINISTER,
+    )
+
+    # Shared lock on the CALLER's own membership row. A concurrent revoke of
+    # the caller takes FOR UPDATE on this row, so it waits until this request
+    # commits; a revoke that already committed is seen here and refuses the add.
+    caller = (
+        await db.execute(
+            select(WorkspaceMember.role, WorkspaceMember.status)
+            .where(
+                WorkspaceMember.workspace_id == workspace_id,
+                WorkspaceMember.user_id == current_user.user_id,
+            )
+            .with_for_update(read=True)
+        )
+    ).first()
+    if caller is None or caller.status != WorkspaceMembershipStatus.ACTIVE.value:
+        raise WorkspaceNotFoundError(str(workspace_id))
+    if caller.role not in (WorkspaceRole.ADMIN.value, WorkspaceRole.OWNER.value):
+        raise WorkspaceAccessDeniedError("Administrator access is required.")
+    caller_is_owner = caller.role == WorkspaceRole.OWNER.value
+
+    # Resolve the target. Case-insensitive; two matches are never disambiguated.
+    candidates = (
+        (
+            await db.execute(
+                select(User)
+                .where(func.lower(User.email) == requested_email, User.deleted_at.is_(None))
+                .limit(2)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not candidates:
+        raise UserNotFoundError(
+            "No SourceMind user has that email. The person must sign in to "
+            "SourceMind once before they can be added.",
+            details={"reason": "user_not_found"},
+        )
+    if len(candidates) > 1:
+        raise ValidationError(
+            "More than one account matches that email, so it cannot be used.",
+            details={"reason": "email_ambiguous"},
+        )
+    target = candidates[0]
+
+    # Trust the association only if Clerk (server-side, uncached) confirms the
+    # stored user's PRIMARY email is verified and equals stored and requested
+    # email. With the explicit development bypass there is no Clerk to ask;
+    # that flag is rejected by Settings outside development.
+    settings = get_settings()
+    if not settings.auth_dev_bypass_enabled:
+        clerk_email, verification = await fetch_clerk_primary_email_verification(
+            target.clerk_id, settings.clerk_secret_key
+        )
+        if not (
+            verification == "verified"
+            and clerk_email.lower() == str(target.email).lower() == requested_email
+        ):
+            raise ValidationError(
+                "That email is not a verified primary email for the account.",
+                details={"reason": "email_not_verified"},
+            )
+
+    target_id = target.id
+    reactivated = False
+    existing = (
+        await db.execute(
+            select(WorkspaceMember.id, WorkspaceMember.role, WorkspaceMember.status)
+            .where(
+                WorkspaceMember.workspace_id == workspace_id,
+                WorkspaceMember.user_id == target_id,
+            )
+            .with_for_update()
+        )
+    ).first()
+
+    def _conflict(existing_status: str | None) -> WorkspaceMemberExistsError:
+        if existing_status == WorkspaceMembershipStatus.DEPARTING.value:
+            return WorkspaceMemberExistsError(
+                "A handoff for this member is in progress.",
+                details={"reason": "handoff_in_progress"},
+            )
+        return WorkspaceMemberExistsError(
+            "That user is already a member of this workspace.",
+            details={"reason": "already_member"},
+        )
+
+    former_owner_denied = WorkspaceAccessDeniedError(
+        "Only an owner can re-add a former owner."
+    )
+
+    if existing is None:
+        savepoint = await db.begin_nested()
+        try:
+            db.add(
+                WorkspaceMember(
+                    workspace_id=workspace_id,
+                    user_id=target_id,
+                    role=body.role,
+                    status=WorkspaceMembershipStatus.ACTIVE.value,
+                    invited_by_id=current_user.user_id,
+                )
+            )
+            await db.flush()
+            await savepoint.commit()
+        except IntegrityError as exc:
+            await savepoint.rollback()
+            # Lost a race (or the row is invisible to FOR UPDATE because RLS
+            # filters a former-owner row for a non-owner). Classify the winner.
+            winner = (
+                await db.execute(
+                    select(WorkspaceMember.role, WorkspaceMember.status).where(
+                        WorkspaceMember.workspace_id == workspace_id,
+                        WorkspaceMember.user_id == target_id,
+                    )
+                )
+            ).first()
+            if (
+                winner is not None
+                and winner.status == WorkspaceMembershipStatus.DEPARTED.value
+                and winner.role == WorkspaceRole.OWNER.value
+                and not caller_is_owner
+            ):
+                raise former_owner_denied from exc
+            raise _conflict(winner.status if winner is not None else None) from exc
+        except DBAPIError as exc:
+            await savepoint.rollback()
+            if _is_rls_denial(exc):
+                raise WorkspaceAccessDeniedError(
+                    "Administrator access is required."
+                ) from exc
+            raise
+    elif existing.status in (
+        WorkspaceMembershipStatus.ACTIVE.value,
+        WorkspaceMembershipStatus.DEPARTING.value,
+    ):
+        raise _conflict(existing.status)
+    else:
+        # departed: reactivate with the REQUESTED role. The old role (possibly
+        # admin or owner) is never restored.
+        try:
+            updated = (
+                await db.execute(
+                    update(WorkspaceMember)
+                    .where(
+                        WorkspaceMember.id == existing.id,
+                        WorkspaceMember.status == WorkspaceMembershipStatus.DEPARTED.value,
+                    )
+                    .values(
+                        role=body.role,
+                        status=WorkspaceMembershipStatus.ACTIVE.value,
+                        departed_at=None,
+                        invited_by_id=current_user.user_id,
+                    )
+                    .returning(WorkspaceMember.id)
+                )
+            ).first()
+        except DBAPIError as exc:
+            if _is_rls_denial(exc):
+                raise WorkspaceAccessDeniedError(
+                    "Administrator access is required."
+                ) from exc
+            raise
+        if updated is None:
+            # RLS USING filtered the row (former owner, non-owner caller) or
+            # it changed under us. Never a silent no-op.
+            if existing.role == WorkspaceRole.OWNER.value and not caller_is_owner:
+                raise former_owner_denied
+            raise _conflict(None)
+        reactivated = True
+
+    stored = (
+        await db.execute(
+            select(
+                WorkspaceMember.role,
+                WorkspaceMember.status,
+                WorkspaceMember.departed_at,
+                WorkspaceMember.created_at,
+            ).where(
+                WorkspaceMember.workspace_id == workspace_id,
+                WorkspaceMember.user_id == target_id,
+            )
+        )
+    ).first()
+    if (
+        stored is None
+        or stored.role != body.role
+        or stored.status != WorkspaceMembershipStatus.ACTIVE.value
+        or stored.departed_at is not None
+    ):
+        # Not reachable unless a policy or trigger changed the write.
+        raise ServiceUnavailableError("Membership could not be confirmed.")
+
+    response = WorkspaceMemberResponse(
+        user=UserSummary.model_validate(target),
+        role=WorkspaceRole(stored.role),
+        joined_at=stored.created_at,
+    )
+    await db.commit()
+
+    logger.info(
+        "workspace.member_added",
+        workspace_id=str(workspace_id),
+        target_user_id=str(target_id),
+        role=body.role,
+        actor_id=str(current_user.user_id),
+        reactivated=reactivated,
+    )
+    return APIResponse(data=response, meta=_make_meta(request_id, start))
 
 
 @router.delete(

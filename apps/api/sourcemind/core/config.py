@@ -209,6 +209,7 @@ class Settings(BaseSettings):
     rate_limit_workspace_create_per_hour: int = 5
     rate_limit_connector_sync_per_hour: int = 5
     rate_limit_slack_per_minute: int = 20
+    rate_limit_member_add_per_hour: int = 20
 
     # ── Sentry ────────────────────────────────────────────────────
     sentry_dsn: Annotated[str, Field(repr=False)] = ""
@@ -306,6 +307,7 @@ class Settings(BaseSettings):
                 self.rate_limit_workspace_create_per_hour,
                 self.rate_limit_connector_sync_per_hour,
                 self.rate_limit_slack_per_minute,
+                self.rate_limit_member_add_per_hour,
             )
         ):
             raise ValueError("Operation-specific rate limits must be positive")

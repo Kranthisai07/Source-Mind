@@ -35,6 +35,7 @@ class RateLimitedOperation(StrEnum):
     WORKSPACE_CREATE = "workspace-create"
     CONNECTOR_SYNC = "connector-sync"
     SLACK = "slack"
+    MEMBER_ADD = "member-add"
 
 
 def _operation_limit(operation: RateLimitedOperation) -> tuple[int, int]:
@@ -52,6 +53,10 @@ def _operation_limit(operation: RateLimitedOperation) -> tuple[int, int]:
             3600,
         ),
         RateLimitedOperation.SLACK: (settings.rate_limit_slack_per_minute, 60),
+        RateLimitedOperation.MEMBER_ADD: (
+            settings.rate_limit_member_add_per_hour,
+            3600,
+        ),
     }
     return limits[operation]
 
