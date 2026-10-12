@@ -122,6 +122,11 @@ export class StaleWorkspaceError extends Error {
 
 export const isStaleWorkspaceError = (err) => Boolean(err && err.stale === true);
 
+/** True when the build fixes the workspace (REACT_APP_DEFAULT_WORKSPACE_ID). */
+export function isWorkspacePinned() {
+    return Boolean(CONFIGURED_WS);
+}
+
 /** Current workspace-scope generation. Moves on any workspace or identity change. */
 export function workspaceGeneration() {
     return _workspaceGeneration;
@@ -165,10 +170,13 @@ export function resetIdentityScopedCaches() {
  * (best effort), invalidates in-flight work and notifies subscribers.
  */
 export function selectWorkspace(workspaceId) {
-    if (!workspaceId) return;
+    // A build pinned to one workspace sends every request there; a selection
+    // would only make the UI claim otherwise.
+    if (!workspaceId || CONFIGURED_WS) return;
     const userId = getCurrentUserId();
     _selected = { userId, id: workspaceId };
     writeSelection(userId, workspaceId);
+    mockApi.selectWorkspace(workspaceId);
     advanceScope("workspace");
 }
 
@@ -206,8 +214,15 @@ async function resolveWorkspaceId(explicit) {
     if (!_wsPromise) {
         // Captured with the memo, checked before the memo is cleared below.
         const generation = _workspaceGeneration;
+        // Whose lookup this is. The selection read/validated/cleared below is
+        // THIS user's, even if someone else has signed in by the time the
+        // answer arrives; otherwise A's list would be used to judge (and
+        // delete) B's saved choice.
+        const lookupUser = getCurrentUserId();
+        const lookupIdentity = _identityGeneration;
         _wsPromise = request("/v1/workspaces", { scoped: false })
             .then((r) => {
+                if (lookupIdentity !== _identityGeneration) throw new StaleWorkspaceError();
                 // This route IS enveloped: {data: [...], meta: {...}}.
                 const list = Array.isArray(r.data) ? r.data : [];
                 if (!list.length) {
@@ -218,7 +233,7 @@ async function resolveWorkspaceId(explicit) {
                         r
                     );
                 }
-                const userId = getCurrentUserId();
+                const userId = lookupUser;
                 const preferred = _selected && _selected.userId === userId ? _selected.id : null;
                 return chooseWorkspaceId(list, userId, preferred);
             })
@@ -370,7 +385,16 @@ async function request(path, { method = "GET", body, params, headers: extraHeade
         });
     }
     const latency = Math.round(performance.now() - t0);
-    const text = await res.text();
+    let text;
+    try {
+        text = await res.text();
+    } catch (cause) {
+        // A switch can abort the body while it is still being read.
+        if (isStale() || (cause && cause.name === "AbortError" && signal)) {
+            throw new StaleWorkspaceError();
+        }
+        throw cause;
+    }
     // The response is for a workspace the user has left: drop it unread.
     if (isStale()) throw new StaleWorkspaceError();
     const data = text ? JSON.parse(text) : {};

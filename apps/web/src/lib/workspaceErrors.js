@@ -35,6 +35,11 @@ export function mapWorkspaceError(err, action) {
     }
 
     if (action === "addMember") {
+        // A route that does not exist answers 405, or 404 with no SourceMind
+        // error code. Real "not found" answers carry a code (SM022, SM023).
+        if (status === 405 || (status === 404 && !code)) {
+            return { kind: "unsupported", message: "This server does not support adding members yet. Nobody was added." };
+        }
         if (reason === "user_not_found" || code === "SM023") {
             return { kind: "user_not_found", message: "No account with that email yet. They need to sign in to SourceMind once first, then you can add them." };
         }

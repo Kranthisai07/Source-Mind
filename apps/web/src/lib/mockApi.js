@@ -55,11 +55,14 @@ function conflictDetail(conflict) {
 
 // The demo has one workspace; ones created in the UI live for the page session.
 const mockWorkspaces = [WORKSPACE];
+// Set by realApi.selectWorkspace so mock reads follow the picker.
+let mockSelectedId = null;
 
 // ----- workspace -----
 export const mockApi = {
     getCurrentUser: () => request(() => CURRENT_USER),
-    getWorkspace:   () => request(() => WORKSPACE),
+    getWorkspace:   () => request(() => mockWorkspaces.find((w) => w.id === mockSelectedId) || WORKSPACE),
+    selectWorkspace: (id) => { mockSelectedId = id; },
     listWorkspaces: () => request(() => ({ items: [...mockWorkspaces] })),
     createWorkspace: async ({ name, slug, description } = {}) =>
         request(() => {
@@ -337,7 +340,11 @@ export const mockApi = {
     getSearchActivity:   () => request(() => ({ series: SEARCH_ACTIVITY })),
 
     // Team
-    listTeamMembers: () => request(() => ({ members: TEAM_MEMBERS })),
+    // The signed-in mock user (usr_01) is the first member, so the demo owner
+    // is recognised as one by the owner/admin checks.
+    listTeamMembers: () => request(() => ({
+        members: TEAM_MEMBERS.map((m, i) => (i === 0 ? { ...m, id: CURRENT_USER.id } : m)),
+    })),
     listContributors: () => request(() => ({ contributors: CONTRIBUTORS })),
 };
 

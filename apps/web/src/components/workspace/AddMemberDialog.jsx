@@ -28,7 +28,11 @@ export default function AddMemberDialog({ open, onOpenChange, workspaceId, works
     const [submitting, setSubmitting] = useState(false);
     const inFlight = useRef(false);
     const mounted = useRef(true);
-    useEffect(() => () => { mounted.current = false; }, []);
+    // Re-armed on setup (StrictMode runs setup, cleanup, setup).
+    useEffect(() => {
+        mounted.current = true;
+        return () => { mounted.current = false; };
+    }, []);
 
     // A closed dialog keeps no draft or stale error.
     useEffect(() => {

@@ -323,3 +323,82 @@ describe("a response that arrives after the workspace switch is dropped", () => 
         expect(workspaceGeneration()).toBe(before);
     });
 });
+
+
+describe("review follow-ups: lookup ownership, aborted bodies, error copy, mock parity", () => {
+    test("a lookup for user A finishing after user B signs in leaves B's saved choice intact", async () => {
+        const lateList = deferred2();
+        global.fetch = jest.fn(() => lateList.promise);
+        setCurrentUserId("user-A");
+        const pending = realApi.getWorkspace();
+        await new Promise((r) => setTimeout(r, 0));
+
+        // B signs in (as the Clerk bridge does: publish id, then reset) and has a saved choice.
+        setCurrentUserId("user-B");
+        writeSelection("user-B", WS_B);
+        resetIdentityScopedCaches();
+
+        // A's list (which does NOT contain B's workspace) arrives afterwards.
+        lateList.release(reply({ data: [{ id: WS_A, name: "A", slug: "a" }] }));
+        expect(isStaleWorkspaceError(await pending.then(() => null, (e) => e))).toBe(true);
+        expect(readSelection("user-B")).toBe(WS_B);
+    });
+
+    test("an abort while the body is being read is the stale result, not a failure", async () => {
+        const res = {
+            ok: true, status: 200, statusText: "OK", headers: { get: () => null },
+            text: () => new Promise((_resolve, reject) => {
+                // Rejects when the scope changes, like a real aborted body read.
+                setTimeout(() => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), 20);
+            }),
+        };
+        global.fetch = jest.fn((u) => (/\/v1\/workspaces$/.test(String(u).split("?")[0])
+            ? Promise.resolve(reply(LIST)) : Promise.resolve(res)));
+        const search = realApi.searchMemories({ query: "q" });
+        await new Promise((r) => setTimeout(r, 0));
+        await new Promise((r) => setTimeout(r, 0));
+        selectWorkspace(WS_B);
+        expect(isStaleWorkspaceError(await search.then(() => null, (e) => e))).toBe(true);
+    });
+
+    test("a genuine body-read failure stays an ordinary error", async () => {
+        const res = {
+            ok: true, status: 200, statusText: "OK", headers: { get: () => null },
+            text: () => Promise.reject(new TypeError("connection reset")),
+        };
+        global.fetch = jest.fn((u) => (/\/v1\/workspaces$/.test(String(u).split("?")[0])
+            ? Promise.resolve(reply(LIST)) : Promise.resolve(res)));
+        const err = await realApi.searchMemories({ query: "q" }).then(() => null, (e) => e);
+        expect(isStaleWorkspaceError(err)).toBe(false);
+        expect(err).toBeInstanceOf(TypeError);
+    });
+
+    test("add member against a server without the route says so", () => {
+        for (const e of [{ status: 405, body: { detail: "Method Not Allowed" } }, { status: 404, body: { detail: "Not Found" } }]) {
+            const m = mapWorkspaceError(e, "addMember");
+            expect(m.kind).toBe("unsupported");
+            expect(m.message).toMatch(/does not support adding members yet/);
+        }
+        // A coded 404 is still the real "no such user".
+        expect(mapWorkspaceError({ status: 404, body: { error: { code: "SM023", details: { reason: "user_not_found" } } } }, "addMember").kind)
+            .toBe("user_not_found");
+    });
+
+    test("mock mode: created workspace is what getWorkspace returns once selected; demo owner is a member", async () => {
+        const { mockApi } = require("./mockApi");
+        const { CURRENT_USER } = require("./mockData");
+        const created = await mockApi.createWorkspace({ name: "Friends Mock", slug: "friends-mock" });
+        selectWorkspace(created.id);
+        const ws = await mockApi.getWorkspace();
+        expect(ws.slug).toBe("friends-mock");
+        const { members } = await mockApi.listTeamMembers();
+        const mine = members.find((m) => (m.user || m).id === CURRENT_USER.id);
+        expect(String(mine.role).toLowerCase()).toBe("owner");
+    });
+});
+
+function deferred2() {
+    let release;
+    const promise = new Promise((resolve) => { release = resolve; });
+    return { promise, release };
+}

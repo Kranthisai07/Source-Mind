@@ -2724,3 +2724,11 @@ and a deterministic SHA-256 of the canonical payload. The hash excludes
 - Dropped mutations (an ingest started just before a switch) may still be
   processed by the server; the UI only guarantees it will not show their result in
   the wrong workspace.
+
+### D-026 addendum - review fixes
+
+- A workspace lookup is bound to the user and identity generation that started it; a late answer for a previous user is discarded and never validates or clears another user's saved choice.
+- Response bodies are read inside the stale guard, so a switch that aborts a body read is the stale result, not a failure.
+- Dismissing the create dialog mid-request lists the new workspace and toasts but does not switch or navigate. Mounted flags are re-armed on effect setup (StrictMode).
+- A build with REACT_APP_DEFAULT_WORKSPACE_ID is pinned: the picker and create entry points are replaced by a fixed label and selectWorkspace is a no-op, so the UI cannot claim a workspace the requests do not use.
+- Add member against a server without the route (405, or 404 with no error code) says the server does not support it yet. Merge order: the API route (PR #20) must land before this PR for real-mode add member.

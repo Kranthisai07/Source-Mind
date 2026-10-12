@@ -17,6 +17,7 @@ import {
 import api from "../../lib/api";
 import { initials } from "../../lib/format";
 import { isPilotMode } from "../../lib/pilotMode";
+import { isWorkspacePinned } from "../../lib/realApi";
 import { useWorkspaces } from "../workspace/WorkspaceProvider";
 import CreateWorkspaceDialog from "../workspace/CreateWorkspaceDialog";
 
@@ -40,6 +41,7 @@ export default function Sidebar({ collapsed, onToggle }) {
     const [createOpen, setCreateOpen] = useState(false);
     const { list: workspaces, currentId, switchTo } = useWorkspaces();
     const workspace = workspaces.find((w) => w.id === currentId) || null;
+    const pinned = isWorkspacePinned();
 
     useEffect(() => {
         if (isSignedIn) {
@@ -74,6 +76,27 @@ export default function Sidebar({ collapsed, onToggle }) {
             <div className="h-16 flex items-center px-3 border-b border-sm-border">
                 {/* modal={false}: the "Create workspace" item opens a Dialog; a modal
                     menu would leave the page inert after handing focus over. */}
+                {pinned ? (
+                    // The build fixes the workspace (REACT_APP_DEFAULT_WORKSPACE_ID),
+                    // so offering a choice would show one workspace while every
+                    // request still went to another.
+                    <div
+                        data-testid="workspace-switcher"
+                        data-pinned="true"
+                        title="This build is fixed to one workspace"
+                        className="flex items-center gap-2.5 w-full overflow-hidden"
+                    >
+                        <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-sm-blue to-sm-purple flex items-center justify-center shrink-0">
+                            <Brain className="w-[18px] h-[18px] text-white" strokeWidth={2.5} />
+                        </div>
+                        {!collapsed && (
+                            <div className="flex-1 text-left overflow-hidden">
+                                <div className="text-[13px] font-semibold text-sm-text truncate leading-tight">{wsName || "SourceMind"}</div>
+                                <div className="text-[11px] font-mono text-sm-text-secondary truncate leading-tight">{wsSlug}</div>
+                            </div>
+                        )}
+                    </div>
+                ) : (
                 <DropdownMenu modal={false}>
                     <DropdownMenuTrigger asChild>
                         <button
@@ -129,7 +152,8 @@ export default function Sidebar({ collapsed, onToggle }) {
                         </DropdownMenuItem>
                     </DropdownMenuContent>
                 </DropdownMenu>
-                <CreateWorkspaceDialog open={createOpen} onOpenChange={setCreateOpen} />
+                )}
+                {!pinned && <CreateWorkspaceDialog open={createOpen} onOpenChange={setCreateOpen} />}
             </div>
 
             {/* Nav */}
