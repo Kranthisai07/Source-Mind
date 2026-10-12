@@ -2758,6 +2758,10 @@ the membership state machine.
   (`RATE_LIMIT_MEMBER_ADD_WORKSPACE_PER_HOUR`, default 40, keyed by workspace id) so
   admins of one workspace cannot multiply the budget by taking turns. This does not
   stop many accounts each creating workspaces; it only bounds the rate. The
+  workspace bucket is spent only AFTER the `ADMINISTER` check passes (it is shared,
+  so otherwise any signed-in user who knew a workspace id could exhaust it and lock
+  the real administrators out); a retried request consumes a token from both
+  limiters. The per-user limiter runs first and applies to everyone. The
   responses for unknown versus unverified emails stay distinct because the client
   needs "ask them to sign in first". Recorded as an accepted limitation.
 - **Parser hardening.** Clerk answering 404 (user deleted there) is a definite

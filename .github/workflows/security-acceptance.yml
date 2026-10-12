@@ -250,7 +250,6 @@ jobs:
           tests/integration/test_security_foundation_real_db.py::test_concurrent_double_add_of_one_user_yields_one_201_and_one_409
           tests/integration/test_security_foundation_real_db.py::test_concurrent_owner_revocations_preserve_one_active_owner
           tests/integration/test_security_foundation_real_db.py::test_cross_workspace_insert_update_and_delete_are_blocked
-          tests/integration/test_security_foundation_real_db.py::test_crossing_readds_of_two_departed_members_complete_without_deadlock
           tests/integration/test_security_foundation_real_db.py::test_database_rejects_removing_the_last_active_owner
           tests/integration/test_security_foundation_real_db.py::test_departed_former_admin_readded_as_member_cannot_administer
           tests/integration/test_security_foundation_real_db.py::test_last_owner_stays_protected_and_no_owner_or_admin_row_is_creatable
@@ -262,6 +261,7 @@ jobs:
           tests/integration/test_security_foundation_real_db.py::test_revoke_of_the_caller_committing_before_insert_refuses_the_add
           tests/integration/test_security_foundation_real_db.py::test_revoke_then_readd_restores_access_immediately
           tests/integration/test_security_foundation_real_db.py::test_rls_context_is_transaction_local_on_reused_connection
+          tests/integration/test_security_foundation_real_db.py::test_two_admins_readding_the_same_departed_members_yield_one_winner_each
           tests/integration/test_security_foundation_real_db.py::test_workspace_context_cannot_substitute_for_membership
           tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable
           tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs

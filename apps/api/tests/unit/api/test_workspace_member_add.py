@@ -644,3 +644,26 @@ def test_non_ascii_emails_are_rejected_before_any_lookup(email):
     resp = _post(session, {"email": email})
     assert resp.status_code == 422
     session.execute.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("role", ["viewer", "member"])
+def test_non_admins_cannot_spend_the_shared_workspace_bucket(_patches, role):
+    # Real permission check: the caller is a plain viewer/member of the workspace.
+    session = _session([_result(first=SimpleNamespace(role=role)), MagicMock()])
+    for _ in range(3):
+        resp = _post(session, BODY, perm=None)
+        assert resp.status_code in (403, 404)
+        session.execute.side_effect = [_result(first=SimpleNamespace(role=role)), MagicMock()]
+    ops = [call.args[0].value for call in _patches.await_args_list]
+    # Only the per-user limiter ran; the workspace-wide bucket was never touched.
+    assert ops == ["member-add"] * 3
+
+
+@pytest.mark.unit
+def test_an_admin_still_spends_both_limiters_and_can_add(_patches):
+    session = _session([_result(users=[_user()]), _caller_row(), _result(first=None), _stored()])
+    resp = _post(session, BODY)
+    assert resp.status_code == 201
+    ops = [call.args[0].value for call in _patches.await_args_list]
+    assert ops == ["member-add", "member-add-workspace"]

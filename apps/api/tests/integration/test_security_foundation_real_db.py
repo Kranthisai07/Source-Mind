@@ -1231,7 +1231,7 @@ async def test_reciprocal_and_self_adds_never_deadlock_or_return_500(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_crossing_readds_of_two_departed_members_complete_without_deadlock(
+async def test_two_admins_readding_the_same_departed_members_yield_one_winner_each(
     wide_engine, member_add_env
 ) -> None:
     supabase_engine = wide_engine
