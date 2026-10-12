@@ -308,6 +308,9 @@ async def _fetch_clerk_user_json(clerk_id: str, secret_key: str) -> dict:
 def _primary_email_entry(data: dict) -> dict | None:
     """Return the email_addresses entry that is the user's primary address."""
     email_id = data.get("primary_email_address_id")
+    if not email_id:
+        # A missing primary id must never match an entry that also lacks an id.
+        return None
     return next(
         (
             entry
@@ -328,12 +331,26 @@ async def fetch_clerk_primary_email_verification(
     add). Deliberately bypasses _user_profile_cache: that cache has no TTL and
     stores the email captured at first login, so it cannot prove the address is
     still the verified primary. Fails closed: any transport/HTTP/shape problem
-    raises ServiceUnavailableError (503); a missing primary entry returns an
-    empty email and no status, which callers treat as "not verified".
+    raises ServiceUnavailableError (503). A missing primary entry, or Clerk
+    answering 404 (user deleted there), returns an empty email and no status,
+    which callers treat as "not verified" (422).
     """
     try:
         data = await _fetch_clerk_user_json(clerk_id, secret_key)
         entry = _primary_email_entry(data)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            # The user no longer exists in Clerk: nothing can be verified, which
+            # is a definite answer (422 for the caller), not an outage.
+            return "", None
+        logger.warning(
+            "auth.clerk_email_verification_failed",
+            clerk_id=clerk_id,
+            error=type(exc).__name__,
+        )
+        raise ServiceUnavailableError(
+            "Unable to verify the user's email with the identity provider."
+        ) from exc
     except Exception as exc:
         logger.warning(
             "auth.clerk_email_verification_failed",

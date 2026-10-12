@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.sql.dml import Update
 
@@ -42,6 +43,7 @@ _KEY = "550e8400-e29b-41d4-a716-446655440000"
 _URL = f"/v1/workspaces/{WS_ID}/members"
 _CLERK = "sourcemind.api.v1.workspaces.fetch_clerk_primary_email_verification"
 _PERM = "sourcemind.api.v1.workspaces.require_workspace_permission"
+_DUP = 'duplicate key value violates unique constraint "uq_workspace_members_workspace_user"'
 
 
 def _result(*, first=None, users=None) -> MagicMock:
@@ -85,7 +87,7 @@ def _session(results: list[MagicMock]) -> AsyncMock:
     return session
 
 
-def _app(session: AsyncMock):
+def _app(session: AsyncMock, caller_id: uuid.UUID = CALLER_ID):
     with (
         patch("sourcemind.main.init_db", new_callable=AsyncMock),
         patch("sourcemind.main.init_redis", new_callable=AsyncMock),
@@ -107,7 +109,7 @@ def _app(session: AsyncMock):
 
         async def _user_override():
             return AuthenticatedUser(
-                user_id=CALLER_ID,
+                user_id=caller_id,
                 clerk_id="user_caller",
                 email="caller@example.com",
                 display_name="Caller",
@@ -197,7 +199,7 @@ def test_non_member_and_cross_workspace_admin_get_404_sm022():
     ],
 )
 def test_caller_is_reverified_after_taking_the_share_lock(lock_row, status_code, code):
-    session = _session([_result(first=lock_row)])
+    session = _session([_result(users=[_user()]), _result(first=lock_row)])
     resp = _post(session, BODY)
     assert resp.status_code == status_code
     assert _err(resp)["code"] == code
@@ -255,7 +257,7 @@ def test_missing_or_invalid_idempotency_key_is_400_sm013(headers):
 
 @pytest.mark.unit
 def test_unknown_email_is_404_user_not_found_with_sign_in_hint():
-    session = _session([_caller_row(), _result(users=[])])
+    session = _session([_result(users=[])])
     resp = _post(session, BODY)
     assert resp.status_code == 404
     error = _err(resp)
@@ -268,8 +270,8 @@ def test_unknown_email_is_404_user_not_found_with_sign_in_hint():
 def test_case_variant_duplicates_are_422_ambiguous_and_never_picked(clerk_enforced):
     session = _session(
         [
-            _caller_row(),
             _result(users=[_user("Friend@Example.com"), _user("friend@example.com", uuid.uuid4())]),
+            _caller_row(),
         ]
     )
     with patch(_CLERK, new=AsyncMock()) as clerk:
@@ -293,7 +295,7 @@ def test_case_variant_duplicates_are_422_ambiguous_and_never_picked(clerk_enforc
 def test_clerk_must_confirm_verified_primary_equal_to_stored_and_requested(
     clerk_enforced, clerk_result
 ):
-    session = _session([_caller_row(), _result(users=[_user()])])
+    session = _session([_result(users=[_user()])])
     with patch(_CLERK, new=AsyncMock(return_value=clerk_result)):
         resp = _post(session, BODY)
     assert resp.status_code == 422
@@ -305,7 +307,7 @@ def test_clerk_must_confirm_verified_primary_equal_to_stored_and_requested(
 @pytest.mark.unit
 def test_stored_email_differing_from_clerk_primary_is_422(clerk_enforced):
     # Stored address predates a Clerk-side change; Clerk now reports another one.
-    session = _session([_caller_row(), _result(users=[_user("friend@example.com")])])
+    session = _session([_result(users=[_user("friend@example.com")])])
     with patch(_CLERK, new=AsyncMock(return_value=("new@example.com", "verified"))):
         resp = _post(session, BODY)
     assert resp.status_code == 422
@@ -314,7 +316,7 @@ def test_stored_email_differing_from_clerk_primary_is_422(clerk_enforced):
 
 @pytest.mark.unit
 def test_clerk_unreachable_fails_closed_with_503(clerk_enforced):
-    session = _session([_caller_row(), _result(users=[_user()])])
+    session = _session([_result(users=[_user()])])
     unreachable = AsyncMock(side_effect=ServiceUnavailableError("clerk down"))
     with patch(_CLERK, new=unreachable):
         resp = _post(session, BODY)
@@ -325,7 +327,7 @@ def test_clerk_unreachable_fails_closed_with_503(clerk_enforced):
 
 @pytest.mark.unit
 def test_development_bypass_skips_clerk_entirely():
-    session = _session([_caller_row(), _result(users=[_user()]), _result(first=None), _stored()])
+    session = _session([_result(users=[_user()]), _caller_row(), _result(first=None), _stored()])
     with patch(_CLERK, new=AsyncMock()) as clerk:
         resp = _post(session, BODY)  # unit env: AUTH_DEV_BYPASS_ENABLED=true
     assert resp.status_code == 201
@@ -339,8 +341,8 @@ def test_development_bypass_skips_clerk_entirely():
 def test_success_inserts_requested_role_and_returns_201_shape(clerk_enforced):
     session = _session(
         [
-            _caller_row("owner"),
             _result(users=[_user()]),
+            _caller_row("owner"),
             _result(first=None),
             _stored("viewer"),
         ]
@@ -364,7 +366,7 @@ def test_success_inserts_requested_role_and_returns_201_shape(clerk_enforced):
 @pytest.mark.unit
 def test_role_defaults_to_member():
     session = _session(
-        [_caller_row(), _result(users=[_user()]), _result(first=None), _stored("member")]
+        [_result(users=[_user()]), _caller_row(), _result(first=None), _stored("member")]
     )
     resp = _post(session, BODY)
     assert resp.status_code == 201
@@ -373,7 +375,7 @@ def test_role_defaults_to_member():
 
 @pytest.mark.unit
 def test_duplicate_active_member_is_409_already_member():
-    session = _session([_caller_row(), _result(users=[_user()]), _existing("member", "active")])
+    session = _session([_result(users=[_user()]), _caller_row(), _existing("member", "active")])
     resp = _post(session, BODY)
     assert resp.status_code == 409
     assert _err(resp)["code"] == "SM036"
@@ -384,7 +386,7 @@ def test_duplicate_active_member_is_409_already_member():
 
 @pytest.mark.unit
 def test_departing_member_is_409_handoff_in_progress():
-    session = _session([_caller_row(), _result(users=[_user()]), _existing("member", "departing")])
+    session = _session([_result(users=[_user()]), _caller_row(), _existing("member", "departing")])
     resp = _post(session, BODY)
     assert resp.status_code == 409
     assert _err(resp)["code"] == "SM036"
@@ -397,8 +399,8 @@ def test_departing_member_is_409_handoff_in_progress():
 def test_reactivation_writes_requested_role_and_never_restores_old_role(old_role):
     session = _session(
         [
-            _caller_row("owner"),
             _result(users=[_user()]),
+            _caller_row("owner"),
             _existing(old_role, "departed"),
             _result(first=SimpleNamespace(id=uuid.uuid4())),
             _stored("member"),
@@ -422,8 +424,8 @@ def test_non_owner_cannot_reactivate_a_former_owner_row_even_silently():
     # RLS USING filters the owner row: UPDATE ... RETURNING yields no row.
     session = _session(
         [
-            _caller_row("admin"),
             _result(users=[_user()]),
+            _caller_row("admin"),
             _existing("owner", "departed"),
             _result(first=None),
         ]
@@ -439,8 +441,8 @@ def test_non_owner_cannot_reactivate_a_former_owner_row_even_silently():
 def test_owner_may_readd_a_former_owner_as_an_ordinary_member():
     session = _session(
         [
-            _caller_row("owner"),
             _result(users=[_user()]),
+            _caller_row("owner"),
             _existing("owner", "departed"),
             _result(first=SimpleNamespace(id=uuid.uuid4())),
             _stored("member"),
@@ -455,13 +457,19 @@ def test_owner_may_readd_a_former_owner_as_an_ordinary_member():
 def test_concurrent_insert_loser_maps_integrity_error_to_409():
     session = _session(
         [
-            _caller_row(),
             _result(users=[_user()]),
+            _caller_row(),
             _result(first=None),
             _result(first=SimpleNamespace(role="member", status="active")),  # winner
         ]
     )
-    session.flush = AsyncMock(side_effect=IntegrityError("INSERT", {}, Exception("dup")))
+    session.flush = AsyncMock(
+        side_effect=IntegrityError(
+            "INSERT",
+            {},
+            Exception(_DUP),
+        )
+    )
     resp = _post(session, BODY)
     assert resp.status_code == 409
     assert _err(resp)["details"] == {"reason": "already_member"}
@@ -474,13 +482,19 @@ def test_hidden_former_owner_row_surfaces_as_403_not_already_member():
     # FOR UPDATE skipped the row (RLS), the INSERT then hit the unique index.
     session = _session(
         [
-            _caller_row("admin"),
             _result(users=[_user()]),
+            _caller_row("admin"),
             _result(first=None),
             _result(first=SimpleNamespace(role="owner", status="departed")),
         ]
     )
-    session.flush = AsyncMock(side_effect=IntegrityError("INSERT", {}, Exception("dup")))
+    session.flush = AsyncMock(
+        side_effect=IntegrityError(
+            "INSERT",
+            {},
+            Exception(_DUP),
+        )
+    )
     resp = _post(session, BODY)
     assert resp.status_code == 403
     assert "former owner" in _err(resp)["message"]
@@ -491,7 +505,7 @@ def test_rls_denial_during_insert_is_403_not_500():
     class _Orig(Exception):
         sqlstate = "42501"
 
-    session = _session([_caller_row(), _result(users=[_user()]), _result(first=None)])
+    session = _session([_result(users=[_user()]), _caller_row(), _result(first=None)])
     session.flush = AsyncMock(
         side_effect=DBAPIError("INSERT", {}, _Orig("new row violates row-level security policy"))
     )
@@ -507,7 +521,7 @@ def test_rls_denial_during_reactivation_is_403_not_500():
         sqlstate = "42501"
 
     session = _session([])
-    queued = iter([_caller_row(), _result(users=[_user()]), _existing("member", "departed")])
+    queued = iter([_result(users=[_user()]), _caller_row(), _existing("member", "departed")])
 
     async def _execute(stmt, *_a, **_kw):
         if isinstance(stmt, Update):
@@ -524,7 +538,7 @@ def test_rls_denial_during_reactivation_is_403_not_500():
 def test_unconfirmed_write_is_not_reported_as_success():
     # Re-read shows a different role than requested (policy/trigger interfered).
     session = _session(
-        [_caller_row(), _result(users=[_user()]), _result(first=None), _stored("admin")]
+        [_result(users=[_user()]), _caller_row(), _result(first=None), _stored("admin")]
     )
     resp = _post(session, BODY)
     assert resp.status_code == 503
@@ -535,3 +549,98 @@ def test_unconfirmed_write_is_not_reported_as_success():
 def test_workspace_access_denied_error_is_the_documented_class():
     # Guards the mapping target used for RLS denials.
     assert WorkspaceAccessDeniedError.http_status == 403
+
+
+# ── Review round: locking order, self-add, retryable aborts, scoping ─────────
+
+
+@pytest.mark.unit
+def test_workspace_wide_rate_limit_is_checked_in_addition_to_the_user_limit(_patches):
+    session = _session([_result(users=[])])
+    _post(session, BODY)
+    ops = [call.args[0].value for call in _patches.await_args_list]
+    assert ops == ["member-add", "member-add-workspace"]
+    # Workspace counter: keyed by the workspace id (subject and scope).
+    assert _patches.await_args_list[1].args[1:] == (WS_ID, WS_ID)
+
+
+@pytest.mark.unit
+def test_adding_yourself_is_refused_without_locks_or_clerk(clerk_enforced):
+    me = _user("caller@example.com", CALLER_ID)
+    session = _session([_result(users=[me])])
+    with patch(_CLERK, new=AsyncMock()) as clerk:
+        resp = _post(session, {"email": "caller@example.com"})
+    assert resp.status_code == 409
+    assert _err(resp)["details"] == {"reason": "already_member"}
+    clerk.assert_not_awaited()
+    assert session.execute.await_count == 1  # candidate lookup only: no row locks
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.unit
+def test_membership_rows_are_locked_in_ascending_user_id_order():
+    # Caller id sorts after the target id here, so the TARGET row is locked first.
+    low, high = sorted([uuid.uuid4(), uuid.uuid4()], key=str)
+    seen: list[str] = []
+
+    async def _execute(stmt, *_a, **_kw):
+        sql = str(stmt.compile(dialect=postgresql.dialect()))
+        if "FOR SHARE" in sql:
+            seen.append("caller")
+            return _caller_row()
+        if "FOR UPDATE" in sql:
+            seen.append("target")
+            return _existing("member", "active")
+        return _result(users=[_user(user_id=low)])
+
+    session = _session([])
+    session.execute = AsyncMock(side_effect=_execute)
+    app = _app(session, caller_id=high)
+    with (
+        TestClient(app, raise_server_exceptions=False) as client,
+        patch(_PERM, new=AsyncMock(return_value="admin")),
+    ):
+        resp = client.post(_URL, json=BODY, headers={"Idempotency-Key": _KEY})
+    assert resp.status_code == 409
+    assert seen == ["target", "caller"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("sqlstate", ["40P01", "40001"])
+def test_deadlock_or_serialization_abort_is_a_retryable_503_not_500(sqlstate):
+    class _Orig(Exception):
+        pass
+
+    _Orig.sqlstate = sqlstate  # type: ignore[attr-defined]
+    session = _session([_result(users=[_user()]), _caller_row(), _result(first=None)])
+    session.flush = AsyncMock(side_effect=DBAPIError("INSERT", {}, _Orig("deadlock detected")))
+    resp = _post(session, BODY)
+    assert resp.status_code == 503
+    assert _err(resp)["code"] == "SM055"
+    assert _err(resp)["details"] == {"reason": "concurrent_update_retry"}
+    session.rollback.assert_awaited()
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.unit
+def test_unrelated_integrity_error_is_not_reported_as_already_member():
+    session = _session([_result(users=[_user()]), _caller_row(), _result(first=None)])
+    session.flush = AsyncMock(
+        side_effect=IntegrityError(
+            "INSERT",
+            {},
+            Exception('violates foreign key constraint "workspace_members_user_id_fkey"'),
+        )
+    )
+    resp = _post(session, BODY)
+    assert resp.status_code == 500
+    assert _err(resp)["code"] != "SM036"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("email", ["josé@example.com", "friend@examplé.com"])
+def test_non_ascii_emails_are_rejected_before_any_lookup(email):
+    session = _session([])
+    resp = _post(session, {"email": email})
+    assert resp.status_code == 422
+    session.execute.assert_not_awaited()

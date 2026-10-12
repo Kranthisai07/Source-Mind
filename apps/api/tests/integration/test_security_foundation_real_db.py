@@ -1165,3 +1165,127 @@ async def test_only_an_owner_can_readd_a_former_owner_and_always_as_an_ordinary_
     row = await _membership(supabase_engine, data, data.backup_owner_id)
     assert (row.role, row.status, row.departed_at) == ("member", "active", None)
     assert not await _has_roles(supabase_engine, data, data.backup_owner_id, ["admin", "owner"])
+
+
+@pytest_asyncio.fixture
+async def wide_engine(supabase_url: str) -> AsyncIterator[AsyncEngine]:
+    """Enough pooled connections for four overlapping requests (default pool is 2)."""
+    engine = create_async_engine(supabase_url, pool_size=8, max_overflow=0, pool_pre_ping=True)
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_reciprocal_and_self_adds_never_deadlock_or_return_500(
+    wide_engine, member_add_env
+) -> None:
+    supabase_engine = wide_engine
+    data = await _seed_security_tenants(supabase_engine)
+    # Two ADMINISTRATORS: RLS hides an owner's row from an admin's FOR UPDATE, so
+    # an owner/admin pair can never form the cycle. Promote the member to admin.
+    async with AsyncSession(supabase_engine) as promote:
+        await set_rls_user_context(promote, data.owner_id)
+        await set_rls_workspace_context(promote, data.target_workspace_id)
+        await promote.execute(
+            update(WorkspaceMember)
+            .where(
+                WorkspaceMember.workspace_id == data.target_workspace_id,
+                WorkspaceMember.user_id == data.member_id,
+            )
+            .values(role="admin")
+        )
+        await promote.commit()
+    peer_id = data.member_id
+
+    async def linger() -> None:
+        # Long enough that, with unordered locking, each request would hold its
+        # own caller row FOR SHARE before the other asked for a FOR UPDATE.
+        await asyncio.sleep(0.6)
+
+    pairs = [
+        (data.admin_id, peer_id),
+        (peer_id, data.admin_id),
+        (data.admin_id, data.admin_id),
+        (peer_id, peer_id),
+    ]
+    outcomes = await asyncio.wait_for(
+        asyncio.gather(
+            *(
+                _add(supabase_engine, data, actor, target, after_caller_lock=linger)
+                for actor, target in pairs
+            )
+        ),
+        60,
+    )
+
+    for outcome in outcomes:
+        assert isinstance(outcome, WorkspaceMemberExistsError), outcome
+        assert outcome.details == {"reason": "already_member"}
+    # Nothing changed: both administrators are still active administrators.
+    assert (await _membership(supabase_engine, data, data.admin_id)).role == "admin"
+    assert (await _membership(supabase_engine, data, peer_id)).role == "admin"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_crossing_readds_of_two_departed_members_complete_without_deadlock(
+    wide_engine, member_add_env
+) -> None:
+    supabase_engine = wide_engine
+    data = await _seed_security_tenants(supabase_engine)
+    # Two departed members, each targeted by BOTH administrators at once. One add
+    # per member wins; the other is a clean already_member conflict.
+    assert await _revoke(supabase_engine, data, data.owner_id, data.member_id) is None
+    assert await _revoke(supabase_engine, data, data.owner_id, data.viewer_id) is None
+
+    async def linger() -> None:
+        await asyncio.sleep(0.4)
+
+    outcomes = await asyncio.wait_for(
+        asyncio.gather(
+            _add(supabase_engine, data, data.owner_id, data.member_id, after_caller_lock=linger),
+            _add(supabase_engine, data, data.admin_id, data.viewer_id, after_caller_lock=linger),
+            _add(supabase_engine, data, data.admin_id, data.member_id, after_caller_lock=linger),
+            _add(supabase_engine, data, data.owner_id, data.viewer_id, after_caller_lock=linger),
+        ),
+        60,
+    )
+
+    for outcome in outcomes:
+        assert not isinstance(outcome, Exception) or isinstance(
+            outcome, WorkspaceMemberExistsError
+        ), outcome
+    # Each departed member was re-added exactly once.
+    assert sum(not isinstance(o, Exception) for o in outcomes) == 2
+    assert (await _membership(supabase_engine, data, data.member_id)).status == "active"
+    assert (await _membership(supabase_engine, data, data.viewer_id)).status == "active"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_member_in_a_handoff_cannot_be_readded_until_it_finishes(
+    supabase_engine, member_add_env
+) -> None:
+    data = await _seed_security_tenants(supabase_engine)
+    async with AsyncSession(supabase_engine) as session:
+        await set_rls_user_context(session, data.owner_id)
+        await set_rls_workspace_context(session, data.target_workspace_id)
+        await session.execute(
+            update(WorkspaceMember)
+            .where(
+                WorkspaceMember.workspace_id == data.target_workspace_id,
+                WorkspaceMember.user_id == data.member_id,
+            )
+            .values(status="departing")
+        )
+        await session.commit()
+
+    refused = await _add(supabase_engine, data, data.admin_id, data.member_id)
+
+    assert isinstance(refused, WorkspaceMemberExistsError), refused
+    assert refused.details == {"reason": "handoff_in_progress"}
+    row = await _membership(supabase_engine, data, data.member_id)
+    assert (row.role, row.status) == ("member", "departing")
