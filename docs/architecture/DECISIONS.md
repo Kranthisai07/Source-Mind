@@ -2660,3 +2660,63 @@ and a deterministic SHA-256 of the canonical payload. The hash excludes
 - It does not authorize deployment or participant invitations. The migration,
   feature flag, isolated-workspace rehearsal and export verification remain
   operational gates.
+
+## D-028 — Frontend releases are published as a parentless commit pushed with a lease, after a bundle check
+
+**Status:** Documented procedure; the publish itself is a manual release step.
+This change touches no code and publishes nothing.
+
+### Decision
+
+The compiled frontend is published to the `gh-pages` branch by the procedure in
+`docs/FRONTEND_PUBLISH.md`: build a clean checkout of the release commit with the
+production variables, check the bundle, stage `build/` in a throw-away repository,
+commit it once with a `Publish <sha12> (main, PR #<n>): <summary>` message, and
+push it with `--force-with-lease=refs/heads/gh-pages:<previous head>`. The
+previous head is recorded first and kept locally, and a rollback is the same
+conditioned push of that head. The published site is then re-checked from the
+downloaded files, not from the local build.
+
+### What was wrong
+
+`ARCHITECTURE.md` still said mock mode was active and `realApi` could not be used
+(no `Authorization` header, non-UUID workspace ids). Neither is true: `realApi`
+sends the Clerk session token on every request and resolves the workspace from the
+user's own list, and the published bundle is built with `REACT_APP_USE_MOCKS=false`.
+Its publish section was a single `npm run deploy`, which is also unsafe in practice:
+`REACT_APP_USE_MOCKS` defaults to mock mode when unset (`src/lib/api.js`), so
+`predeploy` builds whatever the current shell holds and nothing checks the result.
+
+### Why this approach
+
+* Earlier publishes (`git log origin/gh-pages`, reflog) were parentless
+  `Publish ...` commits that replaced the branch. That matches the `gh-pages`
+  package's `--no-history` option, which runs a plain `git push --force`. The
+  procedure keeps the proven shape but replaces the unconditional force with a lease,
+  so a publish by someone else is rejected (`stale info`) instead of overwritten.
+  This was exercised against a local bare copy of `gh-pages`: a wrong expected head was
+  rejected and left the remote unchanged, the right one was accepted, and the
+  conditioned rollback restored the previous head.
+* The bundle is checked before publishing and again after, from the live files: mock
+  mode off, pilot mode off, the expected API URL, no secret-key literal, `404.html`
+  identical to `index.html`. A build with the wrong variables compiles and runs, so
+  only the built output can show it.
+
+### Alternatives considered
+
+* `npm run deploy` as is: append-only and needs no force, but it builds with an
+  unchecked environment, keeps every build (and its source maps) in the branch
+  history, and gives no recorded previous head. It remains an acceptable way to do
+  the push step if history is wanted; the build and verification steps still apply.
+* `gh-pages -d build --no-history`: the likely earlier method, rejected because its
+  force push is unconditional.
+* A GitHub Actions deploy job: would remove the manual step but also the
+  owner-controlled timing relative to the API and worker rollout, and needs repository
+  secrets for the publishable key; out of scope here.
+
+### Deliberate limits
+
+This documents the procedure only. The exact command used by earlier releases is not
+recorded anywhere in the repository; the description above is inferred from the
+branch history and the package source. It does not change how the app is built or what
+it contains.
