@@ -24,7 +24,12 @@ export default function CreateWorkspaceForm({ onCreated, onCancel, idPrefix = "c
     const [submitting, setSubmitting] = useState(false);
     const inFlight = useRef(false);
     const mounted = useRef(true);
-    useEffect(() => () => { mounted.current = false; }, []);
+    // Re-armed on setup: StrictMode runs setup, cleanup, setup, and a flag that
+    // is only ever cleared would stay false for the component's real lifetime.
+    useEffect(() => {
+        mounted.current = true;
+        return () => { mounted.current = false; };
+    }, []);
 
     const onName = (value) => {
         setName(value);
@@ -47,7 +52,7 @@ export default function CreateWorkspaceForm({ onCreated, onCancel, idPrefix = "c
                 slug,
                 description: description.trim() || undefined,
             });
-            await onCreated(workspace);
+            await onCreated(workspace, { dismissed: !mounted.current });
         } catch (err) {
             if (!mounted.current) return;
             const mapped = mapWorkspaceError(err, "create");

@@ -5,6 +5,7 @@ import { LogOut, RefreshCw } from "lucide-react";
 import { Button } from "../ui/button";
 import ThemeToggle from "../widgets/ThemeToggle";
 import CreateWorkspaceForm from "./CreateWorkspaceForm";
+import { isWorkspacePinned } from "../../lib/realApi";
 import { useWorkspaces } from "./WorkspaceProvider";
 
 /**
@@ -56,13 +57,13 @@ export default function NoWorkspaceState() {
                             <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} /> Check again
                         </Button>
                     </section>
-                    <section className="sm-card p-6">
+                    {!isWorkspacePinned() && <section className="sm-card p-6">
                         <h2 className="text-[15px] font-semibold text-sm-text">Or start your own</h2>
                         <p className="mt-1 mb-4 text-[12.5px] text-sm-text-secondary">
                             Create a workspace and add people to it yourself.
                         </p>
                         <CreateWorkspaceForm idPrefix="nw" onCreated={adopt} />
-                    </section>
+                    </section>}
                 </div>
             </main>
         </div>

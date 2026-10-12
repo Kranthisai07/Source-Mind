@@ -519,3 +519,83 @@ describe("Settings: add member", () => {
         await waitFor(() => expect(mockToastSuccess).toHaveBeenCalledTimes(1));
     });
 });
+
+
+describe("review follow-ups: StrictMode and dismissed creation", () => {
+    function renderStrict(path = "/memories") {
+        return render(
+            <React.StrictMode>
+                <MemoryRouter initialEntries={[path]}>
+                    <Where />
+                    <Routes>
+                        <Route element={<AppLayout />}>
+                            <Route path="/memories" element={<Memories />} />
+                            <Route path="/settings" element={<Settings />} />
+                        </Route>
+                    </Routes>
+                </MemoryRouter>
+            </React.StrictMode>
+        );
+    }
+
+    test("under StrictMode a rejected create shows its error and re-enables the form", async () => {
+        S.workspaces = [];
+        S.createReply = reply({ error: { code: "SM031", message: "taken" } }, 409);
+        renderStrict();
+        await screen.findByTestId("no-workspace");
+        fireEvent.change(screen.getByTestId("create-workspace-name"), { target: { value: "Taken" } });
+        fireEvent.click(screen.getByTestId("create-workspace-submit"));
+        expect((await screen.findByTestId("create-workspace-slug-error")).textContent).toMatch(/already taken/i);
+        await waitFor(() => expect(screen.getByTestId("create-workspace-submit").disabled).toBe(false));
+        expect(screen.getByTestId("create-workspace-submit").textContent).toBe("Create workspace");
+    });
+
+    test("under StrictMode a rejected add shows its error and re-enables the dialog", async () => {
+        S.addReply = reply({ error: { code: "SM023", details: { reason: "user_not_found" } } }, 404);
+        renderStrict("/settings");
+        fireEvent.mouseDown(await screen.findByTestId("tab-team"), { button: 0 });
+        const btn = await screen.findByTestId("add-member-btn");
+        await waitFor(() => expect(btn.disabled).toBe(false));
+        fireEvent.click(btn);
+        fireEvent.change(await screen.findByTestId("add-member-email"), { target: { value: "x@example.com" } });
+        fireEvent.click(screen.getByTestId("add-member-submit"));
+        expect((await screen.findByTestId("add-member-error")).textContent).toMatch(/sign in to SourceMind once/i);
+        await waitFor(() => expect(screen.getByTestId("add-member-submit").disabled).toBe(false));
+    });
+
+    test("add member against a server without the route explains it", async () => {
+        S.addReply = reply({ detail: "Method Not Allowed" }, 405);
+        renderStrict("/settings");
+        fireEvent.mouseDown(await screen.findByTestId("tab-team"), { button: 0 });
+        const btn = await screen.findByTestId("add-member-btn");
+        await waitFor(() => expect(btn.disabled).toBe(false));
+        fireEvent.click(btn);
+        fireEvent.change(await screen.findByTestId("add-member-email"), { target: { value: "x@example.com" } });
+        fireEvent.click(screen.getByTestId("add-member-submit"));
+        expect((await screen.findByTestId("add-member-error")).textContent).toMatch(/does not support adding members yet/);
+        expect(mockToastSuccess).not.toHaveBeenCalled();
+    });
+
+    test("dismissing the dialog while creating does not switch workspace or navigate", async () => {
+        const gate = deferred();
+        S.override = (path, method) => (path === "/v1/workspaces" && method === "POST" ? gate.promise : null);
+        renderApp("/settings");
+        await openPicker();
+        fireEvent.click(screen.getByTestId("workspace-create-item"));
+        const dialog = await screen.findByTestId("create-workspace-dialog");
+        fireEvent.change(within(dialog).getByTestId("create-workspace-name"), { target: { value: "Gamma" } });
+        fireEvent.click(within(dialog).getByTestId("create-workspace-submit"));
+        await waitFor(() => expect(calls.some((c) => c.path === "/v1/workspaces" && c.method === "POST")).toBe(true));
+
+        fireEvent.keyDown(dialog, { key: "Escape" });
+        await waitFor(() => expect(screen.queryByTestId("create-workspace-dialog")).toBeNull());
+
+        gate.release(reply({ data: wsObj(NEW_WS, "Gamma", "gamma") }, 201));
+        await waitFor(() => expect(mockToastSuccess).toHaveBeenCalledTimes(1));
+        expect(screen.getByTestId("where").textContent).toBe("/settings");
+        expect(screen.getByTestId("workspace-switcher").textContent).toMatch(/Alpha/);
+        // It is listed, just not selected.
+        await openPicker();
+        expect(screen.getByTestId(`workspace-option-${NEW_WS}`)).toBeTruthy();
+    });
+});

@@ -125,9 +125,18 @@ export function WorkspaceProvider({ children }) {
         toast.success(`Workspace "${workspace.name}" created`);
     }, [navigate]);
 
+    /** A creation the user walked away from: list it, do not switch to it. */
+    const noteCreated = useCallback((workspace) => {
+        setState((s) => ({
+            ...s,
+            list: s.list.some((w) => w.id === workspace.id) ? s.list : [...s.list, workspace],
+        }));
+        toast.success(`Workspace "${workspace.name}" created`);
+    }, []);
+
     const value = useMemo(
-        () => ({ ...state, reload, switchTo, adopt }),
-        [state, reload, switchTo, adopt]
+        () => ({ ...state, reload, switchTo, adopt, noteCreated }),
+        [state, reload, switchTo, adopt, noteCreated]
     );
     return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

@@ -4,7 +4,7 @@ import CreateWorkspaceForm from "./CreateWorkspaceForm";
 import { useWorkspaces } from "./WorkspaceProvider";
 
 export default function CreateWorkspaceDialog({ open, onOpenChange }) {
-    const { adopt } = useWorkspaces();
+    const { adopt, noteCreated } = useWorkspaces();
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent className="bg-sm-surface border-sm-border text-sm-text" data-testid="create-workspace-dialog">
@@ -19,7 +19,14 @@ export default function CreateWorkspaceDialog({ open, onOpenChange }) {
                     <CreateWorkspaceForm
                         idPrefix="cwd"
                         onCancel={() => onOpenChange(false)}
-                        onCreated={(workspace) => {
+                        onCreated={(workspace, { dismissed } = {}) => {
+                            // Dismissed while the request was pending: the
+                            // workspace exists, but the user moved on, so do
+                            // not switch or navigate under them.
+                            if (dismissed) {
+                                noteCreated(workspace);
+                                return;
+                            }
                             onOpenChange(false);
                             adopt(workspace);
                         }}
