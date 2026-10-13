@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { KeyRound, Trash2, UserPlus } from "lucide-react";
 import TopBar from "../components/layout/TopBar";
 import ContributorAvatar from "../components/widgets/ContributorAvatar";
@@ -9,6 +9,9 @@ import { Button } from "../components/ui/button";
 import useApiResource from "../hooks/useApiResource";
 import api from "../lib/api";
 import { formatDate } from "../lib/format";
+// Owner/admin is the same capability check the pilot tools use.
+import { isPilotOperatorRole } from "../lib/pilotMode";
+import AddMemberDialog from "../components/workspace/AddMemberDialog";
 
 const ACCESS_BY_ROLE = {
     owner: "Full",
@@ -24,6 +27,20 @@ export default function Settings() {
     const members = Array.isArray(membersResource.data?.members) ? membersResource.data.members : [];
     const workspaceName = workspace?.name ?? "";
     const workspaceSlug = workspace?.slug ?? "";
+
+    // Same rule as PilotTools: the caller's role in THIS workspace comes from
+    // the members list, matched on the signed-in user's id.
+    const meResource = useApiResource(() => api.getCurrentUser());
+    const me = meResource.data;
+    const myMembership = me
+        ? members.find((item) => (item.user || item).id === me.id)
+        : null;
+    const canAdd = Boolean(workspace?.id) && isPilotOperatorRole(myMembership?.role);
+    const permissionsKnown = !meResource.loading && !membersResource.loading;
+    const addMemberHint = !permissionsKnown
+        ? "Checking your permissions..."
+        : "Only workspace owners and admins can add members.";
+    const [addOpen, setAddOpen] = useState(false);
 
     return (
         <>
@@ -81,10 +98,31 @@ export default function Settings() {
                                         {membersResource.loading ? "Loading members…" : `${members.length} member${members.length === 1 ? "" : "s"} in this workspace`}
                                     </p>
                                 </div>
-                                <Button disabled data-testid="invite-btn" title="No invitation endpoint exists yet" className="bg-sm-blue text-white h-9 disabled:opacity-40 disabled:cursor-not-allowed">
-                                    <UserPlus className="w-4 h-4" /> Invite Member
-                                </Button>
+                                <span title={canAdd ? undefined : addMemberHint}>
+                                    <Button
+                                        type="button"
+                                        disabled={!canAdd}
+                                        onClick={() => setAddOpen(true)}
+                                        data-testid="add-member-btn"
+                                        aria-describedby={canAdd ? undefined : "add-member-hint"}
+                                        className="bg-sm-blue text-white h-9 disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                        <UserPlus className="w-4 h-4" /> Add member
+                                    </Button>
+                                </span>
                             </div>
+                            {!canAdd && (
+                                <p id="add-member-hint" data-testid="add-member-hint" className="-mt-3 mb-4 text-[11.5px] text-sm-text-muted text-right">
+                                    {addMemberHint}
+                                </p>
+                            )}
+                            <AddMemberDialog
+                                open={addOpen}
+                                onOpenChange={setAddOpen}
+                                workspaceId={workspace?.id}
+                                workspaceName={workspace?.name}
+                                onAdded={membersResource.retry}
+                            />
                             {membersResource.error ? (
                                 <PageLoadError error={membersResource.error} onRetry={membersResource.retry} testId="members-error" compact />
                             ) : membersResource.loading ? (
