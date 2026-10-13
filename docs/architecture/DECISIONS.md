@@ -2664,6 +2664,148 @@ and a deterministic SHA-256 of the canonical payload. The hash excludes
 
 ---
 
+## D-024 — Owner/admin adds an ordinary member by email
+
+**Status:** Implemented in the backend; not deployed by this change.
+
+### Decision
+
+`POST /v1/workspaces/{workspace_id}/members` lets an active owner or admin add a
+person who has already signed in to SourceMind. Body `{email, role}` with `role` in
+`member|viewer` (default `member`); `extra="forbid"` so a client-supplied `user_id`
+or "verified" flag is a 422. Owner/admin promotion and ownership transfer are not
+reachable through this endpoint (RLS alone does not stop admin-adds-admin, so the
+schema does).
+
+Handler order: Idempotency-Key dependency, per-user rate limit
+(`MEMBER_ADD`, `RATE_LIMIT_MEMBER_ADD_PER_HOUR`, default 20, plus a per-workspace
+`MEMBER_ADD_WORKSPACE` ceiling), `ADMINISTER` check, target resolution and Clerk
+verification, then, in one transaction, `FOR SHARE` on the CALLER's own membership
+row (re-verified active admin/owner after the lock) and `FOR UPDATE` on the
+target's row, taken in ascending user-id order (see the review round below), and
+the membership state machine.
+
+- **Target resolution.** `lower(users.email) = lower(requested)` and
+  `deleted_at IS NULL`, `LIMIT 2`. None: 404 `SM023 user_not_found` (the person must
+  sign in once). Two or more: 422 `SM010 email_ambiguous`; one is never picked.
+- **Verified-email association (owner correction 1).** The stored email is captured
+  at first login and never refreshed, and the in-process profile cache has no TTL, so
+  neither proves the address is still the user's verified primary. The server fetches
+  the target's Clerk user UNCACHED (`fetch_clerk_primary_email_verification`) and
+  requires `verification.status == "verified"` and Clerk primary == stored ==
+  requested, case-insensitively; otherwise 422 `email_not_verified`. Clerk
+  unreachable or malformed: 503 `SM055` (fail closed). The client supplies no
+  verification input. Only the explicit development bypass skips Clerk, and
+  `Settings` already rejects that flag outside development. `users.email` is never
+  mutated. The cached login path (`_fetch_clerk_user_profile`) keeps its behaviour;
+  only the raw HTTP call and primary-entry lookup were factored out and shared.
+- **State machine** (`FOR UPDATE` on `(workspace_id, user_id)`): no row -> INSERT in
+  a savepoint with `invited_by_id`; `IntegrityError` on
+  `uq_workspace_members_workspace_user` -> 409 `SM036 already_member` (also how the
+  loser of a concurrent double add is answered: exactly one 201). `active` -> 409
+  `already_member`. `departing` -> 409 `handoff_in_progress` (owned by the handoff
+  flow). `departed` -> explicit UPDATE that sets `role` to the REQUESTED role,
+  `status='active'`, `departed_at=NULL`, `invited_by_id=caller` - the old role (a
+  departed admin, say) is never restored. An RLS denial (42501, e.g. the caller
+  lost admin rights concurrently) maps to 403 `SM005`, never 500. A departed OWNER
+  row is invisible to a non-owner admin (RLS USING); the UPDATE returns no row and
+  the INSERT path hits the unique index, both classified as 403 "Only an owner can
+  re-add a former owner" rather than a silent no-op. The row is re-read and
+  role/status asserted before commit.
+- **Concurrent revocation of the caller.** Revoke takes `FOR UPDATE` on the target
+  row; the add holds `FOR SHARE` on the caller's row, so a revoke of the caller
+  waits for the add, and a revoke committed earlier makes the lock query return no
+  active row (add refused, no row created). Both orders are asserted with
+  deterministic barriers against real PostgreSQL.
+
+### Documented behaviour (not bugs)
+
+- `Idempotency-Key` is validated but not de-duplicated. Idempotency is by natural
+  key: a repeat returns 409 `already_member`, not a second row.
+- The endpoint reveals whether an email belongs to a signed-in user, but only to
+  admins/owners of the workspace and under a per-user rate limit.
+- A returning member's attribution history and GitHub author links reactivate with
+  the membership (they hang off the same user id). Ingestion documents failed at
+  revocation stay failed.
+- `joined_at` is the row's `created_at` (first join), not the re-add time.
+
+### Review round (deadlock, oracle, parser)
+
+- **Lock-order deadlock (found by Devin and Codex review; reproduced).** As first
+  written, the handler took `FOR SHARE` on the caller's row and then `FOR UPDATE`
+  on the target's row. Two administrators adding each other (or adding
+  themselves) formed a lock cycle and PostgreSQL aborted one request with
+  `DeadlockDetectedError`, an uncaught 500. A real-DB test with two administrators
+  and a barrier-style delay failed against that code with exactly that error and
+  passes now. (An owner/admin pair cannot form the cycle: RLS hides an owner's row
+  from an administrator's `FOR UPDATE`, so the test uses two administrators.)
+  Fix: the target is now resolved and verified with Clerk BEFORE any membership row
+  is locked, then the two rows are locked in ONE global order (ascending user id;
+  caller share, target exclusive), so no request holds a row another one wants.
+  Adding yourself is refused immediately as `already_member`, with no locks and no
+  Clerk call. Any remaining Postgres deadlock or serialization abort
+  (`40P01`/`40001`) is mapped to a retryable 503 `SM055` with
+  `details.reason = "concurrent_update_retry"`, never a 500.
+- **Clerk call and the lock (accepted trade-off, now smaller).** The Clerk request
+  (up to 5 s) used to run while the caller's share lock was held. With the reorder
+  it runs before any membership lock, so a slow Clerk no longer delays a concurrent
+  revoke of the caller. The caller is still re-verified under the lock. A caller
+  revoked during the Clerk call is refused by that re-check.
+- **Email-registered oracle (accepted limitation, mitigated).** Any signed-in user
+  who owns a workspace can learn whether an email belongs to a signed-in user
+  (404 `user_not_found` versus 422/409), and can add more workspaces (5 per hour)
+  and accounts. Mitigations: per-user limit (20/hour) plus a new per-workspace limit
+  (`RATE_LIMIT_MEMBER_ADD_WORKSPACE_PER_HOUR`, default 40, keyed by workspace id) so
+  admins of one workspace cannot multiply the budget by taking turns. This does not
+  stop many accounts each creating workspaces; it only bounds the rate. The
+  workspace bucket is spent only AFTER the `ADMINISTER` check passes (it is shared,
+  so otherwise any signed-in user who knew a workspace id could exhaust it and lock
+  the real administrators out); a retried request consumes a token from both
+  limiters. The per-user limiter runs first and applies to everyone. The
+  responses for unknown versus unverified emails stay distinct because the client
+  needs "ask them to sign in first". Recorded as an accepted limitation.
+- **Parser hardening.** Clerk answering 404 (user deleted there) is a definite
+  "not verified" (422 `email_not_verified`), not a 503. A missing
+  `primary_email_address_id` never matches an entry that also lacks an id. Direct
+  tests mock only the HTTP layer and call the real parser: verified, unverified and
+  expired, verification absent or null, primary id matching nothing, transport
+  error, malformed body, 404 and other HTTP errors.
+- **Non-ASCII emails are rejected** (422) by `WorkspaceMemberAdd`. Matching uses
+  `lower()` in SQL and Python, which disagree with `casefold()` for non-ASCII text;
+  refusing is simpler and safer than guessing. Cost: an address with a non-ASCII
+  local part or IDN domain cannot be used for member add.
+- **IntegrityError is checked by constraint name.** Only
+  `uq_workspace_members_workspace_user` becomes `already_member`; any other
+  integrity failure (for example a foreign key) is re-raised, not mislabelled.
+- Real-DB tests added: reciprocal and self adds (fails with a deadlock on the
+  earlier code), crossing re-adds of two departed members, and a `departing` member
+  returning `handoff_in_progress`.
+
+### Why this and not the alternatives
+
+- *Trust the stored email only:* rejected; unverified, never refreshed, and a second
+  account with a case-variant address would be indistinguishable.
+- *Cache the Clerk lookup:* rejected for this path; a stale hit is exactly the
+  failure the check exists to prevent. One uncached call per add is cheap and the
+  endpoint is rate limited.
+- *Accept a `user_id` from the client:* rejected; it would bypass the email
+  association entirely.
+- *Invite links / pending invitations:* a schema and email-delivery feature, out of
+  scope for a five-friend release; the sign-in-first requirement is explicit in the
+  404 message.
+- *Table lock or advisory lock instead of `FOR SHARE`:* the row lock reuses the
+  exact row revoke already locks, so no new lock ordering is introduced.
+- *Idempotent 200 on repeat:* rejected; 409 keeps the surface honest and matches
+  the other natural-key conflicts.
+
+### Verification
+
+New unit file `tests/unit/api/test_workspace_member_add.py`; twelve real-PostgreSQL
+tests added to `test_security_foundation_real_db.py` (Security Acceptance node list
+76 -> 88). `.env.example` CORS_ORIGINS comment corrected: the setting is a JSON array
+and a comma-separated string fails to parse (verified against `Settings`).
+`rate_limit_member_add_per_hour` was also added to the shared positivity validator.
+
 ## D-026 — Web: workspace picker, creation, explicit no-workspace state, add member, switch-safe API layer
 
 **Status:** Implemented in the web app; not deployed by this change.
@@ -2732,3 +2874,4 @@ and a deterministic SHA-256 of the canonical payload. The hash excludes
 - Dismissing the create dialog mid-request lists the new workspace and toasts but does not switch or navigate. Mounted flags are re-armed on effect setup (StrictMode).
 - A build with REACT_APP_DEFAULT_WORKSPACE_ID is pinned: the picker and create entry points are replaced by a fixed label and selectWorkspace is a no-op, so the UI cannot claim a workspace the requests do not use.
 - Add member against a server without the route (405, or 404 with no error code) says the server does not support it yet. Merge order: the API route (PR #20) must land before this PR for real-mode add member.
+
