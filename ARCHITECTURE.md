@@ -57,7 +57,7 @@ cd apps/api
 | Attribution + conflicts + handoff + analytics | Complete; conflict/handoff paths lightly exercised |
 | GitHub + Discord connectors | GitHub verified end to end; Discord has loader + mapper only, no orchestrator |
 | Evaluation harness | Runs with 1 of 3 retrievers; see §12 |
-| Frontend | Runs on mock data only; not wired to the API |
+| Frontend | Talks to the real API with a Clerk bearer token when built with `REACT_APP_USE_MOCKS=false` (the published build); mock data only when that variable is unset or `true`. See §9 and `docs/FRONTEND_PUBLISH.md` |
 
 Full suite: `pytest --tb=short -q` → **176 passed, 6 skipped**.
 Coverage is ~65% against a configured `--cov-fail-under=80`, so pytest exits non-zero.
@@ -409,18 +409,25 @@ shadcn/ui (56 components), recharts, sonner.
 State is local `useState`/`useEffect` only — no Redux, Context, or React Query.
 
 `src/lib/api.js` dispatches between `mockApi` and `realApi` on
-`REACT_APP_USE_MOCKS` (default `true`). **Mock mode is active**, so all 11
-pages render from `src/lib/mockData.js`.
+`REACT_APP_USE_MOCKS`. **Unset or `true` means mock mode** (the demo default, so
+the app still renders without a backend); the published build sets it to
+`false`. `realApi` calls `${REACT_APP_BACKEND_URL}/v1/*` with a Clerk session
+token in `Authorization: Bearer` (`src/lib/realApi.js`, `request`) and resolves
+the workspace from an explicit UUID, then `REACT_APP_DEFAULT_WORKSPACE_ID`,
+then the signed-in user's own `GET /v1/workspaces` list. Every real method has a
+`mockApi` twin. `REACT_APP_PILOT_MODE` (default off) enables the research
+pilot tools and must stay `false` for ordinary use.
 
-`realApi` is not usable as-is: it sends no `Authorization` header, uses
-non-UUID workspace IDs, and several endpoint paths and response shapes do not
-match the API.
-
-Deployed to GitHub Pages from the `gh-pages` branch (compiled output only):
-
-```bash
-cd apps/web && npm run deploy      # build + gh-pages -d build
-```
+Deployed to GitHub Pages (`https://kranthisai07.github.io/Source-Mind/`) from the
+`gh-pages` branch, which holds the compiled `build/` output only. Publish a
+release commit with the procedure in
+[`docs/FRONTEND_PUBLISH.md`](docs/FRONTEND_PUBLISH.md): clean checkout, `npm ci`,
+the build variables, `CI=false npm run build` (the `postbuild` hook writes
+`404.html`), a bundle check, then replace `gh-pages` with one
+`Publish <sha> (main, PR #n): ...` commit pushed with a lease on the previous
+head. `npm run deploy` (`gh-pages -d build`) alone is not enough: it builds with
+whatever variables the shell happens to have (mock mode if
+`REACT_APP_USE_MOCKS` is unset) and publishes without checking the bundle.
 
 ---
 
