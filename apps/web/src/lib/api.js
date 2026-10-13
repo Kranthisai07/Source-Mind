@@ -6,7 +6,11 @@
 // Both clients return identical shapes — UI components need no changes.
 
 import { mockApi } from "./mockApi";
-import { realApi, resetIdentityScopedCaches, resolveWorkspace } from "./realApi";
+import { realApi, resetIdentityScopedCaches, resolveWorkspace, selectWorkspace } from "./realApi";
+
+// Switching workspace invalidates in-flight work and notifies subscribers.
+// It touches only module state (no network), so it is the same in both modes.
+export { selectWorkspace };
 
 const useMocks = (process.env.REACT_APP_USE_MOCKS ?? "true").toLowerCase() !== "false";
 

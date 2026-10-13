@@ -139,6 +139,7 @@ describe("non-empty queries search as before", () => {
             query: "vector index",
             mode: "hybrid",
             limit: 24,
+            include_attribution: true,
         });
         expect(screen.queryByText("Type to search memories")).toBeNull();
     });

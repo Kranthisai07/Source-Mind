@@ -2661,6 +2661,423 @@ and a deterministic SHA-256 of the canonical payload. The hash excludes
   feature flag, isolated-workspace rehearsal and export verification remain
   operational gates.
 
+
+---
+
+## D-024 — Owner/admin adds an ordinary member by email
+
+**Status:** Implemented in the backend; not deployed by this change.
+
+### Decision
+
+`POST /v1/workspaces/{workspace_id}/members` lets an active owner or admin add a
+person who has already signed in to SourceMind. Body `{email, role}` with `role` in
+`member|viewer` (default `member`); `extra="forbid"` so a client-supplied `user_id`
+or "verified" flag is a 422. Owner/admin promotion and ownership transfer are not
+reachable through this endpoint (RLS alone does not stop admin-adds-admin, so the
+schema does).
+
+Handler order: Idempotency-Key dependency, per-user rate limit
+(`MEMBER_ADD`, `RATE_LIMIT_MEMBER_ADD_PER_HOUR`, default 20, plus a per-workspace
+`MEMBER_ADD_WORKSPACE` ceiling), `ADMINISTER` check, target resolution and Clerk
+verification, then, in one transaction, `FOR SHARE` on the CALLER's own membership
+row (re-verified active admin/owner after the lock) and `FOR UPDATE` on the
+target's row, taken in ascending user-id order (see the review round below), and
+the membership state machine.
+
+- **Target resolution.** `lower(users.email) = lower(requested)` and
+  `deleted_at IS NULL`, `LIMIT 2`. None: 404 `SM023 user_not_found` (the person must
+  sign in once). Two or more: 422 `SM010 email_ambiguous`; one is never picked.
+- **Verified-email association (owner correction 1).** The stored email is captured
+  at first login and never refreshed, and the in-process profile cache has no TTL, so
+  neither proves the address is still the user's verified primary. The server fetches
+  the target's Clerk user UNCACHED (`fetch_clerk_primary_email_verification`) and
+  requires `verification.status == "verified"` and Clerk primary == stored ==
+  requested, case-insensitively; otherwise 422 `email_not_verified`. Clerk
+  unreachable or malformed: 503 `SM055` (fail closed). The client supplies no
+  verification input. Only the explicit development bypass skips Clerk, and
+  `Settings` already rejects that flag outside development. `users.email` is never
+  mutated. The cached login path (`_fetch_clerk_user_profile`) keeps its behaviour;
+  only the raw HTTP call and primary-entry lookup were factored out and shared.
+- **State machine** (`FOR UPDATE` on `(workspace_id, user_id)`): no row -> INSERT in
+  a savepoint with `invited_by_id`; `IntegrityError` on
+  `uq_workspace_members_workspace_user` -> 409 `SM036 already_member` (also how the
+  loser of a concurrent double add is answered: exactly one 201). `active` -> 409
+  `already_member`. `departing` -> 409 `handoff_in_progress` (owned by the handoff
+  flow). `departed` -> explicit UPDATE that sets `role` to the REQUESTED role,
+  `status='active'`, `departed_at=NULL`, `invited_by_id=caller` - the old role (a
+  departed admin, say) is never restored. An RLS denial (42501, e.g. the caller
+  lost admin rights concurrently) maps to 403 `SM005`, never 500. A departed OWNER
+  row is invisible to a non-owner admin (RLS USING); the UPDATE returns no row and
+  the INSERT path hits the unique index, both classified as 403 "Only an owner can
+  re-add a former owner" rather than a silent no-op. The row is re-read and
+  role/status asserted before commit.
+- **Concurrent revocation of the caller.** Revoke takes `FOR UPDATE` on the target
+  row; the add holds `FOR SHARE` on the caller's row, so a revoke of the caller
+  waits for the add, and a revoke committed earlier makes the lock query return no
+  active row (add refused, no row created). Both orders are asserted with
+  deterministic barriers against real PostgreSQL.
+
+### Documented behaviour (not bugs)
+
+- `Idempotency-Key` is validated but not de-duplicated. Idempotency is by natural
+  key: a repeat returns 409 `already_member`, not a second row.
+- The endpoint reveals whether an email belongs to a signed-in user, but only to
+  admins/owners of the workspace and under a per-user rate limit.
+- A returning member's attribution history and GitHub author links reactivate with
+  the membership (they hang off the same user id). Ingestion documents failed at
+  revocation stay failed.
+- `joined_at` is the row's `created_at` (first join), not the re-add time.
+
+### Review round (deadlock, oracle, parser)
+
+- **Lock-order deadlock (found by Devin and Codex review; reproduced).** As first
+  written, the handler took `FOR SHARE` on the caller's row and then `FOR UPDATE`
+  on the target's row. Two administrators adding each other (or adding
+  themselves) formed a lock cycle and PostgreSQL aborted one request with
+  `DeadlockDetectedError`, an uncaught 500. A real-DB test with two administrators
+  and a barrier-style delay failed against that code with exactly that error and
+  passes now. (An owner/admin pair cannot form the cycle: RLS hides an owner's row
+  from an administrator's `FOR UPDATE`, so the test uses two administrators.)
+  Fix: the target is now resolved and verified with Clerk BEFORE any membership row
+  is locked, then the two rows are locked in ONE global order (ascending user id;
+  caller share, target exclusive), so no request holds a row another one wants.
+  Adding yourself is refused immediately as `already_member`, with no locks and no
+  Clerk call. Any remaining Postgres deadlock or serialization abort
+  (`40P01`/`40001`) is mapped to a retryable 503 `SM055` with
+  `details.reason = "concurrent_update_retry"`, never a 500.
+- **Clerk call and the lock (accepted trade-off, now smaller).** The Clerk request
+  (up to 5 s) used to run while the caller's share lock was held. With the reorder
+  it runs before any membership lock, so a slow Clerk no longer delays a concurrent
+  revoke of the caller. The caller is still re-verified under the lock. A caller
+  revoked during the Clerk call is refused by that re-check.
+- **Email-registered oracle (accepted limitation, mitigated).** Any signed-in user
+  who owns a workspace can learn whether an email belongs to a signed-in user
+  (404 `user_not_found` versus 422/409), and can add more workspaces (5 per hour)
+  and accounts. Mitigations: per-user limit (20/hour) plus a new per-workspace limit
+  (`RATE_LIMIT_MEMBER_ADD_WORKSPACE_PER_HOUR`, default 40, keyed by workspace id) so
+  admins of one workspace cannot multiply the budget by taking turns. This does not
+  stop many accounts each creating workspaces; it only bounds the rate. The
+  workspace bucket is spent only AFTER the `ADMINISTER` check passes (it is shared,
+  so otherwise any signed-in user who knew a workspace id could exhaust it and lock
+  the real administrators out); a retried request consumes a token from both
+  limiters. The per-user limiter runs first and applies to everyone. The
+  responses for unknown versus unverified emails stay distinct because the client
+  needs "ask them to sign in first". Recorded as an accepted limitation.
+- **Parser hardening.** Clerk answering 404 (user deleted there) is a definite
+  "not verified" (422 `email_not_verified`), not a 503. A missing
+  `primary_email_address_id` never matches an entry that also lacks an id. Direct
+  tests mock only the HTTP layer and call the real parser: verified, unverified and
+  expired, verification absent or null, primary id matching nothing, transport
+  error, malformed body, 404 and other HTTP errors.
+- **Non-ASCII emails are rejected** (422) by `WorkspaceMemberAdd`. Matching uses
+  `lower()` in SQL and Python, which disagree with `casefold()` for non-ASCII text;
+  refusing is simpler and safer than guessing. Cost: an address with a non-ASCII
+  local part or IDN domain cannot be used for member add.
+- **IntegrityError is checked by constraint name.** Only
+  `uq_workspace_members_workspace_user` becomes `already_member`; any other
+  integrity failure (for example a foreign key) is re-raised, not mislabelled.
+- Real-DB tests added: reciprocal and self adds (fails with a deadlock on the
+  earlier code), crossing re-adds of two departed members, and a `departing` member
+  returning `handoff_in_progress`.
+
+### Why this and not the alternatives
+
+- *Trust the stored email only:* rejected; unverified, never refreshed, and a second
+  account with a case-variant address would be indistinguishable.
+- *Cache the Clerk lookup:* rejected for this path; a stale hit is exactly the
+  failure the check exists to prevent. One uncached call per add is cheap and the
+  endpoint is rate limited.
+- *Accept a `user_id` from the client:* rejected; it would bypass the email
+  association entirely.
+- *Invite links / pending invitations:* a schema and email-delivery feature, out of
+  scope for a five-friend release; the sign-in-first requirement is explicit in the
+  404 message.
+- *Table lock or advisory lock instead of `FOR SHARE`:* the row lock reuses the
+  exact row revoke already locks, so no new lock ordering is introduced.
+- *Idempotent 200 on repeat:* rejected; 409 keeps the surface honest and matches
+  the other natural-key conflicts.
+
+### Verification
+
+New unit file `tests/unit/api/test_workspace_member_add.py`; twelve real-PostgreSQL
+tests added to `test_security_foundation_real_db.py` (Security Acceptance node list
+76 -> 88). `.env.example` CORS_ORIGINS comment corrected: the setting is a JSON array
+and a comma-separated string fails to parse (verified against `Settings`).
+`rate_limit_member_add_per_hour` was also added to the shared positivity validator.
+
+
+---
+
+## D-025 — Editing a superseded memory version is a 409 that names the latest version
+
+**Status:** Implemented in the backend (stacked on D-024); not deployed by this change.
+
+### Problem
+
+`PATCH /v1/memories/{id}` on a version that is no longer current answered the same
+generic `404 SM020` as a missing memory. A client holding an old id (a second tab, a
+teammate who edited first, a retried request) could not tell "gone" from "someone
+else edited this" and had nowhere to go.
+
+### Decision
+
+- `find_latest_version(session, memory_id, workspace_id, *, user_id)` in
+  `services/attribution/versioning.py` walks DOWNWARD through `parent_memory_id`
+  with a recursive CTE, bounded by the existing `MAX_CHAIN_DEPTH`, cycle-guarded by a
+  path array, same workspace only. It aggregates in SQL and returns a small frozen
+  result: exactly one current non-deleted descendant -> `superseded` + its id; more
+  than one (a fork) -> `ambiguous_successor`, id null, never picked; descendants but
+  none current and non-deleted -> `no_current_version`; no descendants and the row is
+  non-current (retired by conflict resolution/merge) -> `superseded_without_successor`.
+- A unique id is returned only after READ access to THAT id is confirmed with the
+  same helper used for memories (`require_memory_access`). If it fails, or the caller
+  is unknown, the result downgrades to `superseded_without_successor` with no id.
+- PATCH (and `create_new_version`) run this only AFTER `require_memory_access(...,
+  CONTRIBUTE)` has passed and the row exists, is non-deleted and non-current; they
+  raise `MemoryVersionStaleError` (409 SM035) with `details = {memory_id,
+  latest_memory_id, reason}`. `latest_memory_id` is non-null only for `superseded`.
+  Missing, deleted and inaccessible memories keep the generic 404 SM020 (a
+  non-member or other-workspace caller gets the same 404 whether or not the memory
+  was superseded; a viewer is refused 403 before any hint). `SourceMindError` already
+  carried `details`, so the exception class needed no change and handoff's existing
+  use is unaffected.
+- `GET /v1/memories/{id}` still returns 200 for superseded content and adds
+  `is_current`, `latest_memory_id`, `supersession_reason` (null/absent semantics per
+  the contract). The fields are optional with `None` defaults on `MemoryResponse`,
+  so search and PATCH responses only gain null keys.
+- Concurrent PATCHes of one version: the loser waits on the existing row lock, then
+  finds the row non-current and now receives 409 with the winner's id (previously a
+  404). Asserted against real PostgreSQL.
+
+### Truncated walks (review round)
+
+Review found that after more than `MAX_CHAIN_DEPTH` (10,000) versions - reachable
+only through tags-only edits, which do not check ancestry depth - the bounded walk
+stopped before the current head and `no_current_version` was reported, a false
+claim. The aggregate now also counts nodes at the depth bound that still have
+children. When that count is non-zero the result is `superseded_without_successor`
+with no id and `truncated = true` (logged, and added to the 409 `details` only
+when true; the contract keys are unchanged). Two live heads actually seen still
+report `ambiguous_successor`. Tags-only edits were not changed to count toward
+the bound: that would alter the edit path, which is out of scope for this fix.
+Covered by unit tests with synthetic aggregates and a real-DB test with the bound
+patched to 3 over a six-version chain.
+
+### Related small change: `already_exists` on the ingestion POST
+
+`POST /v1/memories` now returns `already_exists: bool` (default false). The receiver
+already knew when a submission matched a document ingested earlier in the workspace
+(dedup returns the existing record, even a failed or zero-memory one, and nothing is
+re-queued) but the route dropped the flag, so a client could not avoid saying that
+an identical earlier submission "created" new memories. Status code, `status` and
+`message` are unchanged; polling `GET /v1/memories/jobs/:id` always reports false.
+Additive and optional, so existing clients are unaffected. Own commit.
+
+### Deliberately not done
+
+- No version is created and the edit is never auto-applied to the latest version:
+  that would silently overwrite a teammate's newer text with an edit written against
+  stale content.
+- The Idempotency-Key is not used to claim replay success. Successful idempotent
+  replay of an already-applied PATCH is NOT implemented; a retry of an applied edit
+  gets the same 409 pointing at the version it created. Closing that gap needs
+  persisted keys and is a separate decision.
+- Cross-workspace rows with the same parent are never considered successors.
+
+### Why this approach
+
+- *Resolve the latest in Python by repeated queries:* rejected; one aggregate query
+  over a bounded recursive CTE is a single round trip and cannot be torn by a
+  concurrent edit between steps.
+- *Pick the newest/highest version on a fork:* rejected; guessing which branch is
+  "the" latest sends a user to the wrong text. An explicit `ambiguous_successor` lets
+  the client show the situation honestly.
+- *Return the id without re-checking access:* rejected; the CTE is workspace-scoped
+  and a unique id passes today, but the explicit check keeps the guarantee local to
+  the function rather than dependent on how the query is written.
+- *Reuse 404 with a hint:* rejected; the conflict is a state clash, 409 is its
+  honest status, and SM035 already existed for exactly "version superseded".
+
+### Verification
+
+New unit file `tests/unit/attribution/test_find_latest_version.py` (11 tests: reason
+matrix, unauthorized/unknown caller no-leak, fork, deleted latest, merge-retired,
+missing/deleted stay 404). Six new real-PostgreSQL nodes plus two updated
+(`...409_on_stale_id` rename, retried content patch, concurrent PATCH loser now 409
+with the winner's id) in `test_attribution_history_real_db.py`. Security Acceptance
+node list 85 -> 91 (92 with the journey test).
+
+A single end-to-end journey test (`test_friends_release_journey_over_http_with_signed_tokens`,
+node list 91 -> 92) drives the ordinary flow over HTTP with signed Clerk tokens against
+real PostgreSQL and Redis: two users sign in, A creates a workspace, A adds B by
+email, B lists it, B creates a memory (extract mode; the ingestion worker runs in
+process), B edits it, A searches and finds the edited version, B's stale PATCH gets
+409 with the latest id, and a never-added C is blind to the workspace (404). All
+provider calls are replaced in process (Clerk profile and email verification,
+extraction, chunking, fact extraction, embeddings, relation detection, the search
+query embedding, the attribution scorer); no network is used.
+
+## D-026 — Web: workspace picker, creation, explicit no-workspace state, add member, switch-safe API layer
+
+**Status:** Implemented in the web app; not deployed by this change.
+
+### Decision
+
+1. **Picker instead of an oldest-workspace default.** `resolveWorkspaceId` is now
+   explicit UUID, then `REACT_APP_DEFAULT_WORKSPACE_ID` (unset in the release
+   build), then the user's remembered choice validated against the fresh
+   `GET /v1/workspaces` list, then `list[0]`. The choice is stored per user id in
+   `localStorage` (try/catch; also held in memory for the session), and a stale
+   id is cleared and ignored. The sidebar switcher is a dropdown with a "Create
+   workspace" dialog.
+2. **Zero workspaces is an explicit state.** `AppLayout` gates on the list:
+   loading, error (a failed lookup is shown as an error, never as empty), empty
+   (full page naming the signed-in email, "Check again", and the create form, with
+   sign-out and theme controls) or ready. Friends can sign in before the owner
+   adds them.
+3. **Add member** (owner/admin only; `POST /v1/workspaces/{id}/members`, roles
+   member/viewer, UUIDv4 Idempotency-Key). Enabled from the caller's role in the
+   members list (same rule as `PilotTools`). Errors are mapped from
+   `error.code` / `error.details.reason`; success is only reported on the 201.
+   Create-workspace and add-member have in-flight guards because the backend does
+   not de-duplicate on the key.
+4. **Switching cancels or ignores in-flight work.** A workspace-scope generation
+   counter plus an `AbortController` live in `realApi`. Every scoped request
+   captures the generation, is sent with the signal, and a response or failure
+   arriving after the generation moved throws `StaleWorkspaceError`, which
+   `useApiResource` and the pages ignore silently. Workspace resolution itself is
+   checked the same way. The generation also moves on identity change, and both
+   events use the existing identity-reset listener registry (listeners now get
+   `(identityGeneration, kind)`), so existing subscribers need no rewiring. The
+   page outlet is keyed on the generation, so Memories (search results, selection,
+   ingest sheet, job polling timers, idempotency key holder), Settings dialogs and
+   every other page start clean in the new workspace; detail routes redirect to
+   their list because their ids are workspace-specific. Requests about the user
+   (`/team/me`, list/create workspace, add member) are not scoped and are not
+   aborted by a switch.
+
+### Alternatives considered
+
+- **Build-time pinning** (`REACT_APP_DEFAULT_WORKSPACE_ID`): cannot serve five
+  people who each need the workspace the owner creates after the build, and would
+  hard-code one workspace into a public bundle.
+- **A second account for the shared space:** avoids UI work but defeats per-person
+  attribution, which is the product.
+- **Only clearing caches on switch:** leaves requests already on the wire free to
+  resolve into the new screen (the same hazard D-009 closed for identity).
+  Clearing is necessary but not sufficient; the generation check is what drops
+  the late response, the abort just saves the bandwidth.
+- **Radix `Select` for the role field:** a native `<select>` is simpler,
+  accessible and testable for two options.
+
+### Deliberate limits
+
+- Only member and viewer can be added from the UI; promotion is not offered.
+- Mock mode keeps one demo workspace plus any created in the session.
+- Dropped mutations (an ingest started just before a switch) may still be
+  processed by the server; the UI only guarantees it will not show their result in
+  the wrong workspace.
+
+### D-026 addendum - review fixes
+
+- A workspace lookup is bound to the user and identity generation that started it; a late answer for a previous user is discarded and never validates or clears another user's saved choice.
+- Response bodies are read inside the stale guard, so a switch that aborts a body read is the stale result, not a failure.
+- Dismissing the create dialog mid-request lists the new workspace and toasts but does not switch or navigate. Mounted flags are re-armed on effect setup (StrictMode).
+- A build with REACT_APP_DEFAULT_WORKSPACE_ID is pinned: the picker and create entry points are replaced by a fixed label and selectWorkspace is a no-op, so the UI cannot claim a workspace the requests do not use.
+- Add member against a server without the route (405, or 404 with no error code) says the server does not support it yet. Merge order: the API route (PR #20) must land before this PR for real-mode add member.
+
+## D-027 — Web: explicit memory-creation outcomes, retry controls that match dedup, and stale-edit handling
+
+**Status:** Accepted (PR4 of the friends release; stacked on D-026)
+
+### What changed
+
+1. **Ingest sheet copy (normal mode only).** The sheet says that text is processed
+   into searchable facts, is not stored word for word, and that one submission may
+   produce several memories, one, or none. Pilot copy and behaviour are unchanged;
+   normal mode still sends no `ingestion_mode`.
+2. **Outcomes come from the polled job**, not from the word "done".
+   `lib/ingestOutcome.js` maps `status`, `memory_ids`, `memory_count`, `error` and
+   `message` to: progress (honest label per status, no invented stage list),
+   retrying, success (`memory_count > 0`: "Created N memories" with a router link
+   per id that closes the sheet), zero memories (amber "Processing finished but no
+   searchable memory was created", never a success), failed (the reported error),
+   duplicate (what the API reports). The dead "Pipeline complete · ms total" is
+   replaced by browser-measured elapsed time from submit. After ~60 s the panel
+   says it is still processing; polling backs off and stops after 10 minutes with a
+   non-failure "taking longer than expected" state and a Check again button. A
+   failed status request is a distinct state from a failed job. Polling stops on
+   unmount, close, identity change and workspace-scope change (PR3's generation).
+3. **Retry controls match the backend (owner correction 4).** Identical content in
+   a workspace returns the same deduplicated record, even a failed or zero-memory
+   one, so after failed, zero-memory or duplicate outcomes there is no Retry. The
+   user gets "Edit text and submit again": the text stays, Submit is disabled while
+   it is unchanged, with the reason shown. A same-key "Retry" exists only for an
+   ambiguous submit failure (network error or 5xx on the POST, so no job id); the
+   key holder is kept across that failure so the retry carries the same key.
+4. **MemoryDetail stale edits** (consumes the superseded-versions contract,
+   written defensively so older responses without the new fields behave as
+   "current"). Drafts are kept per (user, memory id) in component state and
+   sessionStorage (all storage calls wrapped), surviving close, error and reopen;
+   cleared on a successful save or explicit discard. `409 SM035` says the version
+   was replaced; only `reason: superseded` with a `latest_memory_id` renders a
+   "View latest version" button, the other reasons explain that there is no single
+   newer version and render no link. `404` is generic. Network/timeout/5xx is
+   "Save outcome unknown" with a Check history button that refetches the memory
+   and versions and shows facts (version numbers, timestamps, content) without
+   deciding whether the save landed, even if text matches the draft. Other 4xx show
+   the server message. "View latest version" is navigation only: the draft is
+   carried via sessionStorage and the latest page offers "Open editor with my
+   unsaved draft" as an explicit click. A page loaded with `is_current === false`
+   shows a superseded banner and disables Edit. `updateMemory` is called only by a
+   Save click, once per click (in-flight ref guard). The page is keyed on the
+   memory id so moving between versions never carries an open dialog.
+5. The mock API now mirrors `memory_ids` / `memory_count` / `is_current`.
+
+### Why this approach
+
+The earlier UI turned every finished job into a success tick and offered Retry for
+states where Retry returns the identical record, so the owner's friends could be
+told something worked that created nothing. The wording is driven by facts the API
+reports, and the retry controls follow what the server actually does with a
+resubmission. For edits, the dangerous failure is overwriting someone else's newer
+version or implying a save happened; the design never resubmits automatically and
+never infers outcomes.
+
+### Alternatives considered
+
+- **Keep Retry after failure:** misleading, it only returns the same failed record.
+- **Auto-open the editor with the carried draft on the latest page:** risks saving
+  over the newer version unseen; an explicit click is required instead.
+- **Compare the draft to server content in Check history and say "saved":** equal
+  text can be another person's identical edit; facts only.
+- **A real stage tracker:** the API reports no stages, so it would be invented.
+
+### Known limitations
+
+- **No idempotent replay.** The Idempotency-Key is validated by the backend but not
+  used to deduplicate. Reusing the key on a retry is best effort and is not a
+  guarantee that a repeated PATCH or POST is safe; creation is protected by content
+  dedup, edits only by the user's explicit decision after Check history.
+- **Failed-document dead end.** A document that fails (for example during a
+  transient provider outage) is returned for identical text and nothing re-queues
+  it. This is a backend limitation; the UI says so ("identical text returns the
+  same result") and asks for an edit rather than hiding it.
+- Pilot mode shares the new outcome/retry logic (it creates one verbatim memory,
+  so success renders as "Created 1 memory"); only the pre-submit copy is untouched.
+
+### D-027 review follow-ups
+
+- **`already_exists`.** The POST response's `already_exists` decides the wording: `false` is "Created N", `true` is "This exact text was already submitted — here are the memories from that earlier submission" (never "Created"), absent is neutral "Processed — N memories". The panel does not infer duplication from the polled status. The mock mirrors both and stores the submitted text as its own mock memory, so success links never open unrelated seed content.
+- **Carried drafts are never applied silently.** If the latest version already has its own draft, both are shown and the user picks keep mine / keep both (carried text appended below) / replace. The carry also travels in router state, so a sessionStorage failure cannot lose it.
+- **Draft identity.** The user id is read through a subscription (`onCurrentUserChange`) because the auth bridge publishes it after the first render; drafts are reloaded when it settles, unless the user has already typed in the page.
+- **"Same text" is the trimmed text**, matching the API, which strips surrounding whitespace before hashing.
+- After an unknown save outcome the UI cautions to check history before saving again (a repeat PATCH is not recognised server-side).
+- **Drafts do not cross people, and do not survive sign-out.** The carried-draft copy in router history state is stamped with the user id and ignored unless it matches the current user (Back after a sign-out reaches the previous person's entry). Stored drafts and carries are purged whenever the published user id is first set, changes or becomes null (everything not belonging to the new user), and the draft store is a no-op without a user id, so nothing is ever written under an anonymous key. The accepted cost is that a draft is lost on sign-out; it still survives a reload of the same signed-in session. The Edit role check now asks for the members of the memory's own workspace (`memory.workspace_id`), not the selected one; the server still enforces.
+- **Search-card attribution (normal mode only).** Search asked for no attribution, so every card printed "Unattributed" even for authored memories. Normal mode now sends `include_attribution: true`, adapts the result with the detail page's adapter, and shows the real primary contributor (and percentage, as the detail page does) or, if the memory's origin is an unlinked external author, a note saying so. Missing or empty attribution renders nothing rather than a false label. Pilot search keeps the exact `{query, mode, limit}` body and no attribution UI. Search results carry the latest row per user, so this is a display of what the API reports, not a recomputation.
+- **`email_already_linked` (409 SM010).** Classified as its own non-retryable kind with an actionable message (ask the workspace owner; recovery needs identity verification and approval), no email echoed, and Sign out instead of Retry. Other 409s are unchanged. No automatic recovery is promised.
+
 ## D-028 — Frontend releases are published as a parentless commit pushed with a lease, after a bundle check
 
 **Status:** Documented procedure; the publish itself is a manual release step.
@@ -2720,3 +3137,59 @@ This documents the procedure only. The exact command used by earlier releases is
 recorded anywhere in the repository; the description above is inferred from the
 branch history and the package source. It does not change how the app is built or what
 it contains.
+
+## D-029 — First sign-in provisions the user with ON CONFLICT, and an email clash is a handled 409
+
+**Status:** Implemented in the backend (stacked on D-025); not deployed by this change.
+
+### Problem
+
+A brand-new user's first page load fires `GET /v1/team/me` and `GET /v1/workspaces`
+together. Both ran `_get_or_create_user`: select by `clerk_id`, then a plain insert.
+Both saw no row; the loser hit `uq_users_clerk_id` and returned an unhandled 500
+(SM090), so the browser showed "Can't reach SourceMind". The real-browser check
+reproduced it for 4 of 4 fresh identities, so every friend's first sign-in was likely
+to hit it. It predates this branch (present on `origin/main`).
+
+### Decision
+
+- The insert is now `INSERT ... ON CONFLICT (clerk_id) DO NOTHING` inside a savepoint
+  (`begin_nested`), followed by a re-select by `clerk_id`. A losing request blocks on
+  the winner's uncommitted row, inserts nothing, then reads the winner's committed
+  row, so all concurrent first requests resolve to the SAME user and exactly one row
+  exists. The Clerk profile fetch, its in-process cache, the email requirement and
+  `set_rls_user_context` (called by the caller once the user is known) are unchanged.
+- An `IntegrityError` from the insert is swallowed only to re-select: if the
+  `clerk_id` row exists the request proceeds. If no row exists, the only remaining
+  collision is `uq_users_email` (a DIFFERENT Clerk identity already stores that
+  address). That is never merged silently: it raises `ValidationError` with HTTP 409
+  and `details.reason = "email_already_linked"`. The message and log carry no email
+  address (the provisioning log line no longer prints it either).
+
+### Alternatives considered
+
+- *Catch `IntegrityError` around a plain insert (savepoint only):* works, but needs
+  an exception per losing request and cannot tell the two unique constraints apart
+  without parsing the constraint name. `ON CONFLICT (clerk_id)` handles the expected
+  race without raising, and only an email clash reaches the error path.
+- *Serialize the two frontend calls:* rejected as the fix. It hides the race in one
+  client but leaves it for a second tab, a retry, or any other API consumer, and it
+  delays first paint. The server must be safe regardless of caller behavior.
+- *`ON CONFLICT (email)` / upsert on either key:* rejected; matching on email would
+  attach a new Clerk identity to an existing account, which is exactly the silent
+  identity merge this change refuses.
+- *Advisory lock per clerk_id:* correct but adds a lock protocol for something the
+  unique index already arbitrates.
+
+### Verification
+
+Five unit tests (`tests/unit/api/test_first_signin_provisioning.py`) cover existing
+user, normal insert, lost clerk_id race, email clash, and a silent no-row outcome.
+One real-PostgreSQL node (`test_concurrent_first_requests_create_exactly_one_user`,
+in the already-listed `test_security_acceptance_real_services.py`) sends 8 concurrent
+requests (4 `/v1/team/me`, 4 `/v1/workspaces`) with a signed token for a never-seen
+clerk_id: all return 200, one id, one `users` row; then a second identity with the
+same email gets 409 `email_already_linked`. It fails against the previous
+implementation with the same `uq_users_clerk_id` violation. Security Acceptance node
+list 96 -> 97.
+

@@ -1,7 +1,26 @@
 import React from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { appUrl } from "../../lib/appUrl";
+import { useClerk } from "@clerk/clerk-react";
 import { Button } from "../ui/button";
+
+// Only rendered for the email-linked error, so pages that show other errors
+// never need a Clerk provider.
+function SignOutButton({ testId }) {
+    const { signOut } = useClerk();
+    return (
+        <Button
+            type="button"
+            variant="outline"
+            data-testid={`${testId}-signout`}
+            onClick={() => signOut()}
+            size="sm"
+            className="border-sm-border text-sm-text"
+        >
+            Sign out
+        </Button>
+    );
+}
 
 export function PageLoadError({ error, onRetry, testId = "page-load-error", compact = false }) {
     return (
@@ -20,7 +39,7 @@ export function PageLoadError({ error, onRetry, testId = "page-load-error", comp
                     <p className="mt-1 text-[12.5px] text-sm-text-secondary">
                         {error?.detail || "This data could not be loaded."}
                     </p>
-                    {(error?.kind === "auth" || (error?.retryable && onRetry)) && (
+                    {(error?.kind === "auth" || error?.kind === "email-linked" || (error?.retryable && onRetry)) && (
                         <div className="mt-4 flex items-center gap-2">
                             {error?.kind === "auth" && (
                                 <Button
@@ -32,6 +51,7 @@ export function PageLoadError({ error, onRetry, testId = "page-load-error", comp
                                     <a href={appUrl("/sign-in")}>Sign in again</a>
                                 </Button>
                             )}
+                            {error?.kind === "email-linked" && <SignOutButton testId={testId} />}
                             {error?.retryable && onRetry && (
                                 <Button
                                     type="button"

@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from jose import jwk
 from jose import jwt as jose_jwt
 from redis.asyncio import Redis
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sourcemind.core.config import get_settings
@@ -433,3 +433,398 @@ async def test_real_redis_counters_scopes_expiry_sharing_and_fail_closed(
         await redis.delete(*keys, expiry_key)
         await close_redis()
         get_settings.cache_clear()
+
+
+# ── Friends-release journey: sign in -> workspace -> add -> create -> edit -> search ──
+#
+# One ordinary-user journey over the real FastAPI app, real PostgreSQL (restricted
+# role, RLS) and real Redis, with signed Clerk tokens. Everything that would
+# call a provider is replaced in-process and nothing touches the network: Clerk
+# profile/verification lookups, the ingestion worker's document extraction,
+# chunking, fact extraction, embeddings and relation detection, the PATCH
+# re-embedding, the search query embedding, and the attribution scorer (a
+# deterministic equal split; spaCy cannot load on this Python).
+
+
+class _JourneyEmbedding:
+    """Constant unit-ish vector so semantic search is deterministic and offline."""
+
+    vector = [0.01] * 3072
+
+
+def _stub_ingestion_providers(monkeypatch: pytest.MonkeyPatch, fact: str) -> None:
+    from anthropic import AsyncAnthropic
+    from openai import AsyncOpenAI
+
+    from sourcemind.services.attribution import engine as attribution_engine
+    from sourcemind.services.attribution import scorer as attribution_scorer
+    from sourcemind.services.attribution import versioning
+    from sourcemind.services.ingestion import chunker, embedder, extractor, fact_extractor
+    from sourcemind.services.ingestion.chunker import ChunkResult
+    from sourcemind.services.ingestion.embedder import EmbeddingResult
+    from sourcemind.services.ingestion.extractor import ExtractionResult as DocumentExtraction
+    from sourcemind.services.ingestion.fact_extractor import ExtractionResult as FactExtraction
+    from sourcemind.services.memory import relations
+
+    def equal_split(edits):
+        users = list(dict.fromkeys(e.user_id for e in edits))
+        return [
+            SimpleNamespace(
+                user_id=user,
+                contribution_weight=1 / len(users),
+                char_diff_score=0.5,
+                semantic_score=0.5,
+                temporal_score=0.5,
+                structural_score=0.5,
+                approval_score=0.0,
+            )
+            for user in users
+        ]
+
+    scorer = SimpleNamespace(compute_scores=equal_split)
+    monkeypatch.setattr(attribution_engine, "get_scorer", lambda: scorer)
+    monkeypatch.setattr(attribution_scorer, "get_scorer", lambda: scorer)
+
+    async def extract_document(**_kwargs):
+        return DocumentExtraction(content=fact, content_type="text")
+
+    async def chunk_document(_extraction):
+        return [
+            ChunkResult(
+                content=fact, token_count=8, chunk_index=0, total_chunks=1, chunk_type="text"
+            )
+        ]
+
+    async def extract_facts(*_args, **_kwargs):
+        return FactExtraction(facts=[fact], total_chunks=1, failed_chunks=0, failure_reasons=[])
+
+    async def embed(texts):
+        return [
+            EmbeddingResult(
+                content=t, embedding=_JourneyEmbedding.vector, token_count=8, cached=False
+            )
+            for t in texts
+        ]
+
+    async def no_relations(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(extractor, "extract", extract_document)
+    monkeypatch.setattr(chunker, "chunk", chunk_document)
+    monkeypatch.setattr(
+        fact_extractor, "FactExtractor", lambda _c: SimpleNamespace(extract=extract_facts)
+    )
+    monkeypatch.setattr(embedder, "EmbeddingService", lambda _c: SimpleNamespace(embed=embed))
+    # PATCH re-embeds through the name versioning.py imported at module load.
+    monkeypatch.setattr(versioning, "EmbeddingService", lambda _c: SimpleNamespace(embed=embed))
+    monkeypatch.setattr(
+        relations,
+        "RelationDetector",
+        lambda _c: SimpleNamespace(detect=no_relations, plan=no_relations, apply=no_relations),
+    )
+    monkeypatch.setattr(AsyncOpenAI, "__new__", lambda cls, **_kwargs: object())
+    monkeypatch.setattr(AsyncAnthropic, "__new__", lambda cls, **_kwargs: object())
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_friends_release_journey_over_http_with_signed_tokens(
+    supabase_engine,
+    supabase_url: str,
+    security_test_redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_environment(monkeypatch, supabase_url, security_test_redis_url)
+    original_fact = "Deploy freezes start every Friday at noon."
+    edited_fact = "Deploy freezes start every Thursday at noon."
+    _stub_ingestion_providers(monkeypatch, original_fact)
+
+    suffix = uuid.uuid4().hex[:12]
+    people = {
+        name: (f"journey-{name}-{suffix}", f"journey-{name}-{suffix}@example.com")
+        for name in ("a", "b", "c")
+    }
+    email_of = dict(people.values())
+    private_pem, public_jwk = _signing_material()
+    tokens = {name: _token(private_pem, clerk) for name, (clerk, _email) in people.items()}
+
+    async def fetch_profile(clerk_id: str, _secret: str) -> tuple[str, str]:
+        return email_of[clerk_id], clerk_id
+
+    async def verified_primary(clerk_id: str, _secret: str) -> tuple[str, str]:
+        return email_of[clerk_id], "verified"
+
+    async def fake_embeddings_create(**_kwargs):
+        return SimpleNamespace(data=[SimpleNamespace(embedding=_JourneyEmbedding.vector)])
+
+    fake_openai = SimpleNamespace(embeddings=SimpleNamespace(create=fake_embeddings_create))
+
+    from sourcemind.core import dependencies
+    from sourcemind.core.redis_client import get_redis
+    from sourcemind.main import create_app
+    from sourcemind.workers import ingestion as worker
+
+    dependencies._jwks_cache.clear()
+    dependencies._user_profile_cache.clear()
+    app = create_app()
+
+    async def override_openai() -> object:
+        return fake_openai
+
+    app.dependency_overrides[dependencies.get_openai_client] = override_openai
+    monkeypatch.setattr(
+        worker.process_document,
+        "apply_async",
+        lambda **_kwargs: SimpleNamespace(id=f"journey-task-{uuid.uuid4()}"),
+    )
+
+    with (
+        patch("sourcemind.core.dependencies._fetch_jwks", new=AsyncMock(return_value=[public_jwk])),
+        patch("sourcemind.core.dependencies._fetch_clerk_user_profile", new=fetch_profile),
+        patch(
+            "sourcemind.api.v1.workspaces.fetch_clerk_primary_email_verification",
+            new=verified_primary,
+        ),
+    ):
+        async with app.router.lifespan_context(app):
+            await get_redis().flushdb()
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://journey.test"
+            ) as client:
+                # 1. Everyone signs in once (just-in-time user rows).
+                user_ids = {}
+                for name in ("a", "b", "c"):
+                    me = await client.get("/v1/team/me", headers=_auth(tokens[name]))
+                    assert me.status_code == 200, me.text
+                    user_ids[name] = uuid.UUID(me.json()["data"]["id"])
+
+                # 2. A creates a NEW workspace.
+                created = await client.post(
+                    "/v1/workspaces",
+                    headers=_mutation_headers(tokens["a"]),
+                    json={"name": "Friends", "slug": f"friends-{suffix}"},
+                )
+                assert created.status_code == 201, created.text
+                workspace_id = created.json()["data"]["id"]
+
+                # B and C cannot see it yet.
+                for name in ("b", "c"):
+                    not_yet = await client.get(
+                        f"/v1/workspaces/{workspace_id}", headers=_auth(tokens[name])
+                    )
+                    assert not_yet.status_code == 404
+                    assert not_yet.json()["error"]["code"] == "SM022"
+
+                # 3. A adds B by email (Clerk confirms the verified primary email).
+                added = await client.post(
+                    f"/v1/workspaces/{workspace_id}/members",
+                    headers=_mutation_headers(tokens["a"]),
+                    json={"email": people["b"][1]},
+                )
+                assert added.status_code == 201, added.text
+                assert added.json()["data"]["role"] == "member"
+                assert added.json()["data"]["user"]["id"] == str(user_ids["b"])
+                repeat = await client.post(
+                    f"/v1/workspaces/{workspace_id}/members",
+                    headers=_mutation_headers(tokens["a"]),
+                    json={"email": people["b"][1]},
+                )
+                assert repeat.status_code == 409
+                assert repeat.json()["error"]["details"] == {"reason": "already_member"}
+
+                # 4. B lists workspaces and sees it; C still does not.
+                listed = await client.get("/v1/workspaces", headers=_auth(tokens["b"]))
+                assert [w["id"] for w in listed.json()["data"]] == [workspace_id]
+                assert (
+                    await client.get("/v1/workspaces", headers=_auth(tokens["c"]))
+                ).json()["data"] == []
+
+                # 5. B creates a memory (extract mode); the worker runs in-process.
+                queued = await client.post(
+                    f"/v1/memories?workspace_id={workspace_id}",
+                    headers=_mutation_headers(tokens["b"]),
+                    json={
+                        "content": "Notes from the release meeting about deploy freezes.",
+                        "source_type": "text",
+                        "ingestion_mode": "extract",
+                    },
+                )
+                assert queued.status_code == 202, queued.text
+                assert queued.json()["data"]["already_exists"] is False
+                job_id = queued.json()["data"]["job_id"]
+                document_id = queued.json()["data"]["document_id"]
+
+                from tests.integration.test_ingestion_worker_contract import FakeTask
+
+                result = await worker._run_pipeline(
+                    FakeTask(retries=0), document_id, workspace_id, str(user_ids["b"])
+                )
+                assert result["status"] == "completed", result
+                # The worker closes the Redis pool when it finishes (it normally
+                # owns its own process); reopen it for the API side of the app.
+                from sourcemind.core.redis_client import init_redis
+
+                await init_redis()
+                job = await client.get(f"/v1/memories/jobs/{job_id}", headers=_auth(tokens["b"]))
+                assert job.status_code == 200, job.text
+                assert job.json()["data"]["status"] == "completed"
+                assert job.json()["data"]["memory_count"] == 1
+                v1 = job.json()["data"]["memory_ids"][0]
+
+                # Submitting the identical text again is recognised as the same
+                # document: same job, no new memories, and the client is told so.
+                resubmitted = await client.post(
+                    f"/v1/memories?workspace_id={workspace_id}",
+                    headers=_mutation_headers(tokens["b"]),
+                    json={
+                        "content": "Notes from the release meeting about deploy freezes.",
+                        "source_type": "text",
+                        "ingestion_mode": "extract",
+                    },
+                )
+                assert resubmitted.status_code == 202, resubmitted.text
+                assert resubmitted.json()["data"]["already_exists"] is True
+                assert resubmitted.json()["data"]["job_id"] == job_id
+                assert resubmitted.json()["data"]["document_id"] == document_id
+
+                # 6. B edits it; the old version is now superseded.
+                edited = await client.patch(
+                    f"/v1/memories/{v1}",
+                    headers=_mutation_headers(tokens["b"]),
+                    json={"content": edited_fact},
+                )
+                assert edited.status_code == 200, edited.text
+                v2 = edited.json()["data"]["id"]
+                assert v2 != v1 and edited.json()["data"]["version"] == 2
+
+                # 7. A searches and finds the EDITED version, not the original.
+                found = await client.post(
+                    f"/v1/memories/search?workspace_id={workspace_id}",
+                    headers=_auth(tokens["a"]),
+                    json={"query": "when do deploy freezes start", "mode": "hybrid"},
+                )
+                assert found.status_code == 200, found.text
+                hits = {r["memory"]["id"]: r["memory"]["content"] for r in found.json()["results"]}
+                assert hits.get(v2) == edited_fact, hits
+                assert v1 not in hits
+
+                # 8. B patches the STALE version: 409 pointing at the latest.
+                stale = await client.patch(
+                    f"/v1/memories/{v1}",
+                    headers=_mutation_headers(tokens["b"]),
+                    json={"content": "A third opinion on the freeze day."},
+                )
+                assert stale.status_code == 409, stale.text
+                assert stale.json()["error"]["code"] == "SM035"
+                assert stale.json()["error"]["details"] == {
+                    "memory_id": v1,
+                    "latest_memory_id": v2,
+                    "reason": "superseded",
+                }
+                old_read = await client.get(f"/v1/memories/{v1}", headers=_auth(tokens["a"]))
+                assert old_read.status_code == 200
+                assert old_read.json()["data"]["is_current"] is False
+                assert old_read.json()["data"]["latest_memory_id"] == v2
+
+                # 9. C, never added, is blind to the whole workspace.
+                for method, path, kwargs in (
+                    ("GET", f"/v1/workspaces/{workspace_id}", {}),
+                    ("GET", f"/v1/workspaces/{workspace_id}/members", {}),
+                    ("GET", f"/v1/memories/{v2}", {}),
+                    ("POST", f"/v1/memories/search?workspace_id={workspace_id}",
+                     {"json": {"query": "deploy freezes"}}),
+                ):
+                    headers = (
+                        _mutation_headers(tokens["c"]) if method == "POST" else _auth(tokens["c"])
+                    )
+                    denied = await client.request(method, path, headers=headers, **kwargs)
+                    assert denied.status_code == 404, (path, denied.status_code, denied.text)
+                c_stale = await client.patch(
+                    f"/v1/memories/{v1}",
+                    headers=_mutation_headers(tokens["c"]),
+                    json={"content": "Probe."},
+                )
+                assert c_stale.status_code == 404
+                assert c_stale.json()["error"]["code"] == "SM020"
+
+    async with AsyncSession(supabase_engine) as verify:
+        await set_rls_user_context(verify, user_ids["a"])
+        await set_rls_workspace_context(verify, uuid.UUID(workspace_id))
+        versions = (
+            await verify.execute(
+                select(Memory.version, Memory.current_version)
+                .where(Memory.workspace_id == uuid.UUID(workspace_id))
+                .order_by(Memory.version)
+            )
+        ).all()
+        assert [(v, c) for v, c in versions] == [(1, False), (2, True)]
+    get_settings.cache_clear()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_first_requests_create_exactly_one_user(
+    supabase_engine,
+    supabase_url: str,
+    security_test_redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new user's first page load fires several requests at once (regression)."""
+    _configure_environment(monkeypatch, supabase_url, security_test_redis_url)
+    suffix = uuid.uuid4().hex[:12]
+    clerk_id, email = f"race-{suffix}", f"race-{suffix}@example.com"
+    other_clerk_id = f"race-other-{suffix}"
+    private_pem, public_jwk = _signing_material()
+
+    async def fetch_profile(requested: str, _secret: str) -> tuple[str, str]:
+        # Same address for both identities: the second is an email collision.
+        return email, requested
+
+    from sourcemind.core import dependencies
+    from sourcemind.main import create_app
+
+    dependencies._jwks_cache.clear()
+    dependencies._user_profile_cache.clear()
+    app = create_app()
+    with (
+        patch("sourcemind.core.dependencies._fetch_jwks", new=AsyncMock(return_value=[public_jwk])),
+        patch("sourcemind.core.dependencies._fetch_clerk_user_profile", new=fetch_profile),
+    ):
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://race.test"
+            ) as client:
+                headers = _auth(_token(private_pem, clerk_id))
+                paths = ["/v1/team/me", "/v1/workspaces"] * 4
+                responses = await asyncio.gather(
+                    *(client.get(path, headers=headers) for path in paths)
+                )
+                assert [r.status_code for r in responses] == [200] * len(paths), [
+                    r.text for r in responses if r.status_code != 200
+                ]
+                ids = {
+                    r.json()["data"]["id"] for r in responses if r.request.url.path.endswith("/me")
+                }
+                assert len(ids) == 1
+
+                # A different identity claiming the stored email is a handled
+                # 409, never a silent merge and never a 500.
+                dependencies._user_profile_cache.clear()
+                collision = await client.get(
+                    "/v1/team/me", headers=_auth(_token(private_pem, other_clerk_id))
+                )
+                assert collision.status_code == 409, collision.text
+                error = collision.json()["error"]
+                assert error["details"] == {"reason": "email_already_linked"}
+                assert email not in collision.text
+
+    async with supabase_engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text("SELECT clerk_id FROM users WHERE clerk_id IN (:a, :b)"),
+                {"a": clerk_id, "b": other_clerk_id},
+            )
+        ).all()
+    assert [row[0] for row in rows] == [clerk_id]

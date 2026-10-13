@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { Search, Plus, X } from "lucide-react";
 import TopBar from "../components/layout/TopBar";
 import MemoryCard from "../components/widgets/MemoryCard";
-import PipelineTracker from "../components/widgets/PipelineTracker";
 import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
@@ -12,6 +12,8 @@ import { classifyApiError } from "../lib/apiError";
 import { createSubmissionKeyHolder, submissionIdentity } from "../lib/submissionKey";
 import { getCurrentUserId } from "../lib/currentUser";
 import { isPilotMode } from "../lib/pilotMode";
+import { INGEST_TIMING, ingestOutcome, isAmbiguousSubmitFailure, pollDelayMs, statusLabel } from "../lib/ingestOutcome";
+import { isStaleWorkspaceError, workspaceGeneration } from "../lib/realApi";
 import { toast } from "sonner";
 
 const MODES = ["hybrid", "semantic", "keyword"];
@@ -43,7 +45,7 @@ export default function Memories() {
         setLoading(true);
         setError(null);
         const timer = setTimeout(() => {
-            api.searchMemories({ query, mode, limit: 24 })
+            api.searchMemories({ query, mode, limit: 24, ...(pilotMode ? {} : { include_attribution: true }) })
                 .then((response) => {
                     if (cancelled) return;
                     setResults(Array.isArray(response?.results) ? response.results : []);
@@ -52,7 +54,8 @@ export default function Memories() {
                     setLoading(false);
                 })
                 .catch((requestError) => {
-                    if (cancelled) return;
+                    // Dropped because the workspace changed: show nothing.
+                    if (cancelled || isStaleWorkspaceError(requestError)) return;
                     setError(classifyApiError(requestError));
                     setResults([]);
                     setTotal(0);
@@ -65,7 +68,7 @@ export default function Memories() {
             cancelled = true;
             clearTimeout(timer);
         };
-    }, [query, mode, reloadNonce]);
+    }, [query, mode, reloadNonce, pilotMode]);
 
     return (
         <>
@@ -207,8 +210,23 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
     const [job, setJob] = useState(null);
     const [jobError, setJobError] = useState(null);
     const [retryNonce, setRetryNonce] = useState(0);
+    // The API said the POST itself matched an earlier submission.
+    const [duplicateNotice, setDuplicateNotice] = useState(null);
+    // The POST's `already_exists`: true = an earlier submission's job was
+    // returned, false = new work, null = the API did not say.
+    const [alreadyExists, setAlreadyExists] = useState(null);
+    // Set when the POST may or may not have been received (no job id came back).
+    const [submitFailure, setSubmitFailure] = useState(null);
+    // The exact text of the last submission that reached a terminal outcome
+    // that resubmitting cannot improve. The same text dedups to the same record.
+    const [blockedContent, setBlockedContent] = useState(null);
+    const [slow, setSlow] = useState(false);
+    const [timedOut, setTimedOut] = useState(false);
+    const [elapsedMs, setElapsedMs] = useState(null);
     const keyHolder = useRef(null);
     const inFlight = useRef(false);
+    const startedAt = useRef(null);
+    const submittedContent = useRef("");
 
     if (keyHolder.current === null) keyHolder.current = createSubmissionKeyHolder();
 
@@ -217,6 +235,11 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
         let cancelled = false;
         let timer = null;
         const owner = getCurrentUserId();
+        // The workspace this job belongs to. A switch ends the poll; PR3's
+        // generation guard is what makes "ignore the old workspace" certain.
+        const scope = workspaceGeneration();
+        const pollStart = performance.now();
+        let attempt = 0;
 
         const stop = () => {
             cancelled = true;
@@ -225,19 +248,32 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
 
         const poll = async () => {
             while (!cancelled) {
-                if (getCurrentUserId() !== owner) return stop();
+                if (getCurrentUserId() !== owner || scope !== workspaceGeneration()) return stop();
                 try {
                     const response = await api.getJobStatus(jobId);
-                    if (cancelled) return;
+                    if (cancelled || scope !== workspaceGeneration()) return stop();
                     setJob(response);
-                    if (response.status === "done" || response.status === "failed") return stop();
+                    if (ingestOutcome(response).terminal) {
+                        setElapsedMs(Math.round(performance.now() - (startedAt.current ?? pollStart)));
+                        return stop();
+                    }
                 } catch (requestError) {
-                    if (cancelled) return;
+                    // A workspace switch ends the poll silently.
+                    if (cancelled || isStaleWorkspaceError(requestError)) return stop();
+                    // A failed status REQUEST says nothing about the job.
                     setJob(null);
                     setJobError(requestError?.body?.error?.message || classifyApiError(requestError).title);
                     return stop();
                 }
-                await new Promise((resolve) => { timer = setTimeout(resolve, 180); });
+                const waited = performance.now() - pollStart;
+                if (waited >= INGEST_TIMING.giveUpAfterMs) {
+                    setTimedOut(true);
+                    return stop();
+                }
+                if (waited >= INGEST_TIMING.slowAfterMs) setSlow(true);
+                const delay = pollDelayMs(attempt);
+                attempt += 1;
+                await new Promise((resolve) => { timer = setTimeout(resolve, delay); });
             }
         };
 
@@ -257,7 +293,12 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
 
     const submit = async () => {
         if (!content.trim() || inFlight.current) return;
+        if (content.trim() === blockedContent) return;
         inFlight.current = true;
+        setSubmitFailure(null);
+        // The workspace this submission belongs to. If the user switches
+        // before it settles, its outcome is not theirs to see in the new one.
+        const scope = workspaceGeneration();
         try {
             const workspaceId = await resolveCurrentWorkspace();
             const payload = {
@@ -266,29 +307,46 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
                 category,
                 ...(pilotMode ? { ingestion_mode: "verbatim" } : {}),
             };
+            // Kept across a failed POST on purpose: if the request did reach
+            // the server, the retry carries the same key. Best effort - the
+            // backend does not replay on this key, it dedups on the content.
             const idempotencyKey = keyHolder.current.keyFor(submissionIdentity({
                 payload,
                 workspaceId,
                 userId: getCurrentUserId(),
             }));
+            startedAt.current = performance.now();
             const response = await api.createMemory({
                 ...payload,
                 workspace_id: workspaceId,
                 idempotencyKey,
             });
             keyHolder.current.clear();
+            if (scope !== workspaceGeneration()) return;
+            submittedContent.current = content;
+            const existing = response?.already_exists === true;
+            setAlreadyExists(typeof response?.already_exists === "boolean" ? response.already_exists : null);
+            setDuplicateNotice(existing || response?.status === "duplicate" ? response : null);
             setJobId(response.job_id);
         } catch (requestError) {
+            if (isStaleWorkspaceError(requestError) || scope !== workspaceGeneration()) return;
             const classified = classifyApiError(requestError);
-            toast.error(classified.title, {
-                description: requestError?.body?.error?.message || classified.detail,
-            });
+            const message = requestError?.body?.error?.message || classified.detail;
+            if (isAmbiguousSubmitFailure(requestError)) {
+                setSubmitFailure({ ambiguous: true, message });
+            }
+            toast.error(classified.title, { description: message });
         } finally {
             inFlight.current = false;
         }
     };
 
-    const failed = job?.status === "failed" || jobError != null;
+    const outcome = job ? ingestOutcome(job) : null;
+    const checkAgain = () => {
+        setJobError(null);
+        setTimedOut(false);
+        setRetryNonce((value) => value + 1);
+    };
 
     const reset = () => {
         keyHolder.current?.clear();
@@ -300,7 +358,35 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
         setJob(null);
         setJobError(null);
         setRetryNonce(0);
+        setDuplicateNotice(null);
+        setAlreadyExists(null);
+        setSubmitFailure(null);
+        setBlockedContent(null);
+        setSlow(false);
+        setTimedOut(false);
+        setElapsedMs(null);
     };
+
+    // Back to the form with the text kept, but the same text blocked: it would
+    // only return this same record.
+    const editAndSubmitAgain = () => {
+        keyHolder.current?.clear();
+        // Trimmed: the API strips surrounding whitespace before hashing, so a
+        // whitespace-only edit is the same document.
+        setBlockedContent(submittedContent.current.trim());
+        setJobId(null);
+        setJob(null);
+        setJobError(null);
+        setRetryNonce(0);
+        setDuplicateNotice(null);
+        setAlreadyExists(null);
+        setSlow(false);
+        setTimedOut(false);
+        setElapsedMs(null);
+    };
+
+    const sameTextBlocked = blockedContent !== null && content.trim() === blockedContent;
+    const elapsedText = elapsedMs != null ? ` Measured in your browser: ${(elapsedMs / 1000).toFixed(1)} s from submit.` : "";
 
     return (
         <Sheet open={open} onOpenChange={(value) => { onOpenChange(value); if (!value) reset(); }}>
@@ -316,19 +402,25 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
                     <SheetDescription className="text-sm-text-secondary text-[12.5px]">
                         {pilotMode
                             ? "Verbatim mode stores this text as one memory without fact extraction."
-                            : "Paste a document, meeting notes, or decision record. We'll extract, chunk, embed, and attribute."}
+                            : "Paste a document, meeting notes, or decision record. SourceMind processes it into searchable facts."}
                     </SheetDescription>
                 </SheetHeader>
 
                 {!jobId ? (
                     <div className="p-6 space-y-5">
+                        {!pilotMode && (
+                            <p data-testid="ingest-explainer" className="rounded-lg border border-sm-border bg-white/[0.02] px-3 py-2 text-[12px] leading-relaxed text-sm-text-secondary">
+                                Your text is processed into searchable facts; it is not stored word for word.
+                                One submission may produce several memories, one, or none.
+                            </p>
+                        )}
                         <div>
                             <label htmlFor="ingest-content" className="block text-[12px] text-sm-text-secondary mb-2 font-medium">Content</label>
                             <Textarea
                                 id="ingest-content"
                                 data-testid="ingest-content"
                                 value={content}
-                                onChange={(event) => setContent(event.target.value)}
+                                onChange={(event) => { setContent(event.target.value); setSubmitFailure(null); }}
                                 placeholder="Paste document content, meeting notes, decision records..."
                                 rows={10}
                                 className="bg-sm-bg/60 border-sm-border text-sm-text placeholder:text-sm-text-muted resize-none font-mono text-[12.5px]"
@@ -378,49 +470,164 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
                             </Select>
                         </div>
 
+                        {submitFailure?.ambiguous && (
+                            <div role="alert" data-testid="ingest-submit-unconfirmed" className="rounded-lg border border-sm-amber/30 bg-sm-amber/10 px-3 py-2 text-[12px] text-sm-amber">
+                                <p>We could not confirm that your submission was received. {submitFailure.message}</p>
+                                <Button
+                                    onClick={submit}
+                                    variant="outline"
+                                    data-testid="ingest-retry-submit"
+                                    className="mt-2 h-8 bg-white/[0.03] border-sm-border text-sm-text"
+                                >
+                                    Retry
+                                </Button>
+                            </div>
+                        )}
+
+                        {sameTextBlocked && (
+                            <p data-testid="ingest-same-text-note" className="text-[12px] text-sm-text-secondary">
+                                This is the same text as your last submission, and identical text returns the same result. Edit the text to submit again.
+                            </p>
+                        )}
+
                         <Button
                             data-testid="ingest-submit"
                             onClick={submit}
-                            disabled={!content.trim()}
+                            disabled={!content.trim() || sameTextBlocked}
                             className="w-full h-10 bg-sm-blue hover:bg-sm-blue/90 text-white disabled:opacity-40"
                         >
                             {pilotMode ? "Create Verbatim Memory" : "Ingest & Process"}
                         </Button>
                     </div>
                 ) : (
-                    <div className="p-6 space-y-4">
-                        <div className="flex items-center gap-2 text-[12.5px] text-sm-text-secondary">
-                            {failed ? (
-                                <span className="text-sm-red" data-testid="ingest-failed">
-                                    {jobError
-                                        ? `Could not read ingestion status · ${jobError}`
-                                        : `Ingestion failed${job?.error ? ` · ${job.error}` : ""}`}
-                                </span>
-                            ) : job?.status === "done" ? (
-                                <span className="text-sm-green">Pipeline complete · {job.elapsed_ms}ms total</span>
-                            ) : (
-                                <>Processing · stage: <span className="font-mono text-sm-blue">{job?.stage ?? "queued"}</span></>
-                            )}
-                        </div>
-                        <PipelineTracker stages={job?.stages ?? []} currentStage={job?.stage} />
-                        {jobError && (
-                            <Button
-                                onClick={() => { setJobError(null); setRetryNonce((value) => value + 1); }}
-                                variant="outline"
-                                data-testid="ingest-status-retry"
-                                className="w-full mt-4 bg-white/[0.03] border-sm-border text-sm-text"
-                            >
-                                Check again
-                            </Button>
+                    <div className="p-6 space-y-4" aria-live="polite">
+                        {duplicateNotice && (
+                            <div data-testid="ingest-duplicate" className="rounded-lg border border-sm-amber/30 bg-sm-amber/10 px-3 py-2 text-[12.5px] text-sm-amber">
+                                <p className="font-medium">
+                                    This exact text was already submitted{alreadyExists ? " — here are the memories from that earlier submission." : "."}
+                                </p>
+                                {duplicateNotice.message && <p className="mt-1">{duplicateNotice.message}</p>}
+                            </div>
                         )}
-                        {(job?.status === "done" || failed) && (
-                            <Button onClick={reset} variant="outline" data-testid="ingest-reset" className="w-full mt-4 bg-white/[0.03] border-sm-border text-sm-text hover:bg-white/[0.06]">
-                                {failed ? "Start over" : "Ingest another"}
-                            </Button>
+
+                        {jobError ? (
+                            <div data-testid="ingest-poll-error" className="space-y-3">
+                                <p className="text-[12.5px] text-sm-amber">
+                                    Could not read the processing status ({jobError}). This does not mean ingestion failed; it may still be running.
+                                </p>
+                                <Button
+                                    onClick={checkAgain}
+                                    variant="outline"
+                                    data-testid="ingest-status-retry"
+                                    className="w-full bg-white/[0.03] border-sm-border text-sm-text"
+                                >
+                                    Check again
+                                </Button>
+                            </div>
+                        ) : outcome?.kind === "success" ? (
+                            <div data-testid="ingest-success" className="space-y-3">
+                                <p className="text-[13px] font-medium text-sm-green">
+                                    {alreadyExists === false
+                                        ? `Created ${outcome.count} ${outcome.count === 1 ? "memory" : "memories"}`
+                                        : alreadyExists === true
+                                            ? `${outcome.count} ${outcome.count === 1 ? "memory" : "memories"} from the earlier submission`
+                                            : `Processed — ${outcome.count} ${outcome.count === 1 ? "memory" : "memories"}`}
+                                </p>
+                                <ul data-testid="ingest-memory-links" className="space-y-1.5">
+                                    {outcome.ids.map((memoryId, index) => (
+                                        <li key={memoryId}>
+                                            <Link
+                                                to={`/memories/${memoryId}`}
+                                                onClick={() => onOpenChange(false)}
+                                                data-testid={`ingest-memory-link-${index}`}
+                                                className="font-mono text-[12px] text-sm-blue underline-offset-2 hover:underline"
+                                            >
+                                                Open memory {index + 1} ({memoryId.slice(0, 8)})
+                                            </Link>
+                                        </li>
+                                    ))}
+                                </ul>
+                                <p data-testid="ingest-elapsed" className="text-[11.5px] text-sm-text-secondary">{elapsedText.trim()}</p>
+                                <Button onClick={reset} variant="outline" data-testid="ingest-reset" className="w-full bg-white/[0.03] border-sm-border text-sm-text hover:bg-white/[0.06]">
+                                    Ingest another
+                                </Button>
+                            </div>
+                        ) : outcome?.kind === "empty" ? (
+                            <div data-testid="ingest-empty" role="status" className="space-y-3">
+                                <p className="rounded-lg border border-sm-amber/30 bg-sm-amber/10 px-3 py-2 text-[12.5px] text-sm-amber">
+                                    Processing finished but no searchable memory was created.
+                                    {job?.message ? ` ${job.message}` : ""}
+                                </p>
+                                <p data-testid="ingest-elapsed" className="text-[11.5px] text-sm-text-secondary">{elapsedText.trim()}</p>
+                                <EditAgain onClick={editAndSubmitAgain} />
+                            </div>
+                        ) : outcome?.kind === "failed" ? (
+                            <div className="space-y-3">
+                                <p className="text-[12.5px] text-sm-red" data-testid="ingest-failed">
+                                    Ingestion failed{job?.error || job?.message ? ` · ${job.error || job.message}` : ""}
+                                </p>
+                                <p data-testid="ingest-elapsed" className="text-[11.5px] text-sm-text-secondary">{elapsedText.trim()}</p>
+                                <EditAgain onClick={editAndSubmitAgain} />
+                            </div>
+                        ) : outcome?.kind === "duplicate" ? (
+                            <div className="space-y-3">
+                                {!duplicateNotice && (
+                                    <div data-testid="ingest-duplicate" className="rounded-lg border border-sm-amber/30 bg-sm-amber/10 px-3 py-2 text-[12.5px] text-sm-amber">
+                                        <p className="font-medium">This exact text was already submitted.</p>
+                                        {job?.message && <p className="mt-1">{job.message}</p>}
+                                    </div>
+                                )}
+                                {outcome.ids.length > 0 && (
+                                    <ul className="space-y-1.5">
+                                        {outcome.ids.map((memoryId, index) => (
+                                            <li key={memoryId}>
+                                                <Link to={`/memories/${memoryId}`} onClick={() => onOpenChange(false)} className="font-mono text-[12px] text-sm-blue hover:underline">
+                                                    Open existing memory {index + 1} ({memoryId.slice(0, 8)})
+                                                </Link>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
+                                <EditAgain onClick={editAndSubmitAgain} />
+                            </div>
+                        ) : timedOut ? (
+                            <div data-testid="ingest-timeout" className="space-y-3">
+                                <p className="text-[12.5px] text-sm-amber">
+                                    This is taking longer than expected. It has not failed as far as we know, and it may still finish. You can leave this page and come back, or check again.
+                                </p>
+                                <Button onClick={checkAgain} variant="outline" data-testid="ingest-status-retry" className="w-full bg-white/[0.03] border-sm-border text-sm-text">
+                                    Check again
+                                </Button>
+                            </div>
+                        ) : (
+                            <div className="space-y-2" data-testid="ingest-progress">
+                                <div className="flex items-center gap-2 text-[12.5px] text-sm-text-secondary">
+                                    <span>Processing · </span>
+                                    <span data-testid="ingest-status-label" className={`font-mono ${outcome?.kind === "retrying" ? "text-sm-amber" : "text-sm-blue"}`}>
+                                        {statusLabel(job?.status ?? "queued")}
+                                    </span>
+                                </div>
+                                {slow && (
+                                    <p data-testid="ingest-slow" className="text-[12px] text-sm-text-secondary">
+                                        Still processing. You can leave this page; this does not mean anything has gone wrong.
+                                    </p>
+                                )}
+                            </div>
                         )}
                     </div>
                 )}
             </SheetContent>
         </Sheet>
+    );
+}
+
+function EditAgain({ onClick }) {
+    return (
+        <div className="space-y-1.5">
+            <Button onClick={onClick} variant="outline" data-testid="ingest-edit-again" className="w-full bg-white/[0.03] border-sm-border text-sm-text hover:bg-white/[0.06]">
+                Edit text and submit again
+            </Button>
+            <p className="text-[11.5px] text-sm-text-secondary">Submitting the same text again returns this same result.</p>
+        </div>
     );
 }

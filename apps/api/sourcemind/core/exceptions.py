@@ -61,6 +61,7 @@ class ErrorCode(StrEnum):
     IDEMPOTENCY_CONFLICT = "SM033"
     ATTRIBUTION_STATE_CONFLICT = "SM034"
     MEMORY_VERSION_STALE = "SM035"
+    WORKSPACE_MEMBER_EXISTS = "SM036"
 
     # Processing / Pipeline (040–049)
     INGESTION_FAILED = "SM040"
@@ -259,6 +260,17 @@ class AttributionStateConflictError(SourceMindError):
     contributors that exist only as snapshot rows.
     """
     code = ErrorCode.ATTRIBUTION_STATE_CONFLICT
+    http_status = HTTPStatus.CONFLICT
+
+
+class WorkspaceMemberExistsError(SourceMindError):
+    """
+    The target user already holds, or is mid-departure from, a membership.
+
+    details.reason is "already_member" (active row) or "handoff_in_progress"
+    (departing row owned by the handoff flow). Never retried automatically.
+    """
+    code = ErrorCode.WORKSPACE_MEMBER_EXISTS
     http_status = HTTPStatus.CONFLICT
 
 

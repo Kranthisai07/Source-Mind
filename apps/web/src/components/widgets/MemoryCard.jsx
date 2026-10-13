@@ -27,6 +27,8 @@ export default function MemoryCard({ memory, score, rank, matchType, pilotMode =
     const tags = Array.isArray(memory.tags) ? memory.tags : [];
     const attribution = Array.isArray(memory.attribution) ? memory.attribution : [];
     const primary = attribution.find((item) => item.is_primary) || attribution[0] || null;
+    const unresolved = memory.unresolved_author?.source_author ? memory.unresolved_author : null;
+    const primaryPct = primary && typeof primary.percentage === "number" ? Math.round(primary.percentage) : null;
     const contributor = primary ? {
         name: primary.name || primary.author,
         login: primary.author,
@@ -74,11 +76,18 @@ export default function MemoryCard({ memory, score, rank, matchType, pilotMode =
                         <ContributorAvatar contributor={contributor} size={22} />
                         <div className="min-w-0">
                             <div className="text-[12px] font-medium text-sm-text truncate">{contributor.name}</div>
-                            <div data-testid="memory-attribution-handle" className="font-mono text-[10.5px] text-sm-text-secondary truncate">@{contributor.login}</div>
+                            {contributor.login && contributor.login !== contributor.name && (
+                                <div data-testid="memory-attribution-handle" className="font-mono text-[10.5px] text-sm-text-secondary truncate">@{contributor.login}</div>
+                            )}
                         </div>
-                    </> : (
-                        <div data-testid="memory-attribution-unattributed" className="text-[12px] font-medium text-sm-text-secondary">Unattributed</div>
-                    )}
+                        {primaryPct !== null && (
+                            <span data-testid="memory-attribution-pct" className="font-mono text-[10.5px] text-sm-text-secondary">{primaryPct}%</span>
+                        )}
+                    </> : unresolved ? (
+                        <div data-testid="memory-attribution-unresolved" className="text-[11.5px] text-sm-text-secondary truncate">
+                            Originally by {unresolved.source_author} ({unresolved.source_tool}), not linked to a member
+                        </div>
+                    ) : null}
                 </div>}
                 {pilotMode && (
                     <span data-testid="pilot-attribution-hidden" className="text-[11.5px] text-sm-text-secondary">
