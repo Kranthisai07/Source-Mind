@@ -634,12 +634,27 @@ export const realApi = {
         mode = "hybrid",
         limit = 20,
         workspace_id,
-    } = {}) =>
-        request(`/v1/memories/search`, {
+        include_attribution = false,
+    } = {}) => {
+        const response = await request(`/v1/memories/search`, {
             method: "POST",
             params: { workspace_id: await resolveWorkspaceId(workspace_id) },
-            body: { query, mode, limit },
-        }),
+            // Only sent when asked for: the pilot search must stay exactly
+            // {query, mode, limit}, and attribution adds latency.
+            body: { query, mode, limit, ...(include_attribution ? { include_attribution: true } : {}) },
+        });
+        if (!include_attribution || !Array.isArray(response?.results)) return response;
+        // Same adapter as the detail page. Anything absent stays absent: a
+        // result with no attribution renders no attribution, not a guess.
+        return {
+            ...response,
+            results: response.results.map((item) =>
+                item?.memory && Array.isArray(item.memory.attribution)
+                    ? { ...item, memory: { ...item.memory, attribution: adaptAttribution(item.memory.attribution) } }
+                    : item
+            ),
+        };
+    },
     // include_attribution must be asked for explicitly — it defaults to false,
     // and MemoryDetail renders the breakdown as a primary element of the page.
     getMemory: async (id) => {

@@ -123,7 +123,7 @@ describe("a job that ends in failure", () => {
         expect(screen.queryByText(/Processing · stage/)).toBeNull();
     });
 
-    test("the user can start again after a failure", async () => {
+    test("after a failure the user can edit the text and submit again", async () => {
         mockJobStatus.mockResolvedValue({ status: "failed", stage: "extraction", stages: [] });
 
         render(<MemoryRouter><Memories /></MemoryRouter>);
@@ -131,7 +131,7 @@ describe("a job that ends in failure", () => {
         await openPanelAndSubmit();
         await settle();
 
-        await waitFor(() => expect(screen.getByTestId("ingest-reset")).toBeTruthy());
+        await waitFor(() => expect(screen.getByTestId("ingest-edit-again")).toBeTruthy());
     });
 });
 
@@ -159,9 +159,11 @@ describe("losing access mid-poll", () => {
         await openPanelAndSubmit();
         await settle();
 
-        await waitFor(() => expect(screen.getByTestId("ingest-failed")).toBeTruthy());
-        // The stage of a resource we may no longer be allowed to see.
-        expect(screen.queryByText(/embedding/)).toBeNull();
+        // A failed status REQUEST is reported as such, not as a failed job.
+        await waitFor(() => expect(screen.getByTestId("ingest-poll-error")).toBeTruthy());
+        expect(screen.queryByTestId("ingest-failed")).toBeNull();
+        // The status of a resource we may no longer be allowed to see.
+        expect(screen.queryByTestId("ingest-status-label")).toBeNull();
     });
 });
 
@@ -293,7 +295,7 @@ describe("a transient failure that the worker retries", () => {
         const wire = [
             { job_id: "j", status: "retrying", stage: "retrying", error: null, stages: [] },
             { job_id: "j", status: "retrying", stage: "retrying", error: null, stages: [] },
-            { job_id: "j", status: "completed", stage: "completed", stages: [], elapsed_ms: 2400 },
+            { job_id: "j", status: "completed", stage: "completed", stages: [], memory_ids: ["m-1"], memory_count: 1 },
         ];
         let i = 0;
         mockJobStatus.mockImplementation(async () =>
@@ -311,7 +313,7 @@ describe("a transient failure that the worker retries", () => {
 
         // Completion is reached and rendered — a retried job is not a failure.
         await waitFor(() =>
-            expect(screen.getByText(/Pipeline complete/)).toBeTruthy()
+            expect(screen.getByTestId("ingest-success")).toBeTruthy()
         );
         expect(screen.queryByTestId("ingest-failed")).toBeNull();
 
@@ -336,7 +338,7 @@ describe("a transient failure that the worker retries", () => {
         await settle();
 
         expect(screen.queryByTestId("ingest-failed")).toBeNull();
-        expect(screen.queryByTestId("ingest-reset")).toBeNull();
+        expect(screen.queryByTestId("ingest-edit-again")).toBeNull();
 
         // Still going, because the backend has not reached a terminal state.
         const before = mockJobStatus.mock.calls.length;
@@ -348,7 +350,7 @@ describe("a transient failure that the worker retries", () => {
 describe("the successful path still works", () => {
     test("done stops polling and offers another ingest", async () => {
         mockJobStatus.mockResolvedValue({
-            status: "done", stage: "complete", stages: [], elapsed_ms: 1234,
+            status: "done", memory_ids: ["m-1", "m-2"], memory_count: 2,
         });
 
         render(<MemoryRouter><Memories /></MemoryRouter>);
@@ -357,7 +359,7 @@ describe("the successful path still works", () => {
         await settle();
 
         await waitFor(() =>
-            expect(screen.getByText(/Pipeline complete/)).toBeTruthy()
+            expect(screen.getByTestId("ingest-success")).toBeTruthy()
         );
         expect(screen.queryByTestId("ingest-failed")).toBeNull();
 

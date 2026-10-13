@@ -11,15 +11,16 @@ const memory = {
     tags: [],
 };
 
-test("renders an explicit unattributed state without inventing a handle", () => {
+test("renders nothing, and never the word Unattributed, when attribution is empty", () => {
     render(
         <MemoryRouter>
             <MemoryCard memory={{ ...memory, attribution: [] }} />
         </MemoryRouter>
     );
 
-    expect(screen.getByTestId("memory-attribution-unattributed").textContent).toBe("Unattributed");
-    expect(document.body.textContent).not.toContain("@unattributed");
+    expect(screen.queryByTestId("memory-attribution-unattributed")).toBeNull();
+    expect(document.body.textContent).not.toContain("Unattributed");
+    expect(document.body.textContent).not.toContain("@");
 });
 
 test("renders a real contributor handle when attribution is present", () => {

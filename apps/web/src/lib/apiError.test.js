@@ -130,3 +130,26 @@ describe("server and network failures", () => {
         for (const k of kinds) expect(k).not.toBe("unknown");
     });
 });
+
+describe("email_already_linked", () => {
+    const linked = (overrides = {}) => ({
+        status: 409,
+        body: { error: { code: "SM010", message: "x", details: { reason: "email_already_linked" }, ...overrides } },
+    });
+
+    test("is its own non-retryable kind with an actionable message and no email", () => {
+        const c = classifyApiError(linked());
+        expect(c.kind).toBe("email-linked");
+        expect(c.retryable).toBe(false);
+        expect(c.detail).toMatch(/already linked to another SourceMind sign-in/);
+        expect(c.detail).toMatch(/Ask the workspace owner/);
+        expect(c.detail).not.toMatch(/@/);
+    });
+
+    test("generic 409s and other SM010 reasons are unchanged", () => {
+        expect(classifyApiError({ status: 409, body: { error: { code: "SM031" } } }).kind).toBe("unknown");
+        expect(classifyApiError({ status: 409, body: null }).kind).toBe("unknown");
+        expect(classifyApiError({ status: 422, body: { error: { code: "SM010", details: { reason: "email_already_linked" } } } }).kind).toBe("unknown");
+        expect(classifyApiError({ status: 409, body: { error: { code: "SM010", details: { reason: "other" } } } }).retryable).toBe(true);
+    });
+});
