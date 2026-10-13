@@ -2987,3 +2987,58 @@ query embedding, the attribution scorer); no network is used.
 - A build with REACT_APP_DEFAULT_WORKSPACE_ID is pinned: the picker and create entry points are replaced by a fixed label and selectWorkspace is a no-op, so the UI cannot claim a workspace the requests do not use.
 - Add member against a server without the route (405, or 404 with no error code) says the server does not support it yet. Merge order: the API route (PR #20) must land before this PR for real-mode add member.
 
+## D-029 — First sign-in provisions the user with ON CONFLICT, and an email clash is a handled 409
+
+**Status:** Implemented in the backend (stacked on D-025); not deployed by this change.
+
+### Problem
+
+A brand-new user's first page load fires `GET /v1/team/me` and `GET /v1/workspaces`
+together. Both ran `_get_or_create_user`: select by `clerk_id`, then a plain insert.
+Both saw no row; the loser hit `uq_users_clerk_id` and returned an unhandled 500
+(SM090), so the browser showed "Can't reach SourceMind". The real-browser check
+reproduced it for 4 of 4 fresh identities, so every friend's first sign-in was likely
+to hit it. It predates this branch (present on `origin/main`).
+
+### Decision
+
+- The insert is now `INSERT ... ON CONFLICT (clerk_id) DO NOTHING` inside a savepoint
+  (`begin_nested`), followed by a re-select by `clerk_id`. A losing request blocks on
+  the winner's uncommitted row, inserts nothing, then reads the winner's committed
+  row, so all concurrent first requests resolve to the SAME user and exactly one row
+  exists. The Clerk profile fetch, its in-process cache, the email requirement and
+  `set_rls_user_context` (called by the caller once the user is known) are unchanged.
+- An `IntegrityError` from the insert is swallowed only to re-select: if the
+  `clerk_id` row exists the request proceeds. If no row exists, the only remaining
+  collision is `uq_users_email` (a DIFFERENT Clerk identity already stores that
+  address). That is never merged silently: it raises `ValidationError` with HTTP 409
+  and `details.reason = "email_already_linked"`. The message and log carry no email
+  address (the provisioning log line no longer prints it either).
+
+### Alternatives considered
+
+- *Catch `IntegrityError` around a plain insert (savepoint only):* works, but needs
+  an exception per losing request and cannot tell the two unique constraints apart
+  without parsing the constraint name. `ON CONFLICT (clerk_id)` handles the expected
+  race without raising, and only an email clash reaches the error path.
+- *Serialize the two frontend calls:* rejected as the fix. It hides the race in one
+  client but leaves it for a second tab, a retry, or any other API consumer, and it
+  delays first paint. The server must be safe regardless of caller behavior.
+- *`ON CONFLICT (email)` / upsert on either key:* rejected; matching on email would
+  attach a new Clerk identity to an existing account, which is exactly the silent
+  identity merge this change refuses.
+- *Advisory lock per clerk_id:* correct but adds a lock protocol for something the
+  unique index already arbitrates.
+
+### Verification
+
+Five unit tests (`tests/unit/api/test_first_signin_provisioning.py`) cover existing
+user, normal insert, lost clerk_id race, email clash, and a silent no-row outcome.
+One real-PostgreSQL node (`test_concurrent_first_requests_create_exactly_one_user`,
+in the already-listed `test_security_acceptance_real_services.py`) sends 8 concurrent
+requests (4 `/v1/team/me`, 4 `/v1/workspaces`) with a signed token for a never-seen
+clerk_id: all return 200, one id, one `users` row; then a second identity with the
+same email gets 409 `email_already_linked`. It fails against the previous
+implementation with the same `uq_users_clerk_id` violation. Security Acceptance node
+list 96 -> 97.
+
