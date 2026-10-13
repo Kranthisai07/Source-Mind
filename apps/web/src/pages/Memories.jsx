@@ -45,7 +45,7 @@ export default function Memories() {
         setLoading(true);
         setError(null);
         const timer = setTimeout(() => {
-            api.searchMemories({ query, mode, limit: 24 })
+            api.searchMemories({ query, mode, limit: 24, ...(pilotMode ? {} : { include_attribution: true }) })
                 .then((response) => {
                     if (cancelled) return;
                     setResults(Array.isArray(response?.results) ? response.results : []);
@@ -68,7 +68,7 @@ export default function Memories() {
             cancelled = true;
             clearTimeout(timer);
         };
-    }, [query, mode, reloadNonce]);
+    }, [query, mode, reloadNonce, pilotMode]);
 
     return (
         <>
