@@ -15,12 +15,20 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass
+from enum import StrEnum
 
 import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sourcemind.core.dependencies import WorkspacePermission, require_memory_access
+from sourcemind.core.exceptions import (
+    MemoryNotFoundError,
+    MemoryVersionStaleError,
+    SourceMindError,
+)
 from sourcemind.models.memory import Memory
+from sourcemind.services.attribution.engine import MAX_CHAIN_DEPTH
 from sourcemind.services.ingestion.embedder import EmbeddingService
 
 log = structlog.get_logger(__name__)
@@ -34,12 +42,192 @@ class VersionResult:
     embedding_recomputed: bool
 
 
+class SupersessionReason(StrEnum):
+    """Why a non-current memory version cannot be edited (D-025)."""
+
+    SUPERSEDED = "superseded"
+    AMBIGUOUS_SUCCESSOR = "ambiguous_successor"
+    NO_CURRENT_VERSION = "no_current_version"
+    SUPERSEDED_WITHOUT_SUCCESSOR = "superseded_without_successor"
+
+
+@dataclass(frozen=True)
+class LatestVersion:
+    """Outcome of find_latest_version().
+
+    reason is None when the memory itself is current. latest_memory_id is set
+    ONLY when reason is SUPERSEDED: exactly one current, non-deleted descendant
+    that the caller is authorized to read.
+    """
+
+    reason: SupersessionReason | None
+    latest_memory_id: uuid.UUID | None = None
+    # True when the downward walk hit MAX_CHAIN_DEPTH with unexplored children:
+    # the answer is then "cannot say", never "no current version", and no id.
+    truncated: bool = False
+
+
+async def find_latest_version(
+    session: AsyncSession,
+    memory_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+    *,
+    user_id: uuid.UUID | None,
+) -> LatestVersion:
+    """
+    Identify the single authorized current descendant of a memory version.
+
+    Walks DOWNWARD through parent_memory_id links (bounded by MAX_CHAIN_DEPTH,
+    cycle-guarded, same workspace only) and never chooses between candidates:
+
+      exactly one current non-deleted descendant -> SUPERSEDED + its id
+      more than one (a fork)                     -> AMBIGUOUS_SUCCESSOR, no id
+      descendants, none current and non-deleted  -> NO_CURRENT_VERSION, no id
+      no descendants, row itself non-current     -> SUPERSEDED_WITHOUT_SUCCESSOR
+                                                    (retired by conflict/merge)
+
+    A unique id is only returned after the caller's READ access to THAT id is
+    confirmed with the same helper used for memories (user_id None counts as
+    unverifiable); if it fails the result is downgraded to
+    SUPERSEDED_WITHOUT_SUCCESSOR so no id leaks.
+    """
+    own = (
+        await session.execute(
+            text(
+                "SELECT current_version FROM memories "
+                "WHERE id = CAST(:mid AS uuid) AND workspace_id = CAST(:ws AS uuid)"
+            ),
+            {"mid": str(memory_id), "ws": str(workspace_id)},
+        )
+    ).first()
+    if own is not None and own.current_version:
+        return LatestVersion(reason=None)
+
+    summary = (
+        await session.execute(
+            text("""
+                WITH RECURSIVE descendants AS (
+                    SELECT m.id, m.current_version, m.deleted_at, 1 AS depth,
+                           ARRAY[CAST(:mid AS uuid), m.id] AS path
+                    FROM memories m
+                    WHERE m.parent_memory_id = CAST(:mid AS uuid)
+                      AND m.workspace_id = CAST(:ws AS uuid)
+                    UNION ALL
+                    SELECT m.id, m.current_version, m.deleted_at, d.depth + 1,
+                           d.path || m.id
+                    FROM memories m
+                    JOIN descendants d ON m.parent_memory_id = d.id
+                    WHERE m.workspace_id = CAST(:ws AS uuid)
+                      AND d.depth < :bound
+                      AND NOT m.id = ANY(d.path)
+                )
+                SELECT count(*) AS total,
+                       count(*) FILTER (
+                           WHERE current_version AND deleted_at IS NULL
+                       ) AS live,
+                       count(*) FILTER (
+                           WHERE depth >= :bound AND EXISTS (
+                               SELECT 1 FROM memories c
+                               WHERE c.parent_memory_id = descendants.id
+                                 AND c.workspace_id = CAST(:ws AS uuid)
+                           )
+                       ) AS cut_off,
+                       min(id::text) FILTER (
+                           WHERE current_version AND deleted_at IS NULL
+                       ) AS only_id
+                FROM descendants
+            """),
+            {"mid": str(memory_id), "ws": str(workspace_id), "bound": MAX_CHAIN_DEPTH},
+        )
+    ).one()
+
+    if summary.live > 1:
+        # Two live heads were actually seen, so a fork is a fact even if the
+        # walk was also cut short.
+        return LatestVersion(SupersessionReason.AMBIGUOUS_SUCCESSOR)
+    if summary.cut_off:
+        # The bound ended the walk before every child was seen (more than
+        # MAX_CHAIN_DEPTH versions, reachable through tag-only edits). Neither
+        # "no current version" nor a specific id can be claimed.
+        log.warning(
+            "superseded_successor_search_truncated",
+            memory_id=str(memory_id),
+            bound=MAX_CHAIN_DEPTH,
+        )
+        return LatestVersion(SupersessionReason.SUPERSEDED_WITHOUT_SUCCESSOR, truncated=True)
+    if summary.total == 0:
+        return LatestVersion(SupersessionReason.SUPERSEDED_WITHOUT_SUCCESSOR)
+    if summary.live == 0:
+        return LatestVersion(SupersessionReason.NO_CURRENT_VERSION)
+
+    latest_id = uuid.UUID(summary.only_id)
+    if user_id is None:
+        # Authorization of the successor cannot be checked; never leak its id.
+        return LatestVersion(SupersessionReason.SUPERSEDED_WITHOUT_SUCCESSOR)
+    try:
+        await require_memory_access(
+            session, user_id, latest_id, WorkspacePermission.READ
+        )
+    except SourceMindError:
+        log.warning("superseded_successor_not_authorized", memory_id=str(memory_id))
+        return LatestVersion(SupersessionReason.SUPERSEDED_WITHOUT_SUCCESSOR)
+    return LatestVersion(SupersessionReason.SUPERSEDED, latest_id)
+
+
+async def unavailable_version_error(
+    session: AsyncSession,
+    memory_id: uuid.UUID,
+    *,
+    user_id: uuid.UUID | None,
+) -> SourceMindError:
+    """
+    Build the error for a memory that is not the editable current version.
+
+    MUST be called only after the caller's CONTRIBUTE access to memory_id has
+    passed. A row that exists, is not deleted and is not current yields the
+    409 SM035 with details {memory_id, latest_memory_id, reason}; anything else
+    (missing or deleted) keeps the generic 404 SM020. Nothing is created and
+    nothing is applied to the latest version: a retried PATCH never "succeeds
+    by replay" - successful idempotent replay is deliberately NOT implemented
+    (D-025).
+    """
+    row = (
+        await session.execute(
+            text(
+                "SELECT workspace_id, current_version, deleted_at FROM memories "
+                "WHERE id = CAST(:mid AS uuid)"
+            ),
+            {"mid": str(memory_id)},
+        )
+    ).first()
+    if row is None or row.deleted_at is not None or row.current_version:
+        return MemoryNotFoundError(f"Memory {memory_id} not found or not current version.")
+
+    latest = await find_latest_version(
+        session, memory_id, row.workspace_id, user_id=user_id
+    )
+    details = {
+        "memory_id": str(memory_id),
+        "latest_memory_id": (
+            str(latest.latest_memory_id) if latest.latest_memory_id else None
+        ),
+        "reason": latest.reason.value,
+    }
+    if latest.truncated:
+        details["truncated"] = True  # additive; only present when the walk was cut off
+    return MemoryVersionStaleError(
+        f"Memory {memory_id} has been superseded and cannot be edited.",
+        details=details,
+    )
+
+
 async def create_new_version(
     session: AsyncSession,
     memory_id: uuid.UUID,
     new_content: str,
     new_tags: list[str] | None,
     openai_client: object | None = None,
+    user_id: uuid.UUID | None = None,
 ) -> VersionResult:
     """
     Create a new version of a memory with updated content.
@@ -69,8 +257,7 @@ async def create_new_version(
     )
     old = result.scalar_one_or_none()
     if not old:
-        from sourcemind.core.exceptions import MemoryNotFoundError
-        raise MemoryNotFoundError(f"Memory {memory_id} not found or not current version.")
+        raise await unavailable_version_error(session, memory_id, user_id=user_id)
 
     content_changed = old.content != new_content
 

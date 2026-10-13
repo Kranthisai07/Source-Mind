@@ -2806,6 +2806,118 @@ tests added to `test_security_foundation_real_db.py` (Security Acceptance node l
 and a comma-separated string fails to parse (verified against `Settings`).
 `rate_limit_member_add_per_hour` was also added to the shared positivity validator.
 
+
+---
+
+## D-025 — Editing a superseded memory version is a 409 that names the latest version
+
+**Status:** Implemented in the backend (stacked on D-024); not deployed by this change.
+
+### Problem
+
+`PATCH /v1/memories/{id}` on a version that is no longer current answered the same
+generic `404 SM020` as a missing memory. A client holding an old id (a second tab, a
+teammate who edited first, a retried request) could not tell "gone" from "someone
+else edited this" and had nowhere to go.
+
+### Decision
+
+- `find_latest_version(session, memory_id, workspace_id, *, user_id)` in
+  `services/attribution/versioning.py` walks DOWNWARD through `parent_memory_id`
+  with a recursive CTE, bounded by the existing `MAX_CHAIN_DEPTH`, cycle-guarded by a
+  path array, same workspace only. It aggregates in SQL and returns a small frozen
+  result: exactly one current non-deleted descendant -> `superseded` + its id; more
+  than one (a fork) -> `ambiguous_successor`, id null, never picked; descendants but
+  none current and non-deleted -> `no_current_version`; no descendants and the row is
+  non-current (retired by conflict resolution/merge) -> `superseded_without_successor`.
+- A unique id is returned only after READ access to THAT id is confirmed with the
+  same helper used for memories (`require_memory_access`). If it fails, or the caller
+  is unknown, the result downgrades to `superseded_without_successor` with no id.
+- PATCH (and `create_new_version`) run this only AFTER `require_memory_access(...,
+  CONTRIBUTE)` has passed and the row exists, is non-deleted and non-current; they
+  raise `MemoryVersionStaleError` (409 SM035) with `details = {memory_id,
+  latest_memory_id, reason}`. `latest_memory_id` is non-null only for `superseded`.
+  Missing, deleted and inaccessible memories keep the generic 404 SM020 (a
+  non-member or other-workspace caller gets the same 404 whether or not the memory
+  was superseded; a viewer is refused 403 before any hint). `SourceMindError` already
+  carried `details`, so the exception class needed no change and handoff's existing
+  use is unaffected.
+- `GET /v1/memories/{id}` still returns 200 for superseded content and adds
+  `is_current`, `latest_memory_id`, `supersession_reason` (null/absent semantics per
+  the contract). The fields are optional with `None` defaults on `MemoryResponse`,
+  so search and PATCH responses only gain null keys.
+- Concurrent PATCHes of one version: the loser waits on the existing row lock, then
+  finds the row non-current and now receives 409 with the winner's id (previously a
+  404). Asserted against real PostgreSQL.
+
+### Truncated walks (review round)
+
+Review found that after more than `MAX_CHAIN_DEPTH` (10,000) versions - reachable
+only through tags-only edits, which do not check ancestry depth - the bounded walk
+stopped before the current head and `no_current_version` was reported, a false
+claim. The aggregate now also counts nodes at the depth bound that still have
+children. When that count is non-zero the result is `superseded_without_successor`
+with no id and `truncated = true` (logged, and added to the 409 `details` only
+when true; the contract keys are unchanged). Two live heads actually seen still
+report `ambiguous_successor`. Tags-only edits were not changed to count toward
+the bound: that would alter the edit path, which is out of scope for this fix.
+Covered by unit tests with synthetic aggregates and a real-DB test with the bound
+patched to 3 over a six-version chain.
+
+### Related small change: `already_exists` on the ingestion POST
+
+`POST /v1/memories` now returns `already_exists: bool` (default false). The receiver
+already knew when a submission matched a document ingested earlier in the workspace
+(dedup returns the existing record, even a failed or zero-memory one, and nothing is
+re-queued) but the route dropped the flag, so a client could not avoid saying that
+an identical earlier submission "created" new memories. Status code, `status` and
+`message` are unchanged; polling `GET /v1/memories/jobs/:id` always reports false.
+Additive and optional, so existing clients are unaffected. Own commit.
+
+### Deliberately not done
+
+- No version is created and the edit is never auto-applied to the latest version:
+  that would silently overwrite a teammate's newer text with an edit written against
+  stale content.
+- The Idempotency-Key is not used to claim replay success. Successful idempotent
+  replay of an already-applied PATCH is NOT implemented; a retry of an applied edit
+  gets the same 409 pointing at the version it created. Closing that gap needs
+  persisted keys and is a separate decision.
+- Cross-workspace rows with the same parent are never considered successors.
+
+### Why this approach
+
+- *Resolve the latest in Python by repeated queries:* rejected; one aggregate query
+  over a bounded recursive CTE is a single round trip and cannot be torn by a
+  concurrent edit between steps.
+- *Pick the newest/highest version on a fork:* rejected; guessing which branch is
+  "the" latest sends a user to the wrong text. An explicit `ambiguous_successor` lets
+  the client show the situation honestly.
+- *Return the id without re-checking access:* rejected; the CTE is workspace-scoped
+  and a unique id passes today, but the explicit check keeps the guarantee local to
+  the function rather than dependent on how the query is written.
+- *Reuse 404 with a hint:* rejected; the conflict is a state clash, 409 is its
+  honest status, and SM035 already existed for exactly "version superseded".
+
+### Verification
+
+New unit file `tests/unit/attribution/test_find_latest_version.py` (11 tests: reason
+matrix, unauthorized/unknown caller no-leak, fork, deleted latest, merge-retired,
+missing/deleted stay 404). Six new real-PostgreSQL nodes plus two updated
+(`...409_on_stale_id` rename, retried content patch, concurrent PATCH loser now 409
+with the winner's id) in `test_attribution_history_real_db.py`. Security Acceptance
+node list 85 -> 91 (92 with the journey test).
+
+A single end-to-end journey test (`test_friends_release_journey_over_http_with_signed_tokens`,
+node list 91 -> 92) drives the ordinary flow over HTTP with signed Clerk tokens against
+real PostgreSQL and Redis: two users sign in, A creates a workspace, A adds B by
+email, B lists it, B creates a memory (extract mode; the ingestion worker runs in
+process), B edits it, A searches and finds the edited version, B's stale PATCH gets
+409 with the latest id, and a never-added C is blind to the workspace (404). All
+provider calls are replaced in process (Clerk profile and email verification,
+extraction, chunking, fact extraction, embeddings, relation detection, the search
+query embedding, the attribution scorer); no network is used.
+
 ## D-026 — Web: workspace picker, creation, explicit no-workspace state, add member, switch-safe API layer
 
 **Status:** Implemented in the web app; not deployed by this change.
