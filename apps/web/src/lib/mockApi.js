@@ -108,7 +108,7 @@ export const mockApi = {
     })),
 
     // POST /v1/memories/search
-    searchMemories: ({ query = "", mode = "hybrid", limit = 20 } = {}) =>
+    searchMemories: ({ query = "", mode = "hybrid", limit = 20, include_attribution = false } = {}) =>
         request(() => {
             const q = query.trim().toLowerCase();
             let results = MEMORIES;
@@ -125,7 +125,12 @@ export const mockApi = {
                 });
             }
             return {
-                results: results.slice(0, limit),
+                // Like the API: attribution only when asked for.
+                results: results.slice(0, limit).map((m) => {
+                    if (include_attribution) return m;
+                    const { attribution: _omitted, ...withoutAttribution } = m;
+                    return withoutAttribution;
+                }),
                 total_found: results.length,
                 mode,
             };

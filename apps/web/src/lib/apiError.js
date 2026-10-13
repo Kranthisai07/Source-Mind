@@ -19,7 +19,7 @@
  * testable without rendering anything.
  */
 
-/** @typedef {"auth"|"forbidden"|"missing"|"rate-limited"|"server"|"network"|"unknown"} ErrorKind */
+/** @typedef {"auth"|"forbidden"|"missing"|"rate-limited"|"server"|"network"|"email-linked"|"unknown"} ErrorKind */
 
 /**
  * @param {unknown} error
@@ -46,6 +46,27 @@ export function classifyApiError(error) {
             title: "Can't reach SourceMind",
             detail: "The request didn't get through. Check your connection and try again.",
             retryable: true,
+            retryAfterSeconds: null,
+        };
+    }
+
+    // A second sign-in whose email is already linked to another account. The
+    // same request can never succeed, so it is not retryable; the email itself
+    // is deliberately not echoed.
+    if (
+        status === 409 &&
+        code === "SM010" &&
+        error?.body?.error?.details?.reason === "email_already_linked"
+    ) {
+        return {
+            kind: "email-linked",
+            status,
+            code,
+            title: "This email address is already linked to another sign-in",
+            detail:
+                "This email address is already linked to another SourceMind sign-in. " +
+                "Ask the workspace owner for help — account recovery needs identity verification and the owner's approval.",
+            retryable: false,
             retryAfterSeconds: null,
         };
     }
