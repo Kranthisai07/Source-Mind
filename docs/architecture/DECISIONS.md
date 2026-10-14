@@ -3199,9 +3199,9 @@ list 96 -> 97.
 
 **What:** Release SHA `06e67a85cec7074557e69831b645362f00c2981a` was deployed in this order: backup and restore check, migration `20261010_0011`, old worker warm-stopped and proven gone, new worker, new API, frontend. Full record: `docs/releases/2026-10-14-friends-release.md`.
 
-**Why this approach:** the migration is additive and the only unsafe pairing is a new API with an old worker (a verbatim request would be extracted), so the worker goes first and the old one must be provably gone before the new one starts. Nothing was paused.
+**Why this approach:** the migration is additive and the only unsafe pairing is a new API with an old worker (a verbatim request would be extracted), so the worker goes first and the old one must be provably gone before the new one starts. The API remained available; worker processing paused during the handover.
 
 **Why manual Railway proof:** the stop tool runs in WSL and its Railway proof needs the Windows-only `railway` CLI. It ran with `--no-railway-check` (can only end `PARTIAL_PROOF`), and the Railway half was read through the Railway API (`replicaStatus.running == 0`, then deployment commit and config). Follow-up: let the tool take that state from a file so the proof is one step.
 
-**Search result duplicates:** a search showing two near-identical hits was checked against `parent_memory_id`, `version` and `current_version`. The superseded version never appears in search; the second hit is a separate extracted fact. No defect.
+**Search result duplicates:** a search showing two near-identical hits was checked against `parent_memory_id`, `version` and `current_version`. No superseded version appeared in the 12 closeout searches; the second hit is a separate extracted fact. No defect.
 

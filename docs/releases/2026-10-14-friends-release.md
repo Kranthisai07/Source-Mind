@@ -52,7 +52,7 @@ Search returned two hits for "shared store" and this was first read as a stale o
 | `2c5871af` | 1 | none | true | a separate extracted fact (same sentence start, "...supports vector search") |
 | `4e925252` | 1 | none | true | a third extracted fact |
 
-Across four queries in hybrid, semantic and keyword modes (12 searches) the superseded `954597dd` never appeared and no result carried `current_version=false`. The two "shared store" hits are the edited fact (v2) and a different, near-duplicate extracted fact. So search does not return superseded versions. The near-duplicate comes from extraction turning one sentence into several overlapping facts, which the UI already warns about; no code defect was found.
+Across four queries in hybrid, semantic and keyword modes (12 searches) the superseded `954597dd` did not appear and no result carried `current_version=false`. The two "shared store" hits are the edited fact (v2) and a different, near-duplicate extracted fact. No superseded version appeared in these 12 searches. The near-duplicate comes from extraction turning one sentence into several overlapping facts, which the UI already warns about; no code defect was found.
 
 ## Provider use
 
