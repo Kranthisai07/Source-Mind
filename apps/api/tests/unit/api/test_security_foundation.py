@@ -432,6 +432,7 @@ def test_every_workspace_route_calls_a_central_authorization_guard() -> None:
 def _rate_settings(*, fail_closed: bool = True) -> SimpleNamespace:
     return SimpleNamespace(
         rate_limit_search_per_minute=1,
+        rate_limit_mcp_read_per_minute=1,
         rate_limit_ingestion_per_minute=1,
         rate_limit_analytics_per_minute=1,
         rate_limit_workspace_create_per_hour=1,

@@ -204,6 +204,7 @@ class Settings(BaseSettings):
     rate_limit_enterprise: int = 10000
     rate_limit_fail_closed: bool = True
     rate_limit_search_per_minute: int = 60
+    rate_limit_mcp_read_per_minute: int = 120
     rate_limit_ingestion_per_minute: int = 10
     rate_limit_analytics_per_minute: int = 30
     rate_limit_workspace_create_per_hour: int = 5
@@ -303,6 +304,7 @@ class Settings(BaseSettings):
             limit <= 0
             for limit in (
                 self.rate_limit_search_per_minute,
+                self.rate_limit_mcp_read_per_minute,
                 self.rate_limit_ingestion_per_minute,
                 self.rate_limit_analytics_per_minute,
                 self.rate_limit_workspace_create_per_hour,
