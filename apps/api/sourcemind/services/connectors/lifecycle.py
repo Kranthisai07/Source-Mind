@@ -253,11 +253,14 @@ async def retry_failed(
 async def rescan(
     session: AsyncSession, connector_id: uuid.UUID, *, config: dict[str, Any], now: datetime
 ) -> int:
-    """Restart every scope from the import-window start and schedule a run now (no deletion detection).
+    """Restart every scope from the import-window start and schedule a run now.
+
+    This does not detect deletions.
 
     The sync package executes the pass: a scope with ``phase='backfill'``,
     ``listing_complete=false`` and no resume key is traversed from its window start and
-    its inventory feeds the two-scan deletion rule (C7). Missing cursor rows are created.
+    its inventory would feed the two-scan deletion rule (C7), which is inert today because no scope
+    reports a full inventory. Missing cursor rows are created.
     Cursor rows of disconnected/paused connectors are not touched.
     """
     row = await _lock(session, connector_id)
