@@ -222,6 +222,34 @@ class Settings(BaseSettings):
     github_app_private_key_path: str = Field(default="", repr=False)
     github_webhook_secret: str = Field(default="", repr=False)
     github_research_pat: str = Field(default="", repr=False)
+    # GitHub App user authorization (connect flow); the PEM may be supplied inline
+    # instead of by path. None of these is ever logged or returned by an API.
+    github_app_client_id: str = Field(default="", repr=False)
+    github_app_client_secret: str = Field(default="", repr=False)
+    github_app_private_key_pem: str = Field(default="", repr=False)
+
+    # ── Automatic source ingestion (docs/architecture/AUTOMATIC_INGESTION_CONTRACT.md) ──
+    connector_scheduler_enabled: bool = False
+    connector_sync_tick_seconds: int = 300
+    connector_default_interval_minutes: int = 15
+    connector_lease_seconds: int = 600
+    connector_max_repos: int = 5
+    connector_import_days: int = 90
+    connector_max_items_per_type: int = 500
+    connector_max_handoffs_per_run: int = 300
+    connector_max_handoff_attempts: int = 3
+    connector_max_chunks_per_artifact: int = 12
+    connector_max_artifact_chars: int = 40_000
+    connector_review_reconcile_batch: int = 25
+    connector_max_segments_per_pr: int = 30
+    connector_skip_bots: bool = True
+    connector_skip_empty_body: bool = True
+    short_segment_verbatim_max_chars: int = 200
+    extraction_concurrency: int = 4
+    workspace_daily_extraction_budget: int = 600
+    # False until the owner's live verification confirms the repository-permission
+    # response semantics (C11); while False an explicit denial is reported as unverified.
+    authorization_denial_semantics_verified: bool = False
 
     # ── Slack ─────────────────────────────────────────────────────
     slack_bot_token: Annotated[str, Field(repr=False)] = Field(default="", alias="SLACK_BOT_TOKEN")
@@ -345,6 +373,10 @@ class Settings(BaseSettings):
         cached = self._github_app_private_key_cache
         if cached is not None:
             return cached
+        if self.github_app_private_key_pem:
+            pem = self.github_app_private_key_pem.replace("\\n", "\n")
+            object.__setattr__(self, "_github_app_private_key_cache", pem)
+            return pem
         from pathlib import Path
         pem_path = Path(self.github_app_private_key_path)
         if not pem_path.exists():

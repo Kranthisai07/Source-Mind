@@ -7,6 +7,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -55,6 +56,26 @@ class ConnectorConfig(Base):
         DateTime(timezone=True), nullable=False, server_default="NOW()",
     )
 
+    # ── Automatic ingestion (migration 20261015_0013) ─────────────
+    installation_id: Mapped[int | None] = mapped_column(BigInteger(), nullable=True)
+    authorized_github_user_id: Mapped[int | None] = mapped_column(BigInteger(), nullable=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+    sync_interval_minutes: Mapped[int] = mapped_column(
+        Integer(), nullable=False, server_default="15",
+    )
+    sync_lease_owner: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    sync_lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    fence: Mapped[int] = mapped_column(BigInteger(), nullable=False, server_default="0")
+    generation: Mapped[int] = mapped_column(Integer(), nullable=False, server_default="0")
+    last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    last_error_code: Mapped[str | None] = mapped_column(Text(), nullable=True)
+
     sync_logs: Mapped[list[ConnectorSyncLog]] = relationship(
         "ConnectorSyncLog", back_populates="connector", lazy="noload",
     )
@@ -92,6 +113,13 @@ class ConnectorSyncLog(Base):
         Integer(), nullable=False, server_default="0",
     )
     error_message: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    trigger: Mapped[str] = mapped_column(Text(), nullable=False, server_default="manual")
+    artifacts_updated: Mapped[int] = mapped_column(Integer(), nullable=False, server_default="0")
+    artifacts_failed: Mapped[int] = mapped_column(Integer(), nullable=False, server_default="0")
+    artifacts_filtered: Mapped[dict] = mapped_column(
+        JSONB(), nullable=False, server_default="'{}'",
+    )
+    error_code: Mapped[str | None] = mapped_column(Text(), nullable=True)
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default="NOW()",
     )
@@ -168,6 +196,10 @@ class ArtifactLink(Base):
         PG_UUID(as_uuid=True), nullable=True,
         comment="Connector that produced this link; deliberately no foreign key.",
     )
+    connector_generation: Mapped[int | None] = mapped_column(
+        Integer(), nullable=True,
+        comment="connector_configs.generation at handoff; a later disconnect bumps it.",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default="NOW()",
     )
@@ -219,3 +251,111 @@ class GitHubAuthorLink(Base):
 
     def __repr__(self) -> str:
         return f"<GitHubAuthorLink {self.workspace_id}:{self.github_user_id}>"
+
+
+class ConnectorSyncCursor(Base):
+    """Discovery position for one (connector, repo, artifact_type) scope.
+
+    Advances only after a durable handoff or a recorded quarantine, never past
+    an unrecorded failure. Downstream extraction/publication failures do not
+    move it; they are recovered from the Document state.
+    """
+
+    __tablename__ = "connector_sync_cursors"
+    __table_args__ = ({"comment": "Per-scope discovery position of a connector."},)
+
+    connector_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("connector_configs.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    repo: Mapped[str] = mapped_column(Text(), primary_key=True)
+    artifact_type: Mapped[str] = mapped_column(Text(), primary_key=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    phase: Mapped[str] = mapped_column(Text(), nullable=False, server_default="backfill")
+    window_low: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    window_high: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resume_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resume_id: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    listing_complete: Mapped[bool] = mapped_column(
+        Boolean(), nullable=False, server_default="false",
+    )
+    head_sha: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    consumed: Mapped[int] = mapped_column(Integer(), nullable=False, server_default="0")
+    status: Mapped[str] = mapped_column(Text(), nullable=False, server_default="ok")
+    last_error_code: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    authorization_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    last_progress_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default="NOW()",
+    )
+
+
+class ConnectorWorkItem(Base):
+    """A handoff that failed before commit: retried, then quarantined (visible)."""
+
+    __tablename__ = "connector_work_items"
+    __table_args__ = (
+        UniqueConstraint("connector_id", "repo", "artifact_type", "source_id",
+                         name="uq_work_items_identity"),
+        {"comment": "Pre-commit handoff failures: attempts and quarantine."},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default="gen_random_uuid()",
+    )
+    connector_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("connector_configs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    repo: Mapped[str] = mapped_column(Text(), nullable=False)
+    artifact_type: Mapped[str] = mapped_column(Text(), nullable=False)
+    source_id: Mapped[str] = mapped_column(Text(), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer(), nullable=False, server_default="0")
+    state: Mapped[str] = mapped_column(Text(), nullable=False, server_default="pending")
+    last_error_code: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default="NOW()",
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default="NOW()",
+    )
+
+
+class ArtifactHead(Base):
+    """Revision counters for one source artifact (serializes publication)."""
+
+    __tablename__ = "artifact_heads"
+    __table_args__ = ({"comment": "Latest and published revision of each source artifact."},)
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    source_tool: Mapped[str] = mapped_column(Text(), primary_key=True)
+    source_type: Mapped[str] = mapped_column(Text(), primary_key=True)
+    source_id: Mapped[str] = mapped_column(Text(), primary_key=True)
+    latest_seq: Mapped[int] = mapped_column(Integer(), nullable=False, server_default="0")
+    published_seq: Mapped[int] = mapped_column(Integer(), nullable=False, server_default="0")
+    published_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True,
+    )
+    missing_scans: Mapped[int] = mapped_column(Integer(), nullable=False, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default="NOW()",
+    )

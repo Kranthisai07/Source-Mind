@@ -3233,3 +3233,85 @@ new column; the stale marker is a column because search and the edit path filter
 Acceptance exact selection: 97 -> 101, zero skips) runs as the restricted runtime role under RLS and
 checks the three authorship states, current/stale with the newer link, non-member and cross-workspace
 denial, and REST/service equality. Full unit suite 744 passed locally on CPython 3.12.3.
+
+
+---
+
+## D-032 — Automatic ingestion: fenced leases, per-scope discovery state, revision heads, schedule via SECURITY DEFINER
+
+**What:** Migration `20261015_0013` adds the schema for scheduled GitHub ingestion. `connector_configs`
+gains `installation_id`, `authorized_github_user_id`, `created_by`, `sync_interval_minutes`,
+`sync_lease_owner/expires_at`, `fence`, `generation` and new statuses; `connector_sync_logs` gains
+trigger/updated/failed/filtered counters and an error code; new tables `connector_sync_cursors` (per
+connector, repo and artifact type), `connector_work_items` (handoff attempts and quarantine) and
+`artifact_heads` (latest and published revision per artifact); `documents` gains a supersession link and
+the connector generation; the pending-anchor unique index now includes the revision. The normative rules
+are in `docs/architecture/AUTOMATIC_INGESTION_CONTRACT.md`.
+
+**Why this approach:** a sync that can be redelivered, restarted or overtaken must not publish stale work,
+skip an artifact or resurrect a disconnected connector. A monotonically increasing `fence` checked inside
+every write transaction rejects a superseded worker; `generation` lets the ingestion worker refuse queued
+documents after a disconnect; a head row per artifact serializes revision publication; discovery position
+is kept per scope and advances only after a durable handoff or a recorded quarantine, while downstream
+failures stay recoverable from document state.
+
+**Scheduling without weakening isolation:** the tick must list due connectors across workspaces but has no
+user to impersonate. A first design added a policy conditioned on a session setting; the existing
+"every protected-table policy requires active membership" test correctly failed it. The final design
+follows the project's existing pattern for privileged reads: an internal table `sm_connector_schedule` (ids,
+status and due times only; no RLS, no runtime privileges) kept in step by a SECURITY DEFINER trigger, read
+only through `sm_list_due_connectors(limit)`, to which the runtime role has EXECUTE. No policy on a
+protected table changed.
+
+**Scheduler identity.** The due list also returns the connector's creator, whether that creator is still
+an active owner/admin, and one active owner/admin to act as. A SECURITY DEFINER write was tried and
+rejected: the definer role is itself subject to FORCE RLS and cannot update a protected table without
+a member context. So when the creator has left, the scheduled run uses the acting admin's ordinary RLS
+context and the orchestrator records `owner_inactive` through its normal, fenced path.
+
+**Alternatives rejected:** webhooks as the first trigger (new public endpoint, HMAC and delivery dedup;
+polling reuses the incremental path and tolerates missed events); a single `last_sync_at` checkpoint (cannot
+express per-scope progress or partial failure); mapping a changed artifact onto `parent_memory_id` versions
+(extraction yields a different fact set, so a one-to-one mapping would be false).
+
+**Verification:** `tests/integration/test_ingest_schema_real_db.py` (6 nodes, in the Security Acceptance
+exact selection, 101 -> 108): exact runtime ACL and no PUBLIC access on each new table, workspace isolation
+under FORCE RLS, cross-tenant due listing through the function only, CHECK constraints, per-revision
+pending-anchor uniqueness, head sequence constraint. Local acceptance run: 108 collected, 108 executed,
+108 passed, 0 skipped. Migration downgrade/upgrade round trip passed on a clean database; the downgrade
+guards count rows with FORCE RLS lifted inside the transaction so they are not blind when run by a role
+without BYPASSRLS (the 0011 guard has the same blind spot and is not changed here).
+
+## D-039 — Migration 0013 fixes live in the schema PR, not only in the integration branch
+
+**What:** 0013 (a) skipped the schedule table's revoke when the runtime role owns it (single-role setups),
+(b) leaves connectors nobody can act for out of `sm_list_due_connectors` (they could never be
+rescheduled and would starve healthy ones), and (c) carries `connector_sync_cursors.consumed`, the
+cumulative import counter the later sync code uses. These were first made on the ingestion branch; they
+belong to the schema PR that owns 0013, so this PR is valid on its own at every merge point: a database
+migrated by it alone has the schema the later code expects and none of the defects above. Single-role
+chain and round trip were run against this head.
+
+## D-043 — Write access to the ingestion tables is owner/admin only; grants on cross-tenant objects are swept
+
+**Gap 1, viewer-role writes.** `artifact_heads`, `connector_sync_cursors` and `connector_work_items` used the
+member-level tenancy rule for reads and writes. With the restricted runtime role (reproduced; the test failed
+on the old policies) a viewer or plain member could insert, rewrite, delete and row-lock these rows, e.g. forge
+`published_seq` so a revision is never published or delete quarantine records. **Reachable action:** none over
+HTTP (every connector route needs ADMINISTER and the ingestion worker requires CONTRIBUTE and runs as the
+sync's administrator); only a compromised or mistaken runtime path. **Fix:** SELECT stays member-level;
+INSERT/UPDATE/DELETE, and therefore SELECT ... FOR UPDATE (which evaluates UPDATE USING), need owner/admin,
+like `github_author_links` (0010). The code that writes these tables always runs as the connector's
+administrator, so nothing legitimate changes; a submitter demoted mid-run now fails closed with a
+row-level-security error (and the publication lock refuses a connector document whose head row is invisible).
+**Cross-workspace** reads/writes of these tables were already blocked (tests pass before and after, with and
+without a workspace context).
+
+**Gap 2, cross-workspace grants.** `sm_connector_schedule` is intentionally outside RLS and
+`sm_list_due_connectors` is intentionally cross-tenant (the scheduler has no user). Demonstrated: the
+runtime role cannot read the table, can call the function (ids and status only, no content), PUBLIC can do
+neither, the trigger function is not executable by the runtime role. Not covered before: roles other than
+PUBLIC and the runtime role (platforms with default privileges grant new objects to their own roles).
+0013 now sweeps every other grantee on the new tables, the schedule table and both functions (as 0007 does
+for its internal tables); proven by naming a different role as the runtime role inside a rolled-back
+transaction (the real runtime role is then an "other grantee" and loses its grants).

@@ -120,6 +120,21 @@ class Document(Base, TimestampMixin, SoftDeleteMixin):
         nullable=True,
         comment="Number of memories extracted during Stage 4",
     )
+    supersedes_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Previous revision of the same source artifact (migration 0013)",
+    )
+    connector_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        nullable=True,
+        comment="Connector that handed this document off; no foreign key by design",
+    )
+    connector_generation: Mapped[int | None] = mapped_column(
+        nullable=True,
+        comment="connector_configs.generation at handoff; a disconnect bumps it",
+    )
     pipeline_data: Mapped[dict] = mapped_column(
         # The DB column is `metadata` (migration 0001); the ORM attribute is
         # renamed because SQLAlchemy's Declarative API reserves `metadata`.
