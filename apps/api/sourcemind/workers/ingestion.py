@@ -743,6 +743,12 @@ async def _lock_for_publication(session, doc, ws_uuid: uuid.UUID) -> tuple[str, 
         )
     ).first()
     if head_row is None:
+        if getattr(doc, "connector_id", None) is not None:
+            # The receiver always creates the head of a connector artifact, so a missing row means
+            # row-level security hid it (the submitter is no longer an owner/admin of the
+            # workspace) or it was removed. Publishing without the head lock would skip the
+            # supersession rules, so fail closed; the task is retried and ends failed.
+            raise RuntimeError("artifact head is not visible to the publishing principal")
         return "ok", None
     head = {
         "latest_seq": int(head_row.latest_seq),

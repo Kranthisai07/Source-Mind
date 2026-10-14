@@ -86,6 +86,14 @@ def _active_access(workspace_expression: str) -> str:
     """
 
 
+def _admin_access(workspace_expression: str) -> str:
+    """The same rule restricted to owners and admins (the roles that may change these tables)."""
+    return _active_access(workspace_expression).rstrip().rstrip(")") + """
+              AND access_membership.role IN ('owner', 'admin')
+        )
+    """
+
+
 def required_runtime_role() -> str:
     role = (os.environ.get(RUNTIME_ROLE_ENV) or "").strip()
     if not role:
@@ -286,6 +294,49 @@ def _create_schedule_index(role: str) -> None:
     op.execute("ALTER TABLE connector_configs FORCE ROW LEVEL SECURITY")
 
 
+def sweep_other_grantees(execute: Callable[[str], Any], role: str) -> None:
+    """Revoke every grant on the new objects from roles other than the owner and the runtime role.
+
+    Platforms that set default privileges (e.g. Supabase grants new public tables and functions to
+    ``anon``/``authenticated``/``service_role``) would otherwise leave those roles able to read the
+    unprotected schedule table (connector, workspace and creator ids across tenants) or call the
+    cross-tenant due-list function. Same sweep migration 0007 applies to its internal tables.
+    """
+    tables = ", ".join(f"'{t}'" for t in (*NEW_TABLES, "sm_connector_schedule"))
+    execute(
+        f"""
+        DO $$
+        DECLARE r record;
+        BEGIN
+            FOR r IN
+                SELECT c.relname, pg_get_userbyid(a.grantee) AS grantee_name
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
+                CROSS JOIN LATERAL aclexplode(c.relacl) a
+                WHERE c.relname IN ({tables})
+                  AND a.grantee <> 0 AND a.grantee <> c.relowner
+                  AND pg_get_userbyid(a.grantee) <> '{role}'
+            LOOP
+                EXECUTE format('REVOKE ALL ON TABLE public.%I FROM %I', r.relname, r.grantee_name);
+            END LOOP;
+            FOR r IN
+                SELECT p.oid::regprocedure::text AS proc, pg_get_userbyid(a.grantee) AS grantee_name
+                FROM pg_proc p
+                JOIN pg_namespace n ON n.oid = p.pronamespace AND n.nspname = 'public'
+                CROSS JOIN LATERAL aclexplode(p.proacl) a
+                WHERE p.proname IN ('sm_list_due_connectors', 'sm_sync_connector_schedule')
+                  AND a.grantee <> 0 AND a.grantee <> p.proowner
+                  AND (pg_get_userbyid(a.grantee) <> '{role}'
+                       OR p.proname = 'sm_sync_connector_schedule')
+            LOOP
+                EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I', r.proc, r.grantee_name);
+            END LOOP;
+        END
+        $$
+        """
+    )
+
+
 def upgrade() -> None:
     role = required_runtime_role()
     _assert_role_exists(role)
@@ -453,12 +504,22 @@ def upgrade() -> None:
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
         op.execute(f"DROP POLICY IF EXISTS sm_{table}_isolation ON {table}")
+        # Reading is open to active members, like the tables these reference. WRITING and LOCKING
+        # (SELECT ... FOR UPDATE evaluates the UPDATE policy's USING) are owner/admin only: the only
+        # code that touches these rows is a sync or a publication run on behalf of the connector's
+        # administrator, so a viewer or plain member gets nothing, not even a row lock that could
+        # stall a publication, from a compromised or mistaken runtime path.
+        member = _active_access(f"{table}.workspace_id")
+        admin = _admin_access(f"{table}.workspace_id")
+        op.execute(f"CREATE POLICY sm_{table}_select ON {table} FOR SELECT USING ({member})")
+        op.execute(f"CREATE POLICY sm_{table}_insert ON {table} FOR INSERT WITH CHECK ({admin})")
         op.execute(
-            f"CREATE POLICY sm_{table}_isolation ON {table} "
-            f"USING ({_active_access(f'{table}.workspace_id')}) "
-            f"WITH CHECK ({_active_access(f'{table}.workspace_id')})"
+            f"CREATE POLICY sm_{table}_update ON {table} "
+            f"FOR UPDATE USING ({admin}) WITH CHECK ({admin})"
         )
+        op.execute(f"CREATE POLICY sm_{table}_delete ON {table} FOR DELETE USING ({admin})")
         grant_runtime_privileges(op.execute, role, table, _table_owner(table))
+    sweep_other_grantees(op.execute, role)
 
 
 def downgrade() -> None:

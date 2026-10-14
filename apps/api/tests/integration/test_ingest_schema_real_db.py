@@ -104,7 +104,8 @@ async def test_new_tables_are_workspace_scoped_under_force_rls(
     data = await _seed_security_tenants(supabase_engine)
     connector_id = await _connector(supabase_engine, data, data.target_workspace_id, "scoped")
 
-    async with await _session(supabase_engine, data.member_id, data.target_workspace_id) as db:
+    # Rows are written by an administrator (writes are owner/admin only; see test_ingest_authz).
+    async with await _session(supabase_engine, data.admin_id, data.target_workspace_id) as db:
         db.add(
             ConnectorSyncCursor(
                 connector_id=connector_id, workspace_id=data.target_workspace_id,
