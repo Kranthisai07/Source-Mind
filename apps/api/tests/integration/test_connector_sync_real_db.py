@@ -350,7 +350,6 @@ class Harness:
                 settings=self.settings,
             )
             if self.patch_receive:
-                connector._revision_aware = True
                 with patch(f"{CONNECTOR}.receive", new=self.receiver):
                     return await connector.run(trigger=trigger)
             return await connector.run(trigger=trigger)

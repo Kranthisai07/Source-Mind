@@ -224,6 +224,10 @@ async def receive(
     )
     if cached_response is not None:
         log.debug("receive_idempotent", idempotency_key=idempotency_key)
+        if artifact_link and artifact_link.get("connector_id") is not None:
+            # A connector replaying a revision it already handed off: say so, so it counts
+            # as skipped instead of importing the artifact a second time.
+            return {**cached_response, "already_exists": True, "reason": "idempotent_replay"}
         return cached_response
     assert reservation_token is not None
 

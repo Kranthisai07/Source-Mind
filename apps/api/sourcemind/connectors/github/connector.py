@@ -19,7 +19,6 @@ principal). It is never credited as an author (D-021).
 from __future__ import annotations
 
 import hashlib
-import inspect
 import math
 import uuid
 from collections.abc import Awaitable, Callable
@@ -48,7 +47,7 @@ from sourcemind.connectors.github.contracts import (
 )
 from sourcemind.connectors.github.mapper import ConnectorDocument
 from sourcemind.core.config import get_settings
-from sourcemind.models.connector import ArtifactLink, ConnectorSyncLog
+from sourcemind.models.connector import ConnectorSyncLog
 from sourcemind.models.document import Document, DocumentSourceType, IngestionStatus
 from sourcemind.services.attribution.github_links import (
     NO_GITHUB_ACCOUNT,
@@ -73,14 +72,6 @@ _RETRYABLE_ERROR_CODES = ("transient", "incomplete_extraction")
 _SWEEP_BATCH = 200
 
 PreCommit = Callable[[AsyncSession], Awaitable[None]]
-
-
-def _receiver_is_revision_aware() -> bool:
-    """True once ``receive`` accepts ``pre_commit`` (the new handoff contract)."""
-    try:
-        return "pre_commit" in inspect.signature(receive).parameters
-    except (TypeError, ValueError):
-        return False
 
 
 @dataclass
@@ -151,7 +142,6 @@ class GitHubConnector:
         self._retire = retire
         self._settings = settings if settings is not None else get_settings()
         self._now = clock or (lambda: datetime.now(UTC))
-        self._revision_aware = _receiver_is_revision_aware()
         self._token: LeaseToken | None = None
         self._live: SimpleNamespace | None = None
         self._log: ConnectorSyncLog | None = None
@@ -881,71 +871,16 @@ class GitHubConnector:
     # ── dedup + ingest ───────────────────────────────────────────────────────
 
     async def _ingest(self, doc: ConnectorDocument, *, pre_commit: PreCommit | None = None) -> bool:
-        """Hand one artifact to the receiver.
+        """Hand one authored segment to the receiver.
 
-        Legacy receiver (no ``pre_commit`` parameter): an existing link is checked for
-        the STATE of its document (D-021) and a pending, unconfirmed document is
-        re-dispatched by id; an existing link means "already ingested".
+        The receiver decides: the same source revision comes back as ``already_exists``
+        (counted as skipped), a changed one is allocated the next revision and supersedes
+        the previous document. Documents stranded before dispatch are the recovery
+        sweep's job, not this method's.
 
-        Revision-aware receiver: the receiver itself returns ``already_exists`` for the
-        same revision and allocates a new revision otherwise, so no pre-check is made;
-        stranded documents are the recovery sweep's job.
-
-        Returns True if a new document was created.
+        Returns True if a new document (first import or new revision) was created.
         """
         self._last_result = {}
-        if not self._revision_aware:
-            links = (
-                await self._session.execute(
-                    select(
-                        ArtifactLink.document_id,
-                        Document.ingestion_status,
-                        Document.deleted_at,
-                        Document.pipeline_data["dispatch_state"]
-                        .as_string()
-                        .label("dispatch_state"),
-                    )
-                    .select_from(ArtifactLink)
-                    .outerjoin(Document, Document.id == ArtifactLink.document_id)
-                    .where(
-                        ArtifactLink.workspace_id == self._workspace_id,
-                        ArtifactLink.source_tool == doc.source_tool,
-                        ArtifactLink.source_type == doc.source_type,
-                        ArtifactLink.source_id == doc.source_id,
-                    )
-                )
-            ).all()
-            if links:
-                pending = sorted(
-                    {
-                        row.document_id
-                        for row in links
-                        if row.document_id is not None
-                        and row.ingestion_status == IngestionStatus.PENDING
-                        and row.deleted_at is None
-                        and row.dispatch_state in _UNCONFIRMED_DISPATCH_STATES
-                    },
-                    key=str,
-                )
-                for document_id in pending:
-                    try:
-                        await recover_pending_dispatch(
-                            self._session, document_id, self._workspace_id
-                        )
-                    except Exception as exc:
-                        log.warning(
-                            "github_connector_ingest_failed",
-                            source_id=doc.source_id,
-                            error_type=type(exc).__name__,
-                        )
-                        raise
-                    log.info(
-                        "github_connector_recovered_dispatch",
-                        source_id=doc.source_id,
-                        document_id=str(document_id),
-                    )
-                return False
-
         attribution = await self._attribution_decision(doc)
         try:
             result = await self._handoff(doc, attribution, pre_commit)
@@ -962,15 +897,8 @@ class GitHubConnector:
     async def _handoff(
         self, doc: ConnectorDocument, attribution: dict, pre_commit: PreCommit | None
     ) -> dict[str, Any]:
-        """ADAPTER around ``receive``; the only function to change when the receiver lands.
-
-        Revision-aware receiver: pass revision identity, context and ``pre_commit`` so
-        the fence renewal and resume key are atomic with the handoff.
-        Legacy receiver: ``pre_commit`` runs first on the same session, so its writes
-        sit in the open transaction that ``receive`` commits together with the Document
-        (receive() commits on every path except an idempotency-cache hit; the caller
-        commits afterwards in that case).
-        """
+        """Call ``receive`` with the revision identity, context and ``pre_commit`` so the
+        fence renewal and the resume key are atomic with the handoff."""
         link: dict[str, Any] = {
             "source_tool": doc.source_tool,
             "source_type": doc.source_type,
@@ -991,26 +919,23 @@ class GitHubConnector:
             "artifact_link": link,
             "attribution": attribution,
         }
-        if self._revision_aware:
-            revision = hashlib.sha256(doc.content.encode()).hexdigest()
-            live = self._live
-            link["source_revision"] = revision
-            link["connector_id"] = self._config.id
-            link["connector_generation"] = (
-                live.generation if live is not None else getattr(self._config, "generation", 0)
-            )
-            kwargs["idempotency_key"] = hashlib.sha256(
-                f"{doc.idempotency_key}:{revision}".encode()
-            ).hexdigest()
-            context = getattr(doc, "context", None)
-            if context:
-                kwargs["context"] = context
-            mode = getattr(doc, "ingestion_mode", None)
-            if mode:
-                kwargs["ingestion_mode"] = mode
-            kwargs["pre_commit"] = pre_commit
-        elif pre_commit is not None:
-            await pre_commit(self._session)
+        revision = hashlib.sha256(doc.content.encode()).hexdigest()
+        live = self._live
+        link["source_revision"] = revision
+        link["connector_id"] = self._config.id
+        link["connector_generation"] = (
+            live.generation if live is not None else getattr(self._config, "generation", 0)
+        )
+        kwargs["idempotency_key"] = hashlib.sha256(
+            f"{doc.idempotency_key}:{revision}".encode()
+        ).hexdigest()
+        context = getattr(doc, "context", None)
+        if context:
+            kwargs["context"] = context
+        mode = getattr(doc, "ingestion_mode", None)
+        if mode:
+            kwargs["ingestion_mode"] = mode
+        kwargs["pre_commit"] = pre_commit
         return await receive(**kwargs)
 
     async def _attribution_decision(self, doc: ConnectorDocument) -> dict:

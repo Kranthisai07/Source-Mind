@@ -169,7 +169,7 @@ jobs:
       # pyproject so the collected count is the raw test count. Asserting the
       # exact node IDs means a rename cannot silently shrink the gate, which a
       # bare count would not catch.
-      - name: Verify exact test selection (108 nodes)
+      - name: Verify exact test selection (187 nodes)
         working-directory: apps/api
         # SECURITY_TEST_ALLOW_DISPOSABLE / TEST_DATABASE_URL / TEST_REDIS_URL
         # are already in the environment via GITHUB_ENV.
@@ -220,6 +220,44 @@ jobs:
           tests/integration/test_backend_review_real_services.py::test_real_redis_429_exposes_positive_retry_after
           tests/integration/test_backend_review_real_services.py::test_recovered_job_id_is_pollable_through_real_route
           tests/integration/test_backend_review_real_services.py::test_same_key_with_different_payload_conflicts_atomically
+          tests/integration/test_connector_sync_real_db.py::test_T_C1_n2_over_7_items_covers_all_with_one_handoff_each
+          tests/integration/test_connector_sync_real_db.py::test_T_C2_small_scope_completes_in_the_first_run_beside_a_large_one
+          tests/integration/test_connector_sync_real_db.py::test_T_C3_crash_after_handoff_resumes_after_the_key_and_replay_is_deduplicated
+          tests/integration/test_connector_sync_real_db.py::test_T_C4_items_arriving_during_backfill_do_not_extend_the_window
+          tests/integration/test_connector_sync_real_db.py::test_T_L1_stalled_worker_loses_the_lease_and_every_write_is_rejected
+          tests/integration/test_connector_sync_real_db.py::test_T_L2_heartbeat_extends_the_lease
+          tests/integration/test_connector_sync_real_db.py::test_T_L3_reaper_marks_a_dead_workers_running_log_interrupted
+          tests/integration/test_connector_sync_real_db.py::test_T_L4_and_T_DC3_disconnect_bumps_the_fence_and_kills_the_active_run
+          tests/integration/test_connector_sync_real_db.py::test_T_L5_two_simultaneous_triggers_one_runs_one_skips
+          tests/integration/test_connector_sync_real_db.py::test_T_R1_and_R2_recovery_sweep_requeues_without_github_and_exhausted_stays_failed
+          tests/integration/test_connector_sync_real_db.py::test_T_R3_poison_artifact_is_quarantined_after_three_attempts_and_later_items_proceed
+          tests/integration/test_connector_sync_real_db.py::test_T_U3_denied_verdict_pauses_the_scope_as_reauthorization_required
+          tests/integration/test_connector_sync_real_db.py::test_T_U4_unverified_or_missing_verification_makes_zero_content_calls[None]
+          tests/integration/test_connector_sync_real_db.py::test_T_U4_unverified_or_missing_verification_makes_zero_content_calls[raises]
+          tests/integration/test_connector_sync_real_db.py::test_T_U4_unverified_or_missing_verification_makes_zero_content_calls[verifier0]
+          tests/integration/test_connector_sync_real_db.py::test_T_U5_no_grace_window_after_a_successful_past_check
+          tests/integration/test_connector_sync_real_db.py::test_T_U9_denial_and_unavailability_have_different_codes_and_neither_imports
+          tests/integration/test_connector_sync_real_db.py::test_T_X1_hidden_404_retires_nothing
+          tests/integration/test_connector_sync_real_db.py::test_T_X2_capped_or_incomplete_inventory_retires_nothing
+          tests/integration/test_connector_sync_real_db.py::test_T_X3_one_complete_scan_only_marks
+          tests/integration/test_connector_sync_real_db.py::test_T_X4_second_consecutive_complete_scan_retires
+          tests/integration/test_connector_sync_real_db.py::test_T_X4b_an_incomplete_scan_between_two_complete_ones_does_not_count
+          tests/integration/test_connector_sync_real_db.py::test_T_X5_installation_losing_the_repo_is_access_lost_and_retires_nothing
+          tests/integration/test_connector_sync_real_db.py::test_T_X6_410_gone_retires_immediately
+          tests/integration/test_connector_sync_real_db.py::test_other_installation_token_is_refused
+          tests/integration/test_connector_sync_real_db.py::test_real_receiver_handoff_submitter_is_technical_and_creator_is_not_credited
+          tests/integration/test_connector_sync_real_db.py::test_run_for_a_creator_who_is_no_longer_an_admin_is_owner_inactive
+          tests/integration/test_connector_sync_real_db.py::test_tick_selection_excludes_paused_leased_and_future_connectors
+          tests/integration/test_connectors_api_real_db.py::test_create_stores_server_set_binding_and_rejects_unticketed_repo
+          tests/integration/test_connectors_api_real_db.py::test_disconnect_default_keeps_everything
+          tests/integration/test_connectors_api_real_db.py::test_disconnect_remove_memories_calls_retire_with_reason_and_scope
+          tests/integration/test_connectors_api_real_db.py::test_other_workspace_gets_404_everywhere
+          tests/integration/test_connectors_api_real_db.py::test_pause_bumps_fence_and_clears_schedule
+          tests/integration/test_connectors_api_real_db.py::test_rescan_marks_all_scopes_and_schedules
+          tests/integration/test_connectors_api_real_db.py::test_retry_failed_rearms_only_current_generation_retryable
+          tests/integration/test_connectors_api_real_db.py::test_retry_failed_unavailable_without_receiver_support
+          tests/integration/test_connectors_api_real_db.py::test_status_counts_scopes_and_logs
+          tests/integration/test_connectors_api_real_db.py::test_viewer_and_member_denied_admin_allowed
           tests/integration/test_github_author_links_real_db.py::test_admin_api_manages_links_under_rls_without_crossing_workspaces
           tests/integration/test_github_author_links_real_db.py::test_concurrent_correction_waits_for_the_credit_time_share_lock
           tests/integration/test_github_author_links_real_db.py::test_db_layer_allows_writes_only_for_declared_owner_or_admin
@@ -256,6 +294,33 @@ jobs:
           tests/integration/test_pilot_evidence_real_db.py::test_search_evidence_is_force_rls_scoped_and_append_only
           tests/integration/test_pilot_evidence_real_db.py::test_successful_search_event_matches_the_returned_response
           tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres
+          tests/integration/test_revision_publication_real_db.py::test_budget_exhaustion_fails_document_pauses_connector_manual_unaffected
+          tests/integration/test_revision_publication_real_db.py::test_caps_truncate_chunks_and_characters_and_record_it
+          tests/integration/test_revision_publication_real_db.py::test_connector_the_submitter_cannot_see_counts_as_not_active
+          tests/integration/test_revision_publication_real_db.py::test_context_is_passed_separately_to_extraction
+          tests/integration/test_revision_publication_real_db.py::test_dc1_disconnect_with_documents_queued_makes_no_provider_call
+          tests/integration/test_revision_publication_real_db.py::test_dc2_disconnect_racing_publication_gives_one_consistent_outcome
+          tests/integration/test_revision_publication_real_db.py::test_handoff_new_revision_allocates_seq_and_supersedes
+          tests/integration/test_revision_publication_real_db.py::test_handoff_pre_commit_runs_and_raising_rolls_everything_back
+          tests/integration/test_revision_publication_real_db.py::test_handoff_returning_to_earlier_text_is_a_new_revision
+          tests/integration/test_revision_publication_real_db.py::test_handoff_same_revision_is_skipped
+          tests/integration/test_revision_publication_real_db.py::test_p1_newer_revision_publishes_first_then_older_publishes_nothing
+          tests/integration/test_revision_publication_real_db.py::test_p2_previous_revision_retired_only_at_new_publication_recording
+          tests/integration/test_revision_publication_real_db.py::test_p2_previous_revision_retired_with_local_implementation
+          tests/integration/test_revision_publication_real_db.py::test_p3_partial_extraction_keeps_prior_live_and_retry_publishes
+          tests/integration/test_revision_publication_real_db.py::test_p4_zero_fact_revision_keeps_prior_and_flags
+          tests/integration/test_revision_publication_real_db.py::test_p5_duplicate_finalize_is_idempotent
+          tests/integration/test_revision_publication_real_db.py::test_p6_concurrent_finalize_is_serialized_by_the_head_lock
+          tests/integration/test_revision_publication_real_db.py::test_p6_publication_waits_for_the_head_lock
+          tests/integration/test_revision_publication_real_db.py::test_p7_first_revision_with_a_failed_chunk_is_not_half_published
+          tests/integration/test_revision_publication_real_db.py::test_provider_failure_is_transient_after_retries_exhausted
+          tests/integration/test_revision_publication_real_db.py::test_publication_commits_before_a_later_disconnect
+          tests/integration/test_revision_publication_real_db.py::test_requeue_refuses_a_document_that_is_not_failed
+          tests/integration/test_revision_publication_real_db.py::test_requeue_refuses_ineligible_cases
+          tests/integration/test_revision_publication_real_db.py::test_requeue_resets_and_redispatches_with_backoff
+          tests/integration/test_revision_publication_real_db.py::test_s5_verbatim_then_extract_revision
+          tests/integration/test_revision_publication_real_db.py::test_s6_extract_then_verbatim_revision_and_verbatim_never_no_facts
+          tests/integration/test_revision_publication_real_db.py::test_salted_hash_keeps_both_provenance_rows_for_identical_text
           tests/integration/test_security_acceptance_real_services.py::test_concurrent_first_requests_create_exactly_one_user
           tests/integration/test_security_acceptance_real_services.py::test_friends_release_journey_over_http_with_signed_tokens
           tests/integration/test_security_acceptance_real_services.py::test_real_redis_counters_scopes_expiry_sharing_and_fail_closed
@@ -285,6 +350,20 @@ jobs:
           tests/integration/test_source_provenance_real_db.py::test_rest_route_and_service_expose_identical_source_objects
           tests/integration/test_source_provenance_real_db.py::test_search_for_user_denies_non_members_and_ignores_selector
           tests/integration/test_source_provenance_real_db.py::test_source_context_reports_source_authorship_and_state
+          tests/integration/test_source_retirement_real_db.py::test_h1_h2_h3_edited_lineage_flagged_unedited_sibling_retired
+          tests/integration/test_source_retirement_real_db.py::test_h4_deletion_and_removal_respect_the_rule[connector_removed]
+          tests/integration/test_source_retirement_real_db.py::test_h4_deletion_and_removal_respect_the_rule[source_deleted]
+          tests/integration/test_source_retirement_real_db.py::test_h4_deletion_and_removal_respect_the_rule[source_superseded]
+          tests/integration/test_source_retirement_real_db.py::test_k1_patch_commits_first_then_retirement_only_flags
+          tests/integration/test_source_retirement_real_db.py::test_k2_retirement_commits_first_then_patch_409_with_candidates
+          tests/integration/test_source_retirement_real_db.py::test_k3_k5_patch_races_retirement[k3-supersede]
+          tests/integration/test_source_retirement_real_db.py::test_k3_k5_patch_races_retirement[k5-connector-removal]
+          tests/integration/test_source_retirement_real_db.py::test_k4_retirement_races_two_patches_on_siblings
+          tests/integration/test_source_retirement_real_db.py::test_k6_three_candidates_no_valid_target_is_rejected_no_autopick
+          tests/integration/test_source_retirement_real_db.py::test_k7_zero_candidates_no_replacement_creates_nothing
+          tests/integration/test_source_retirement_real_db.py::test_k8_invalid_targets_rejected_without_side_effects
+          tests/integration/test_source_retirement_real_db.py::test_k9_valid_target_records_edit_under_acting_editor
+          tests/integration/test_source_retirement_real_db.py::test_retirement_is_idempotent
           NODES
           python -m pytest -o addopts='' -q --collect-only \
             tests/integration/test_attribution_history_real_db.py \
@@ -296,6 +375,10 @@ jobs:
             tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres \
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
+            tests/integration/test_connectors_api_real_db.py \
+            tests/integration/test_connector_sync_real_db.py \
+            tests/integration/test_revision_publication_real_db.py \
+            tests/integration/test_source_retirement_real_db.py \
             tests/integration/test_ingest_schema_real_db.py \
             tests/integration/test_source_provenance_real_db.py \
             tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable \
@@ -303,22 +386,22 @@ jobs:
             | grep '::' | sort > "$actual"
           echo "collected $(wc -l < "$actual") node(s)"
           diff -u "$expected" "$actual" || {
-            echo "::error::collected node IDs differ from the expected 108"
+            echo "::error::collected node IDs differ from the expected 187"
             exit 1
           }
 
       # ── Acceptance ────────────────────────────────────────────────────────
-      # 180 seconds, on execution only. Provisioning, pip install and migration
+      # 8 minutes (was 3 before the ingestion race and revision suites), on execution only. Provisioning, pip install and migration
       # sit deliberately outside the budget so a slow dependency resolve is
       # never reported as an acceptance timeout.
       #
       # A JUnit report is emitted so the next step can prove the tests RAN.
-      # `pytest` exits 0 on "108 skipped", and every one of these is guarded by
+      # `pytest` exits 0 on "187 skipped", and every one of these is guarded by
       # the disposable-DB check — so a silent skip is the realistic failure and
       # exit status alone cannot detect it.
       - name: Security acceptance tests
         id: acceptance
-        timeout-minutes: 3
+        timeout-minutes: 8
         working-directory: apps/api
         env:
           # Disposable URLs come from GITHUB_ENV, not from an expression.
@@ -337,12 +420,16 @@ jobs:
             tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres \
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
+            tests/integration/test_connectors_api_real_db.py \
+            tests/integration/test_connector_sync_real_db.py \
+            tests/integration/test_revision_publication_real_db.py \
+            tests/integration/test_source_retirement_real_db.py \
             tests/integration/test_ingest_schema_real_db.py \
             tests/integration/test_source_provenance_real_db.py \
             tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable \
             tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs
 
-      - name: Assert all 108 tests executed and passed
+      - name: Assert all 187 tests executed and passed
         if: always() && steps.acceptance.outcome != 'skipped'
         working-directory: apps/api
         run: |
@@ -370,11 +457,11 @@ jobs:
               else:
                   bad.append(f"{node} -> {state}")
           print(f"executed {total}, passed {passed}")
-          if total != 108:
-              print(f"::error::expected 108 test cases, report contains {total}")
+          if total != 187:
+              print(f"::error::expected 187 test cases, report contains {total}")
           for b in bad:
               print(f"::error::{b}")
-          sys.exit(0 if (total == 108 and passed == 108) else 1)
+          sys.exit(0 if (total == 187 and passed == 187) else 1)
           PY
 
       - name: Upload acceptance report

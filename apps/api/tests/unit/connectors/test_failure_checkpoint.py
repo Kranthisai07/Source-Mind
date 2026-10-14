@@ -53,7 +53,6 @@ def _connector():
         settings=settings,
     )
     connector._token = LeaseToken(connector._config.id, 1, "t")
-    connector._revision_aware = True
     return connector
 
 

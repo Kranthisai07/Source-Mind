@@ -102,29 +102,20 @@ async def test_lease_loss_mid_run_stops_with_lease_lost_status(mock_session, moc
 
 @pytest.mark.unit
 @pytest.mark.anyio
-async def test_ingest_skips_duplicate(mock_session, mock_auth):
-    """_ingest() should return False if ArtifactLink already exists."""
+async def test_ingest_skips_a_revision_the_receiver_already_has(mock_session, mock_auth):
+    """_ingest() returns False when the receiver reports the same source revision."""
+    from unittest.mock import AsyncMock, patch
+
     from sourcemind.connectors.github.connector import GitHubConnector
     from sourcemind.connectors.github.mapper import ConnectorDocument
 
-    config = _make_config()
     connector = GitHubConnector(
-        config=config,
+        config=_make_config(),
         auth=mock_auth,
         session=mock_session,
         workspace_id=uuid.uuid4(),
         user_id=uuid.uuid4(),
     )
-
-    # Simulate existing ArtifactLink
-    existing = MagicMock()
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = existing
-    mock_result.all.return_value = [
-        MagicMock(document_id=uuid.uuid4(), ingestion_status="completed", deleted_at=None)
-    ]
-    mock_session.execute.return_value = mock_result
-
     doc = ConnectorDocument(
         source_tool="github",
         source_type="commit",
@@ -133,8 +124,9 @@ async def test_ingest_skips_duplicate(mock_session, mock_auth):
         content="test content",
         idempotency_key=ConnectorDocument.make_key("github", "commit", "acme/repo/commits/abc123"),
     )
-    result = await connector._ingest(doc)
-    assert result is False
+    receive = AsyncMock(return_value={"already_exists": True, "reason": "same_revision"})
+    with patch("sourcemind.connectors.github.connector.receive", new=receive):
+        assert await connector._ingest(doc) is False
 
 
 @pytest.mark.unit

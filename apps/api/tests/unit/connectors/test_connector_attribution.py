@@ -192,19 +192,15 @@ async def test_name_or_login_never_triggers_identity_resolution(author) -> None:
 
 
 @pytest.mark.unit
-async def test_duplicate_artifact_is_not_reingested() -> None:
+async def test_same_revision_reported_by_the_receiver_is_not_counted_as_new() -> None:
+    """The receiver owns revision identity: ``already_exists`` means skipped, and the
+    connector does not pre-check the database itself."""
     session = _session()
-    existing = MagicMock()
-    existing.scalar_one_or_none.return_value = MagicMock()
-    existing.all.return_value = [
-        MagicMock(document_id=uuid.uuid4(), ingestion_status="completed", deleted_at=None)
-    ]
-    session.execute = AsyncMock(return_value=existing)
     connector = _connector(session, uuid.uuid4(), uuid.uuid4())
-    receive = AsyncMock()
+    receive = AsyncMock(return_value={"already_exists": True, "reason": "same_revision"})
     with patch(f"{CONNECTOR}.receive", new=receive):
         assert await connector._ingest(_doc(None)) is False
-    receive.assert_not_awaited()
+    receive.assert_awaited_once()
 
 
 @pytest.mark.unit
@@ -215,7 +211,6 @@ async def test_revision_aware_handoff_never_credits_the_creator() -> None:
     doc = _doc({"github_user_id": 101, "login": "alice", "kind": "github_account"})
     session = _session()
     connector = _connector(session, creator, uuid.uuid4())
-    connector._revision_aware = True
     receive = AsyncMock(return_value={"already_exists": False, "revision_seq": 1})
     resolver = AsyncMock(return_value=_Lookup(None, "unlinked"))
     pre_commit = AsyncMock()
