@@ -251,9 +251,14 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
 
                     # Daily extraction budget (connector documents only), before
                     # the first provider call.
+                    reserved_calls = 0
                     if is_connector and chunk_count > 0:
+                        # Worst case is two provider calls per chunk (the empty/failed answer
+                        # is retried once), so that is what is reserved; the unused part is
+                        # refunded once the real call count is known.
+                        reserved_calls = chunk_count * MAX_CALLS_PER_CHUNK
                         if not await _reserve_budget(
-                            ws_uuid, chunk_count, settings.workspace_daily_extraction_budget
+                            ws_uuid, reserved_calls, settings.workspace_daily_extraction_budget
                         ):
                             return await _fail_budget(
                                 session, doc, doc_uuid, document_id, ws_uuid, extra, start
@@ -279,6 +284,8 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                     usage = getattr(fact_extraction, "usage", None)
                     if usage:
                         extra["usage"] = usage
+                    if reserved_calls and isinstance(usage, dict) and "calls" in usage:
+                        await _refund_budget(ws_uuid, reserved_calls - int(usage["calls"]))
                     log.info(
                         "pipeline_facts",
                         document_id=document_id,
@@ -789,6 +796,20 @@ async def _fail_disconnected(session, doc_uuid: uuid.UUID, document_id: str, sta
 def _next_utc_midnight(now: datetime) -> datetime:
     day = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     return day + timedelta(days=1)
+
+
+# One extraction attempt plus the single retry the extractor makes per chunk.
+MAX_CALLS_PER_CHUNK = 2
+
+
+async def _refund_budget(ws_uuid: uuid.UUID, calls: int) -> None:
+    """Return reserved-but-unused calls to today's counter (never below zero)."""
+    if calls <= 0:
+        return
+    from sourcemind.core.redis_client import get_redis
+
+    now = datetime.now(UTC)
+    await get_redis().decrby(f"extraction_budget:{ws_uuid}:{now:%Y%m%d}", calls)
 
 
 async def _reserve_budget(ws_uuid: uuid.UUID, calls: int, limit: int) -> bool:

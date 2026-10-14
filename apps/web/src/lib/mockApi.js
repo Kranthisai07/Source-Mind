@@ -337,7 +337,7 @@ export const mockApi = {
     rescanConnector: (connId) => request(() => ({
         connector_id: connId,
         scopes_marked: (CONNECTOR_STATUSES[connId]?.scopes || []).length,
-        message: "Scopes marked for a full inventory pass; the next sync runs it.",
+        message: "Scopes restarted from the start of the import window; the next sync re-reads it. Sources deleted on GitHub are not detected automatically.",
     })),
 
     // PATCH /v1/connectors/:id -> ConnectorResponse

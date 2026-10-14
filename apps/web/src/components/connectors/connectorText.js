@@ -4,7 +4,7 @@
 // are different facts and must never read alike.
 
 export const STATE_LABEL = {
-    idle: "up to date",
+    idle: "idle",
     syncing: "syncing",
     needs_attention: "needs attention",
     paused: "paused",

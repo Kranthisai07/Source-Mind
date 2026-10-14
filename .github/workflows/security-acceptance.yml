@@ -169,7 +169,7 @@ jobs:
       # pyproject so the collected count is the raw test count. Asserting the
       # exact node IDs means a rename cannot silently shrink the gate, which a
       # bare count would not catch.
-      - name: Verify exact test selection (194 nodes)
+      - name: Verify exact test selection (197 nodes)
         working-directory: apps/api
         # SECURITY_TEST_ALLOW_DISPOSABLE / TEST_DATABASE_URL / TEST_REDIS_URL
         # are already in the environment via GITHUB_ENV.
@@ -258,6 +258,9 @@ jobs:
           tests/integration/test_connectors_api_real_db.py::test_retry_failed_unavailable_without_receiver_support
           tests/integration/test_connectors_api_real_db.py::test_status_counts_scopes_and_logs
           tests/integration/test_connectors_api_real_db.py::test_viewer_and_member_denied_admin_allowed
+          tests/integration/test_extraction_budget_real_db.py::test_a_clean_first_attempt_is_charged_one_call
+          tests/integration/test_extraction_budget_real_db.py::test_a_retried_extraction_is_charged_both_calls
+          tests/integration/test_extraction_budget_real_db.py::test_parallel_reservations_never_exceed_the_limit
           tests/integration/test_github_author_links_real_db.py::test_admin_api_manages_links_under_rls_without_crossing_workspaces
           tests/integration/test_github_author_links_real_db.py::test_concurrent_correction_waits_for_the_credit_time_share_lock
           tests/integration/test_github_author_links_real_db.py::test_db_layer_allows_writes_only_for_declared_owner_or_admin
@@ -382,6 +385,7 @@ jobs:
             tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres \
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
+            tests/integration/test_extraction_budget_real_db.py \
             tests/integration/test_publication_concurrency_diagnostics_real_db.py \
             tests/integration/test_sync_task_orm_real_db.py \
             tests/integration/test_ingestion_journey_real_db.py \
@@ -396,7 +400,7 @@ jobs:
             | grep '::' | sort > "$actual"
           echo "collected $(wc -l < "$actual") node(s)"
           diff -u "$expected" "$actual" || {
-            echo "::error::collected node IDs differ from the expected 194"
+            echo "::error::collected node IDs differ from the expected 197"
             exit 1
           }
 
@@ -406,7 +410,7 @@ jobs:
       # never reported as an acceptance timeout.
       #
       # A JUnit report is emitted so the next step can prove the tests RAN.
-      # `pytest` exits 0 on "194 skipped", and every one of these is guarded by
+      # `pytest` exits 0 on "197 skipped", and every one of these is guarded by
       # the disposable-DB check — so a silent skip is the realistic failure and
       # exit status alone cannot detect it.
       - name: Security acceptance tests
@@ -430,6 +434,7 @@ jobs:
             tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres \
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
+            tests/integration/test_extraction_budget_real_db.py \
             tests/integration/test_publication_concurrency_diagnostics_real_db.py \
             tests/integration/test_sync_task_orm_real_db.py \
             tests/integration/test_ingestion_journey_real_db.py \
@@ -442,7 +447,7 @@ jobs:
             tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable \
             tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs
 
-      - name: Assert all 194 tests executed and passed
+      - name: Assert all 197 tests executed and passed
         if: always() && steps.acceptance.outcome != 'skipped'
         working-directory: apps/api
         run: |
@@ -470,11 +475,11 @@ jobs:
               else:
                   bad.append(f"{node} -> {state}")
           print(f"executed {total}, passed {passed}")
-          if total != 194:
-              print(f"::error::expected 194 test cases, report contains {total}")
+          if total != 197:
+              print(f"::error::expected 197 test cases, report contains {total}")
           for b in bad:
               print(f"::error::{b}")
-          sys.exit(0 if (total == 194 and passed == 194) else 1)
+          sys.exit(0 if (total == 197 and passed == 197) else 1)
           PY
 
       - name: Upload acceptance report

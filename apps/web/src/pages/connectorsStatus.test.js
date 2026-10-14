@@ -131,7 +131,7 @@ describe("polling", () => {
 
         await flush(POLL_INTERVAL_MS);
         expect(mockStatus).toHaveBeenCalledTimes(2);
-        expect(screen.getByTestId(`connector-state-${ID}`).textContent).toMatch(/up to date/i);
+        expect(screen.getByTestId(`connector-state-${ID}`).textContent).toMatch(/^idle$/i);
 
         await flush(POLL_INTERVAL_MS * 5);
         expect(mockStatus).toHaveBeenCalledTimes(2);
@@ -253,5 +253,17 @@ describe("row actions", () => {
         await flush();
         const table = within(screen.getByTestId(`connector-${ID}`)).getByTestId(`scope-table-${ID}`);
         expect(table.textContent).toContain("pull requests");
+    });
+});
+
+describe("deletion detection is off and the UI says so", () => {
+    test("an active connector states that deleted sources are not detected", async () => {
+        renderPage();
+        await flush();
+        const note = screen.getByTestId(`deletion-note-${ID}`).textContent;
+        expect(note).toMatch(/not detected automatically/i);
+        // Never claims a deletion reconciliation anywhere on the card.
+        const card = screen.getByTestId(`connector-${ID}`).textContent;
+        expect(card).not.toMatch(/reconciled|deletions? (checked|verified|reconciled)|full inventory/i);
     });
 });

@@ -10,7 +10,7 @@ PATCH  /v1/connectors/:id                             — rename / narrow repos 
 DELETE /v1/connectors/:id                             — soft disconnect (?remove_memories=)
 POST   /v1/connectors/:id/sync                        — trigger a manual sync
 POST   /v1/connectors/:id/retry-failed                — re-arm retryable failed documents
-POST   /v1/connectors/:id/rescan                      — mark scopes for a full inventory pass
+POST   /v1/connectors/:id/rescan                      — re-read the import window (does not detect deletions)
 GET    /v1/connectors/:id/status                      — state, scopes, counters
 GET    /v1/connectors/:id/sync-logs                   — paginated sync history
 """
@@ -511,7 +511,11 @@ async def rescan_connector(
     db: DBSession,
     current_user: CurrentUser,
 ) -> RescanResponse:
-    """Mark every scope for a full inventory pass; the next sync executes it."""
+    """Restart every scope from the start of the import window; the next sync re-reads it.
+
+    Deleted sources are NOT detected (automatic deletion detection is off in this release), so
+    a re-scan never retires memories.
+    """
     workspace_id = await require_connector_access(db, current_user.user_id, connector_id)
     await connect_ticket.enforce_connector_rate_limit(
         "connector-rescan", current_user.user_id, workspace_id
@@ -527,7 +531,10 @@ async def rescan_connector(
     return RescanResponse(
         connector_id=connector_id,
         scopes_marked=marked,
-        message="Scopes marked for a full inventory pass; the next sync runs it.",
+        message=(
+            "Scopes restarted from the start of the import window; the next sync re-reads it. "
+            "Sources deleted on GitHub are not detected automatically."
+        ),
     )
 
 

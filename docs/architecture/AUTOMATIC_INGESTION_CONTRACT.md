@@ -180,7 +180,15 @@ and safe-by-default; none is hidden.
   `owner_inactive` and stops. No policy was loosened and no privileged write exists.
 * **Review sweep ETags are not persisted.** The sweep re-reads every PR in scope each cycle; it is
   correct but not cheap.
-* **Per-type import caps are per run.** Continuation runs restart the counter.
+* **Per-type import caps are cumulative, not per run.** `connector_sync_cursors.consumed` carries the
+  count across continuation runs, so restarts cannot enlarge the declared initial-import bound
+  (`max_items_per_type`, default 500; commits 200). The cap keeps the OLDEST items in the window and
+  skips the rest of the window, counted as `truncated_items_per_type`; new activity after the
+  connect-time window end is imported incrementally. A re-scan resets the counter on purpose.
+* **Re-scan is not a deletion pass.** It restarts discovery from the window start and re-reads it;
+  the UI and API say so and never report a deletion reconciliation.
+* **"idle" is not "complete".** The idle state means no run is in progress; it does not claim that
+  every scope finished its backfill (see the per-scope table).
 * **Short segments use the existing verbatim mode,** so a short authored segment becomes one memory
   with the exact text. The 200-character threshold is an unvalidated starting value, not a quality
   claim.

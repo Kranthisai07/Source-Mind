@@ -253,7 +253,7 @@ async def retry_failed(
 async def rescan(
     session: AsyncSession, connector_id: uuid.UUID, *, config: dict[str, Any], now: datetime
 ) -> int:
-    """Mark every scope for a full inventory pass and schedule a run now.
+    """Restart every scope from the import-window start and schedule a run now (no deletion detection).
 
     The sync package executes the pass: a scope with ``phase='backfill'``,
     ``listing_complete=false`` and no resume key is traversed from its window start and

@@ -3386,3 +3386,21 @@ or retrieval quality.
 **Alternatives:** a per-scope count derived from `artifact_links` (no schema change) was rejected because
 filtered items are not stored there; relaxing the foreign key was rejected as a schema change to fix a
 lock mode.
+
+## D-038 — Extraction budget counts retries; deletion-detection wording
+
+**What:** the daily extraction-call budget reserved one call per chunk although the extractor makes up
+to two (a retry on an empty or failed answer), so retries were never charged. The pipeline now reserves
+the worst case (2 per chunk) on the shared atomic Redis counter and refunds the unused part once the
+real `usage.calls` is known; when usage is unknown the worst case stands (fails safe). Tests use real
+Redis: a retried extraction ends at 2, a clean one at 1, and 40 parallel reservations against a limit of
+10 admit exactly 10.
+
+Because automatic deletion detection is off, the connector card now always says that deleted sources are
+not detected, the re-scan message says it only re-reads the import window, the "up to date" label became
+"idle" (it does not claim every scope finished), and the contract's deviations section records both.
+
+**Not changed:** a merely paused/budget-paused connector still fails queued documents as
+`connector_disconnected` (misleading code, no data effect; recorded as a gap), and nothing resumes
+`paused_budget` automatically at the next UTC midnight (an admin resumes it; the per-reservation budget
+check still holds, so the cap is not bypassed by resuming).

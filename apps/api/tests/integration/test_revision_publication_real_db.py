@@ -876,7 +876,7 @@ async def test_budget_exhaustion_fails_document_pauses_connector_manual_unaffect
     world, monkeypatch
 ) -> None:
     w = world
-    monkeypatch.setenv("WORKSPACE_DAILY_EXTRACTION_BUDGET", "1")
+    monkeypatch.setenv("WORKSPACE_DAILY_EXTRACTION_BUDGET", "2")  # one chunk reserves 2 calls
     get_settings.cache_clear()
     _install_retire(w.mp, _local_retire)
     _facts(w.harness, [_fact()])

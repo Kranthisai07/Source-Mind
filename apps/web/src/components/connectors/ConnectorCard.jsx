@@ -106,7 +106,7 @@ export default function ConnectorCard({ connector, onLogs, onDisconnect, onChang
         refresh();
     });
     const rescan = () => run("rescan", () => api.rescanConnector(c.id), () => {
-        toast.success("Re-scan scheduled", { description: "The next sync does a full pass." });
+        toast.success("Re-scan scheduled", { description: "The next sync re-reads the import window. Sources deleted on GitHub are not detected automatically." });
         refresh();
     });
     const paused = (status?.status ?? c.status) === "paused";
@@ -206,6 +206,13 @@ export default function ConnectorCard({ connector, onLogs, onDisconnect, onChang
                     {filtered.map(([reason, n], i) => (
                         <span key={reason}>{i > 0 ? ", " : ""}{formatCount(n)} {FILTER_LABEL[reason] || reason}</span>
                     ))}
+                </p>
+            )}
+
+            {canAct && (
+                <p data-testid={`deletion-note-${c.id}`} className="mb-3 text-[11.5px] text-sm-text-secondary">
+                    Deleted sources are not detected automatically: memories from an issue, comment or
+                    commit removed on GitHub stay until you remove them or disconnect with "remove memories".
                 </p>
             )}
 
