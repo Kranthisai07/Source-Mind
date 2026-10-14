@@ -3551,3 +3551,9 @@ run had cached the file in `/tmp/data-gym-cache`. Tests now use a deterministic 
 (`tests/conftest.py`); production still uses `tiktoken` and downloads once per worker (an outbound
 dependency of the ingestion worker that was not documented before). Verified locally with an empty
 `TIKTOKEN_CACHE_DIR` (unit 902 and acceptance 233 passed).
+
+**D-045 addendum 2 (CI).** With the tokenizer stubbed, CI failed on four tests in
+`test_initial_attribution_scoring.py` that really exercise the sentence-transformer (S2 semantic score):
+they used to download the model during the test run. API CI now fetches and caches the weights in a setup
+step; the test run stays offline (guard + `HF_HUB_OFFLINE`). Skipping the tests was rejected: they assert
+real scoring behaviour.
