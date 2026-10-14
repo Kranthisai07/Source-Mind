@@ -381,6 +381,44 @@ async def test_revert_a_b_a_publishes_the_final_a_with_the_connectors_real_key(w
     assert sorted(r.revision_seq for r in rows) == [1, 2, 3]  # the history is preserved
 
 
+async def test_reconnect_after_remove_memories_imports_the_same_content_again(world) -> None:
+    """Found by the browser journey: disconnect with "remove memories", connect again, sync: every
+    item was skipped as "same revision" because the artifact head still named the removed connector's
+    revision, so the source never came back. A different connector handing off identical content is a
+    new revision."""
+    w = world
+    _install_retire(w.mp, _local_retire)
+    sid, content = _sid(), _text("same")
+    _facts(w.harness, [_fact()])
+    first = await _handoff(w.engine, w.data, w.connector, sid, content)
+    d1 = uuid.UUID(first["document_id"])
+    await _run(w.data, d1)
+    assert await _live(w.engine, w.data, d1) == 1
+
+    # Disconnect with removal (memories retired), then a NEW connector row for the same repo.
+    await _disconnect(w.engine, w.data, w.connector)
+    session = await _session(w.engine, w.data.owner_id, w.data.target_workspace_id)
+    async with session:
+        await session.execute(
+            text("UPDATE memories SET deleted_at = now(), deleted_reason = 'connector_removed' "
+                 "WHERE document_id = CAST(:d AS uuid)"),
+            {"d": str(d1)},
+        )
+        await session.commit()
+    second_connector = await _connector(w.engine, w.data)
+
+    _facts(w.harness, [_fact()])
+    again = await _handoff(w.engine, w.data, second_connector, sid, content)
+    assert again["already_exists"] is False and again["revision_seq"] == 2, again
+    d2 = uuid.UUID(again["document_id"])
+    await _run(w.data, d2)
+    assert await _live(w.engine, w.data, d2) == 1  # the content is back
+
+    # The SAME connector replaying it is still a no-op.
+    replay = await _handoff(w.engine, w.data, second_connector, sid, content)
+    assert replay["already_exists"] is True and replay["reason"] == "same_revision"
+
+
 async def test_handoff_pre_commit_runs_and_raising_rolls_everything_back(world) -> None:
     w = world
     ran: list[bool] = []

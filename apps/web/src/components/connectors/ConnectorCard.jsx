@@ -68,6 +68,16 @@ export default function ConnectorCard({ connector, onLogs, onDisconnect, onChang
         return () => { alive.current = false; };
     }, [refresh]);
 
+    // The list owns the connector's lifecycle status (a Disconnect or Pause elsewhere changes it);
+    // the card caches its own status read and prefers it. When the list's status changes, read
+    // again, otherwise the card keeps showing the old state until the page is reloaded.
+    const listStatus = useRef(c.status);
+    useEffect(() => {
+        if (listStatus.current === c.status) return;
+        listStatus.current = c.status;
+        refresh();
+    }, [c.status, refresh]);
+
     const state = status?.state ?? null;
     const syncing = state === "syncing";
     const watching = watchUntil > Date.now();

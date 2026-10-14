@@ -52,3 +52,18 @@ async def _fake_query_embedding(query: str, openai_client: object | None = None)
 
 
 _hybrid._get_query_embedding = _fake_query_embedding  # type: ignore[assignment]
+
+
+# Every other embedding path (e.g. recomputing a memory's vector when a human edits it) goes through
+# EmbeddingService; SIMULATED with constant vectors so nothing is sent to a model provider.
+from sourcemind.services.ingestion import embedder as _embedder  # noqa: E402
+
+
+async def _fake_embed(self, facts):  # type: ignore[no-untyped-def]
+    return [
+        _embedder.EmbeddingResult(content=f, embedding=[0.01] * 3072, token_count=8, cached=False)
+        for f in facts
+    ]
+
+
+_embedder.EmbeddingService.embed = _fake_embed  # type: ignore[method-assign]

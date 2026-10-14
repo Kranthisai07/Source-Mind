@@ -67,7 +67,7 @@ export default function Connectors() {
         <>
             <TopBar
                 title="Connectors"
-                subtitle={error ? "Connector list unavailable" : `${list.length} connected sources`}
+                subtitle={error ? "Connector list unavailable" : `${list.filter((x) => x.status !== "disconnected").length} connected sources`}
                 actions={
                     <Button
                         data-testid="add-connector-btn"
