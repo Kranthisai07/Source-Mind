@@ -1,0 +1,9 @@
+{
+  "connector_id": "00000000-0000-4000-8000-0000000000b1",
+  "status": "disconnected",
+  "generation": 2,
+  "remove_memories": true,
+  "documents_considered": 12,
+  "memories_retired": 11,
+  "memories_flagged": 1
+}

@@ -45,47 +45,34 @@ def mock_auth():
 
 @pytest.mark.unit
 @pytest.mark.anyio
-async def test_sync_creates_sync_log(mock_session, mock_auth):
-    """sync() should create a ConnectorSyncLog and flush it."""
+async def test_run_exits_skipped_locked_when_the_lease_is_held(mock_session, mock_auth):
+    """T-L5 (unit half): a trigger that cannot take the lease does nothing at all."""
     from sourcemind.connectors.github.connector import GitHubConnector
 
-    config = _make_config(repos=["acme/repo"])
-    workspace_id = uuid.uuid4()
-    user_id = uuid.uuid4()
-
     connector = GitHubConnector(
-        config=config,
+        config=_make_config(),
         auth=mock_auth,
         session=mock_session,
-        workspace_id=workspace_id,
-        user_id=user_id,
+        workspace_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        client=AsyncMock(),
     )
+    with patch(
+        "sourcemind.services.connectors.sync_state.acquire_lease",
+        new=AsyncMock(return_value=None),
+    ):
+        outcome = await connector.sync(sync_type="full")
 
-    # Mock the client so no HTTP calls are made
-    connector._client = AsyncMock()
-    # Return empty iterators for all fetch methods
-    async def _empty_aiter(*args, **kwargs):
-        return
-        yield  # make it an async generator
-
-    connector._client.get_commits = _empty_aiter
-    connector._client.get_pull_requests = _empty_aiter
-    connector._client.get_issues = _empty_aiter
-    connector._client.get_discussions = AsyncMock(return_value=[])
-
-    sync_log = await connector.sync(sync_type="full")
-
-    # A sync log should have been added to the session
-    assert mock_session.add.called
-    assert sync_log.status in ("completed", "failed")
+    assert outcome.status == "skipped_locked"
+    mock_session.add.assert_not_called()  # no sync log, no write
+    connector._client.assert_not_called()
 
 
 @pytest.mark.unit
 @pytest.mark.anyio
-async def test_ingest_skips_duplicate(mock_session, mock_auth):
-    """_ingest() should return False if ArtifactLink already exists."""
+async def test_lease_loss_mid_run_stops_with_lease_lost_status(mock_session, mock_auth):
     from sourcemind.connectors.github.connector import GitHubConnector
-    from sourcemind.connectors.github.mapper import ConnectorDocument
+    from sourcemind.services.connectors.sync_state import LeaseLostError, LeaseToken
 
     config = _make_config()
     connector = GitHubConnector(
@@ -94,17 +81,41 @@ async def test_ingest_skips_duplicate(mock_session, mock_auth):
         session=mock_session,
         workspace_id=uuid.uuid4(),
         user_id=uuid.uuid4(),
+        client=AsyncMock(),
     )
+    token = LeaseToken(config.id, 1, "t")
+    with (
+        patch(
+            "sourcemind.services.connectors.sync_state.acquire_lease",
+            new=AsyncMock(return_value=token),
+        ),
+        patch(
+            "sourcemind.services.connectors.sync_state.renew_lease",
+            new=AsyncMock(side_effect=LeaseLostError("fenced")),
+        ),
+    ):
+        outcome = await connector.sync()
 
-    # Simulate existing ArtifactLink
-    existing = MagicMock()
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = existing
-    mock_result.all.return_value = [
-        MagicMock(document_id=uuid.uuid4(), ingestion_status="completed", deleted_at=None)
-    ]
-    mock_session.execute.return_value = mock_result
+    assert outcome.status == "lease_lost"
+    mock_session.add.assert_not_called()
 
+
+@pytest.mark.unit
+@pytest.mark.anyio
+async def test_ingest_skips_a_revision_the_receiver_already_has(mock_session, mock_auth):
+    """_ingest() returns False when the receiver reports the same source revision."""
+    from unittest.mock import AsyncMock, patch
+
+    from sourcemind.connectors.github.connector import GitHubConnector
+    from sourcemind.connectors.github.mapper import ConnectorDocument
+
+    connector = GitHubConnector(
+        config=_make_config(),
+        auth=mock_auth,
+        session=mock_session,
+        workspace_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+    )
     doc = ConnectorDocument(
         source_tool="github",
         source_type="commit",
@@ -113,8 +124,9 @@ async def test_ingest_skips_duplicate(mock_session, mock_auth):
         content="test content",
         idempotency_key=ConnectorDocument.make_key("github", "commit", "acme/repo/commits/abc123"),
     )
-    result = await connector._ingest(doc)
-    assert result is False
+    receive = AsyncMock(return_value={"already_exists": True, "reason": "same_revision"})
+    with patch("sourcemind.connectors.github.connector.receive", new=receive):
+        assert await connector._ingest(doc) is False
 
 
 @pytest.mark.unit

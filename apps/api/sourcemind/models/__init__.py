@@ -15,9 +15,12 @@ from sourcemind.models.attribution import (
 )
 from sourcemind.models.base import Base, SoftDeleteMixin, TimestampMixin
 from sourcemind.models.connector import (
+    ArtifactHead,
     ArtifactLink,
     ConnectorConfig,
+    ConnectorSyncCursor,
     ConnectorSyncLog,
+    ConnectorWorkItem,
     GitHubAuthorLink,
 )
 from sourcemind.models.document import Document, DocumentSourceType, IngestionStatus
@@ -59,7 +62,10 @@ __all__ = [
     "ConflictStatus",
     "ConnectorConfig",
     "ConnectorSyncLog",
+    "ArtifactHead",
     "ArtifactLink",
+    "ConnectorSyncCursor",
+    "ConnectorWorkItem",
     "GitHubAuthorLink",
     "SearchEvent",
     "SearchRating",

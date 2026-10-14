@@ -192,16 +192,42 @@ async def test_name_or_login_never_triggers_identity_resolution(author) -> None:
 
 
 @pytest.mark.unit
-async def test_duplicate_artifact_is_not_reingested() -> None:
+async def test_same_revision_reported_by_the_receiver_is_not_counted_as_new() -> None:
+    """The receiver owns revision identity: ``already_exists`` means skipped, and the
+    connector does not pre-check the database itself."""
     session = _session()
-    existing = MagicMock()
-    existing.scalar_one_or_none.return_value = MagicMock()
-    existing.all.return_value = [
-        MagicMock(document_id=uuid.uuid4(), ingestion_status="completed", deleted_at=None)
-    ]
-    session.execute = AsyncMock(return_value=existing)
     connector = _connector(session, uuid.uuid4(), uuid.uuid4())
-    receive = AsyncMock()
+    receive = AsyncMock(return_value={"already_exists": True, "reason": "same_revision"})
     with patch(f"{CONNECTOR}.receive", new=receive):
         assert await connector._ingest(_doc(None)) is False
-    receive.assert_not_awaited()
+    receive.assert_awaited_once()
+
+
+@pytest.mark.unit
+async def test_revision_aware_handoff_never_credits_the_creator() -> None:
+    """New receiver contract: revision identity + pre_commit ride along; the connector
+    creator (the submitter) is still only ``user_id`` and never appears in attribution."""
+    creator = uuid.uuid4()
+    doc = _doc({"github_user_id": 101, "login": "alice", "kind": "github_account"})
+    session = _session()
+    connector = _connector(session, creator, uuid.uuid4())
+    receive = AsyncMock(return_value={"already_exists": False, "revision_seq": 1})
+    resolver = AsyncMock(return_value=_Lookup(None, "unlinked"))
+    pre_commit = AsyncMock()
+    with (
+        patch(f"{CONNECTOR}.receive", new=receive),
+        patch(f"{CONNECTOR}.resolve_github_link", new=resolver),
+    ):
+        assert await connector._ingest(doc, pre_commit=pre_commit) is True
+
+    kwargs = receive.await_args.kwargs
+    assert kwargs["user_id"] == creator
+    assert kwargs["pre_commit"] is pre_commit
+    link = kwargs["artifact_link"]
+    assert len(link["source_revision"]) == 64
+    assert link["connector_id"] == connector._config.id
+    assert "resolved_user_id" not in link
+    assert str(creator) not in str(kwargs["attribution"])
+    assert kwargs["attribution"]["link_user_id"] is None
+    # revision-aware mode does not pre-check existing links: the receiver deduplicates
+    session.execute.assert_not_awaited()

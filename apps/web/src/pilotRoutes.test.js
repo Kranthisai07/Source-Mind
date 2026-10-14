@@ -68,6 +68,7 @@ const restrictedRoutes = [
     "/conflicts",
     "/conflicts/11111111-1111-4111-8111-111111111111",
     "/connectors",
+    "/connectors/github/callback?code=abc&state=xyz",
 ];
 
 beforeEach(() => {

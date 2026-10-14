@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import structlog
 
@@ -76,6 +76,9 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
     from sourcemind.services.memory.relations import RelationDetector
     from sourcemind.services.memory.store import (
         backfill_artifact_links,
+        build_memories,
+        merge_pipeline_data,
+        persist_memories,
         store_memories,
         update_document_status,
     )
@@ -147,7 +150,12 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
             result = await session.execute(
                 select(Document)
                 .where(*document_filters)
-                .with_for_update(skip_locked=True)
+                # FOR NO KEY UPDATE, not FOR UPDATE: this claim is held for the whole
+                # pipeline, model calls included. A newer revision's document references
+                # this one (supersedes_document_id), and the foreign-key re-check on its
+                # own status updates takes FOR KEY SHARE on this row, which only a full
+                # FOR UPDATE conflicts with. NO KEY UPDATE still excludes a second claimer.
+                .with_for_update(skip_locked=True, key_share=True)
                 .execution_options(populate_existing=True)
             )
             doc = result.scalar_one_or_none()
@@ -184,11 +192,23 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                     "error": doc.error_message,
                 }
 
+            base_pipeline_data = dict(doc.pipeline_data or {})
             attempt_savepoint = await session.begin_nested()
             try:
                 pipeline_data = doc.pipeline_data or {}
                 raw_content = pipeline_data.get("raw_content")
                 verbatim = pipeline_data.get("ingestion_mode") == "verbatim"
+                is_connector = getattr(doc, "connector_id", None) is not None
+                context_text = _context_text(pipeline_data.get("context"))
+                extra: dict = {}  # merged into pipeline_data on the way out
+
+                # C8: a disconnected connector must cost nothing. Checked before
+                # any provider or embedding call.
+                if is_connector and not await _connector_is_active(
+                    session, doc, ws_uuid, keep_lock=False
+                ):
+                    return await _fail_disconnected(session, doc_uuid, document_id, start)
+
                 if verbatim:
                     if not isinstance(raw_content, str) or not raw_content.strip():
                         raise ValueError("verbatim ingestion requires non-empty raw_content")
@@ -197,6 +217,11 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                     fact_extraction = None
                     log.info("pipeline_verbatim", document_id=document_id)
                 else:
+                    if is_connector and isinstance(raw_content, str):
+                        if len(raw_content) > settings.connector_max_artifact_chars:
+                            extra.setdefault("truncated", {})["chars"] = len(raw_content)
+                            raw_content = raw_content[: settings.connector_max_artifact_chars]
+
                     # Stage 2: EXTRACT
                     await update_document_status(
                         session,
@@ -218,8 +243,26 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                         current_stage="chunking",
                     )
                     chunks = await chunk(document_extraction)
+                    if is_connector and len(chunks) > settings.connector_max_chunks_per_artifact:
+                        extra.setdefault("truncated", {})["chunks"] = len(chunks)
+                        chunks = chunks[: settings.connector_max_chunks_per_artifact]
                     chunk_count = len(chunks)
                     log.info("pipeline_chunked", document_id=document_id, chunks=chunk_count)
+
+                    # Daily extraction budget (connector documents only), before
+                    # the first provider call.
+                    reserved_calls = 0
+                    if is_connector and chunk_count > 0:
+                        # Worst case is two provider calls per chunk (the empty/failed answer
+                        # is retried once), so that is what is reserved; the unused part is
+                        # refunded once the real call count is known.
+                        reserved_calls = chunk_count * MAX_CALLS_PER_CHUNK
+                        if not await _reserve_budget(
+                            ws_uuid, reserved_calls, settings.workspace_daily_extraction_budget
+                        ):
+                            return await _fail_budget(
+                                session, doc, doc_uuid, document_id, ws_uuid, extra, start
+                            )
 
                     # Stage 4: FACT EXTRACTION
                     await update_document_status(
@@ -228,12 +271,21 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                         IngestionStatus.PROCESSING,
                         current_stage="extracting_facts",
                     )
+                    extract_kwargs: dict = {}
+                    if context_text:
+                        extract_kwargs["context"] = context_text
                     fact_extraction = await fact_extractor.extract(
                         chunks,
                         source_url=doc.source_url,
                         content_type=doc.source_type,
+                        **extract_kwargs,
                     )
                     facts = fact_extraction.facts
+                    usage = getattr(fact_extraction, "usage", None)
+                    if usage:
+                        extra["usage"] = usage
+                    if reserved_calls and isinstance(usage, dict) and "calls" in usage:
+                        await _refund_budget(ws_uuid, reserved_calls - int(usage["calls"]))
                     log.info(
                         "pipeline_facts",
                         document_id=document_id,
@@ -248,7 +300,10 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                 # extraction failure indistinguishable from spam - and left no
                 # way to tell how much of an apparently empty corpus was
                 # actually flakiness.
-                if fact_extraction is not None and fact_extraction.wholly_failed:
+                incomplete = fact_extraction is not None and fact_extraction.failed_chunks > 0
+                if fact_extraction is not None and (
+                    fact_extraction.wholly_failed or (is_connector and incomplete)
+                ):
                     detail = "; ".join(fact_extraction.failure_reasons)[:480]
                     log.error(
                         "pipeline_extraction_failed",
@@ -257,6 +312,7 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                         total_chunks=fact_extraction.total_chunks,
                         detail=detail,
                     )
+                    code = "incomplete_extraction" if is_connector else "transient"
                     await update_document_status(
                         session,
                         doc_uuid,
@@ -266,12 +322,16 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                         error_message=f"fact extraction failed: {detail}",
                         current_stage="failed",
                     )
+                    await merge_pipeline_data(
+                        session, doc_uuid, {**extra, **_failure_patch(pipeline_data, code)}
+                    )
                     await session.commit()
                     return {
                         "status": "failed",
                         "document_id": document_id,
                         "memories_created": 0,
                         "error": "fact extraction failed",
+                        "error_code": code,
                         "duration_ms": _elapsed_ms(start),
                     }
 
@@ -284,6 +344,20 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                         chunks=fact_extraction.total_chunks if fact_extraction else chunk_count,
                         reason="model returned no facts on both attempts",
                     )
+                    publication = None
+                    if is_connector:
+                        # Publishes nothing and keeps the prior revision's
+                        # memories live (C6d); an older revision is just
+                        # superseded.
+                        state, _head = await _lock_for_publication(session, doc, ws_uuid)
+                        if state == "disconnected":
+                            return await _fail_disconnected(session, doc_uuid, document_id, start)
+                        publication = "superseded_before_publish" if state == "superseded" else (
+                            "noop" if state == "noop" else "no_facts"
+                        )
+                        if publication == "no_facts":
+                            log.warning("pipeline_no_facts_kept_prior", document_id=document_id)
+                        extra["publication"] = publication
                     await update_document_status(
                         session,
                         doc_uuid,
@@ -292,12 +366,15 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                         chunk_count=chunk_count,
                         current_stage="completed",
                     )
+                    if extra:
+                        await merge_pipeline_data(session, doc_uuid, extra)
                     await session.commit()
                     return {
                         "status": "completed",
                         "document_id": document_id,
                         "memories_created": 0,
                         "duration_ms": _elapsed_ms(start),
+                        **({"publication": publication} if publication else {}),
                     }
 
                 if fact_extraction is not None and fact_extraction.failed_chunks:
@@ -326,9 +403,18 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                     "tags": (doc.pipeline_data or {}).get("tags") or [],
                     "category": (doc.pipeline_data or {}).get("category"),
                 }
-                memories = await store_memories(
-                    session, ws_uuid, doc_uuid, embedding_results, source_metadata
-                )
+                head = None
+                if is_connector:
+                    # Memories are built (not persisted) so relation planning,
+                    # a model call, runs before any publication lock; they are
+                    # persisted only after the connector/head locks decide.
+                    memories = build_memories(
+                        ws_uuid, doc_uuid, embedding_results, source_metadata
+                    )
+                else:
+                    memories = await store_memories(
+                        session, ws_uuid, doc_uuid, embedding_results, source_metadata
+                    )
 
                 # Relation classification is the LAST provider work. It runs
                 # before the link lock below so the FOR SHARE lock is held only
@@ -339,6 +425,36 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                 relation_plan = await relation_detector.plan(session, memories, ws_uuid)
 
                 # ── DB-only tail: no provider call from here to commit ──
+                if is_connector:
+                    # C6 / C8 / C10: connector row FOR SHARE, then the artifact
+                    # head FOR UPDATE, before any memory row exists.
+                    state, head = await _lock_for_publication(session, doc, ws_uuid)
+                    if state == "disconnected":
+                        return await _fail_disconnected(session, doc_uuid, document_id, start)
+                    if state in {"superseded", "noop"}:
+                        publication = (
+                            "superseded_before_publish" if state == "superseded" else "noop"
+                        )
+                        extra["publication"] = publication
+                        await update_document_status(
+                            session,
+                            doc_uuid,
+                            IngestionStatus.COMPLETED,
+                            memory_count=0,
+                            chunk_count=chunk_count,
+                            current_stage="completed",
+                        )
+                        await merge_pipeline_data(session, doc_uuid, extra)
+                        await session.commit()
+                        return {
+                            "status": "completed",
+                            "document_id": document_id,
+                            "memories_created": 0,
+                            "publication": publication,
+                            "duration_ms": _elapsed_ms(start),
+                        }
+                    await persist_memories(session, memories)
+
                 # Who is credited. A direct upload credits its submitter. A
                 # connector document (D-021) credits ONLY the admin-linked
                 # author, rechecked now under FOR SHARE; the submitter is the
@@ -372,6 +488,24 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
 
                 await relation_detector.apply(session, memories, relation_plan)
 
+                if is_connector:
+                    # C6b: the latest, complete revision replaces the previous
+                    # one. Only machine-only memories are retired (C9, inside
+                    # retire_document_memories).
+                    previous_id = head["published_document_id"] if head else None
+                    if previous_id is not None and previous_id != doc_uuid:
+                        from sourcemind.services.memory import retire as retire_module
+
+                        await retire_module.retire_document_memories(
+                            session,
+                            workspace_id=ws_uuid,
+                            document_id=previous_id,
+                            reason="source_superseded",
+                        )
+                    if head is not None:
+                        await _mark_published(session, head, doc_uuid)
+                    extra["publication"] = "published"
+
                 await update_document_status(
                     session,
                     doc_uuid,
@@ -380,6 +514,8 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                     chunk_count=chunk_count,
                     current_stage="completed",
                 )
+                if extra:
+                    await merge_pipeline_data(session, doc_uuid, extra)
                 await session.commit()
 
                 duration_ms = _elapsed_ms(start)
@@ -413,7 +549,7 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                         recovery_result = await session.execute(
                             select(Document)
                             .where(*document_filters)
-                            .with_for_update()
+                            .with_for_update(key_share=True)
                             .execution_options(populate_existing=True)
                         )
                         recovered_doc = recovery_result.scalar_one_or_none()
@@ -445,6 +581,12 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                         ),
                         current_stage="retrying" if will_retry else "failed",
                     )
+                    if not will_retry:
+                        # Provider / infrastructure failure: eligible for the
+                        # recovery sweep (connector documents).
+                        await merge_pipeline_data(
+                            session, doc_uuid, _failure_patch(base_pipeline_data, "transient")
+                        )
                     await session.commit()
                 except Exception as cleanup_exc:
                     # Failing to RECORD the failure is its own incident:
@@ -476,3 +618,262 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
 
 def _elapsed_ms(start: datetime) -> int:
     return int((datetime.now(UTC) - start).total_seconds() * 1000)
+
+
+# ── Connector publication helpers (contract C6, C8, C10) ────────────────────
+
+_RETRY_BACKOFF_BASE_SECONDS = 60
+_RETRY_BACKOFF_MAX_SECONDS = 6 * 60 * 60
+
+
+def _context_text(context: object) -> str | None:
+    """Render contextual labels as plain text for the extraction prompt."""
+    if not isinstance(context, dict) or not context:
+        return None
+    return "\n".join(f"{key}: {value}" for key, value in sorted(context.items()))
+
+
+def _failure_patch(
+    pipeline_data: dict,
+    code: str,
+    *,
+    next_retry_at: datetime | None = None,
+) -> dict:
+    """pipeline_data fields recorded with ``ingestion_status = failed``.
+
+    ``attempts`` is preserved (the recovery sweep increments it on requeue);
+    ``next_retry_at`` is the earliest retry for codes that are retried.
+    """
+    attempts = int(pipeline_data.get("attempts", 0))
+    if next_retry_at is None and code in {"transient", "incomplete_extraction"}:
+        delay = min(_RETRY_BACKOFF_BASE_SECONDS * (2**attempts), _RETRY_BACKOFF_MAX_SECONDS)
+        next_retry_at = datetime.now(UTC) + timedelta(seconds=delay)
+    return {
+        "error_code": code,
+        "attempts": attempts,
+        # None removes a stale value from an earlier failure.
+        "next_retry_at": next_retry_at.astimezone(UTC).isoformat() if next_retry_at else None,
+    }
+
+
+async def _connector_is_active(session, doc, ws_uuid: uuid.UUID, *, keep_lock: bool) -> bool:
+    """True when the document's connector is active at the document's generation.
+
+    Read ``FOR SHARE``. A row the caller's RLS context cannot see counts as not
+    active (fail closed). With ``keep_lock=False`` the share lock is taken in a
+    savepoint that is rolled back, so it is not held across provider calls.
+    """
+    from sqlalchemy import text
+
+    statement = text(
+        "SELECT status, generation FROM connector_configs "
+        "WHERE id = CAST(:c AS uuid) AND workspace_id = CAST(:w AS uuid) FOR SHARE"
+    )
+    params = {"c": str(doc.connector_id), "w": str(ws_uuid)}
+    if keep_lock:
+        row = (await session.execute(statement, params)).first()
+    else:
+        nested = await session.begin_nested()
+        try:
+            row = (await session.execute(statement, params)).first()
+        finally:
+            await nested.rollback()
+    return (
+        row is not None
+        and row.status == "active"
+        and row.generation == getattr(doc, "connector_generation", None)
+    )
+
+
+async def _lock_for_publication(session, doc, ws_uuid: uuid.UUID) -> tuple[str, dict | None]:
+    """Take connector FOR SHARE then artifact_heads FOR UPDATE (C10 order).
+
+    Returns ``(state, head)``; state is ``ok``, ``disconnected``,
+    ``superseded`` (an older revision) or ``noop`` (this revision is already
+    the published one). ``head`` is the locked row as a dict.
+    """
+    from sqlalchemy import text
+
+    if not await _connector_is_active(session, doc, ws_uuid, keep_lock=True):
+        return "disconnected", None
+    link = (
+        await session.execute(
+            text(
+                "SELECT revision_seq, source_tool, source_type, source_id FROM artifact_links "
+                "WHERE document_id = CAST(:d AS uuid) ORDER BY created_at LIMIT 1"
+            ),
+            {"d": str(doc.id)},
+        )
+    ).first()
+    if link is None:
+        return "ok", None
+    head_row = (
+        await session.execute(
+            text(
+                "SELECT latest_seq, published_seq, published_document_id FROM artifact_heads "
+                "WHERE workspace_id = CAST(:w AS uuid) AND source_tool = :t "
+                "AND source_type = :k AND source_id = :s FOR UPDATE"
+            ),
+            {
+                "w": str(ws_uuid),
+                "t": link.source_tool,
+                "k": link.source_type,
+                "s": link.source_id,
+            },
+        )
+    ).first()
+    if head_row is None:
+        return "ok", None
+    head = {
+        "latest_seq": int(head_row.latest_seq),
+        "published_seq": int(head_row.published_seq),
+        "published_document_id": head_row.published_document_id,
+        "my_seq": int(link.revision_seq),
+        "workspace_id": ws_uuid,
+        "source_tool": link.source_tool,
+        "source_type": link.source_type,
+        "source_id": link.source_id,
+    }
+    mine = head["my_seq"]
+    if head["published_document_id"] == doc.id and head["published_seq"] == mine:
+        return "noop", head
+    if mine < head["latest_seq"] or mine <= head["published_seq"]:
+        return "superseded", head
+    return "ok", head
+
+
+async def _mark_published(session, head: dict, doc_uuid: uuid.UUID) -> None:
+    from sqlalchemy import text
+
+    await session.execute(
+        text(
+            "UPDATE artifact_heads SET published_seq = :n, "
+            "published_document_id = CAST(:d AS uuid), updated_at = now() "
+            "WHERE workspace_id = CAST(:w AS uuid) AND source_tool = :t "
+            "AND source_type = :k AND source_id = :s"
+        ),
+        {
+            "n": head["my_seq"],
+            "d": str(doc_uuid),
+            "w": str(head["workspace_id"]),
+            "t": head["source_tool"],
+            "k": head["source_type"],
+            "s": head["source_id"],
+        },
+    )
+
+
+async def _fail_disconnected(session, doc_uuid: uuid.UUID, document_id: str, start) -> dict:
+    """C8: no provider call, no publication; the document fails and is committed."""
+    from sourcemind.models.document import IngestionStatus
+    from sourcemind.services.memory import store
+
+    log.warning("pipeline_connector_disconnected", document_id=document_id)
+    await store.update_document_status(
+        session,
+        doc_uuid,
+        IngestionStatus.FAILED,
+        memory_count=0,
+        error_message="connector disconnected",
+        current_stage="failed",
+    )
+    await store.merge_pipeline_data(
+        session,
+        doc_uuid,
+        {"error_code": "connector_disconnected", "next_retry_at": None},
+    )
+    await session.commit()
+    return {
+        "status": "failed",
+        "document_id": document_id,
+        "memories_created": 0,
+        "error": "connector disconnected",
+        "error_code": "connector_disconnected",
+        "duration_ms": _elapsed_ms(start),
+    }
+
+
+def _next_utc_midnight(now: datetime) -> datetime:
+    day = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    return day + timedelta(days=1)
+
+
+# One extraction attempt plus the single retry the extractor makes per chunk.
+MAX_CALLS_PER_CHUNK = 2
+
+
+async def _refund_budget(ws_uuid: uuid.UUID, calls: int) -> None:
+    """Return reserved-but-unused calls to today's counter (never below zero)."""
+    if calls <= 0:
+        return
+    from sourcemind.core.redis_client import get_redis
+
+    now = datetime.now(UTC)
+    await get_redis().decrby(f"extraction_budget:{ws_uuid}:{now:%Y%m%d}", calls)
+
+
+async def _reserve_budget(ws_uuid: uuid.UUID, calls: int, limit: int) -> bool:
+    """Add ``calls`` to the workspace's UTC-day counter; refund and refuse if over."""
+    from sourcemind.core.redis_client import get_redis
+
+    redis = get_redis()
+    now = datetime.now(UTC)
+    key = f"extraction_budget:{ws_uuid}:{now:%Y%m%d}"
+    total = int(await redis.incrby(key, calls))
+    await redis.expire(key, 2 * 24 * 3600)
+    if total > limit:
+        await redis.decrby(key, calls)
+        return False
+    return True
+
+
+async def _fail_budget(
+    session, doc, doc_uuid: uuid.UUID, document_id: str, ws_uuid: uuid.UUID, extra: dict, start
+) -> dict:
+    """Daily budget reached: fail the document and pause the connector."""
+    from sqlalchemy import text
+
+    from sourcemind.models.document import IngestionStatus
+    from sourcemind.services.memory import store
+
+    log.warning("pipeline_budget_exhausted", document_id=document_id, workspace_id=str(ws_uuid))
+    await store.update_document_status(
+        session,
+        doc_uuid,
+        IngestionStatus.FAILED,
+        memory_count=0,
+        error_message="daily extraction budget reached",
+        current_stage="failed",
+    )
+    patch = _failure_patch(
+        dict(doc.pipeline_data or {}),
+        "budget",
+        next_retry_at=_next_utc_midnight(datetime.now(UTC)),
+    )
+    await store.merge_pipeline_data(session, doc_uuid, {**extra, **patch})
+    # Update under the connector row lock (C10: before any document-level work
+    # that depends on it; no memory rows are held here).
+    await session.execute(
+        text(
+            "SELECT 1 FROM connector_configs WHERE id = CAST(:c AS uuid) "
+            "AND workspace_id = CAST(:w AS uuid) FOR UPDATE"
+        ),
+        {"c": str(doc.connector_id), "w": str(ws_uuid)},
+    )
+    await session.execute(
+        text(
+            "UPDATE connector_configs SET status = 'paused_budget' "
+            "WHERE id = CAST(:c AS uuid) AND workspace_id = CAST(:w AS uuid) "
+            "AND status = 'active'"
+        ),
+        {"c": str(doc.connector_id), "w": str(ws_uuid)},
+    )
+    await session.commit()
+    return {
+        "status": "failed",
+        "document_id": document_id,
+        "memories_created": 0,
+        "error": "daily extraction budget reached",
+        "error_code": "budget",
+        "duration_ms": _elapsed_ms(start),
+    }

@@ -34,10 +34,14 @@ from sourcemind.core.dependencies import (
 from sourcemind.core.exceptions import ValidationError
 from sourcemind.core.rate_limit import RateLimitedOperation, enforce_rate_limit
 from sourcemind.schemas.memory import (
-    MemoryResponse,
     SearchRequest,
     SearchResponse,
     SearchResultItem,
+)
+from sourcemind.services.memory.read import (
+    SourceContext,
+    fetch_source_context,
+    memory_response_from_search_item,
 )
 
 logger = structlog.get_logger(__name__)
@@ -102,30 +106,19 @@ async def search_memories(
         openai_client=openai_client,
     )
 
+    ctx_by_id: dict[str, SourceContext] = {}
+    if body.include_source and search_result["results"]:
+        ctx_by_id = await fetch_source_context(
+            db, [item["id"] for item in search_result["results"]]
+        )
+
     results: list[SearchResultItem] = []
     for rank, item in enumerate(search_result["results"], start=1):
-        mem_resp = MemoryResponse(
-            id=UUID(item["id"]),
-            workspace_id=workspace_id,
-            document_id=UUID(item["document_id"]) if item["document_id"] else None,
-            content=item["content"],
-            version=item["version"],
-            tags=item["tags"],
-            category=item["category"],
-            confidence_score=item["confidence_score"],
-            created_at=item["created_at"],
-            updated_at=item["updated_at"],
-            # hybrid_search attaches this when include_attribution is set, and
-            # MemoryResponse has always had the field, but the route never
-            # passed it through. The flag was accepted and its extra query
-            # paid for, then the result dropped on the floor here.
-            attribution=item.get("attribution"),
-            unresolved_author=item.get("unresolved_author"),
-            relation_count=item["relation_count"],
-        )
         results.append(
             SearchResultItem(
-                memory=mem_resp,
+                memory=memory_response_from_search_item(
+                    item, workspace_id, ctx_by_id.get(item["id"])
+                ),
                 score=item["score"],
                 rank=rank,
                 match_type=item["match_type"],

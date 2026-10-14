@@ -1,0 +1,144 @@
+{
+  "results": [
+    {
+      "memory": {
+        "id": "00000000-0000-4000-8000-0000000000a1",
+        "workspace_id": "00000000-0000-4000-8000-0000000000aa",
+        "document_id": null,
+        "content": "Imported memory 1.",
+        "version": 1,
+        "tags": [],
+        "category": null,
+        "confidence_score": null,
+        "created_at": "2026-10-03T10:00:00Z",
+        "updated_at": null,
+        "attribution": null,
+        "unresolved_author": null,
+        "source": {
+          "tool": "github",
+          "type": "pull_request",
+          "id": "acme/platform/pull_request/1",
+          "url": "https://github.com/acme/platform/pull/412",
+          "revision": "9f2c1d7a5b",
+          "revision_seq": 1,
+          "observed_at": "2026-10-03T10:00:00Z"
+        },
+        "authorship": {
+          "status": "resolved",
+          "source_author": "priya",
+          "source_authors": null
+        },
+        "source_state": {
+          "status": "current",
+          "since": null,
+          "reason": null,
+          "newer_source_url": null
+        },
+        "relation_count": 0,
+        "is_current": null,
+        "latest_memory_id": null,
+        "supersession_reason": null
+      },
+      "score": 0.9,
+      "rank": 1,
+      "match_type": "hybrid",
+      "highlight": null
+    },
+    {
+      "memory": {
+        "id": "00000000-0000-4000-8000-0000000000a2",
+        "workspace_id": "00000000-0000-4000-8000-0000000000aa",
+        "document_id": null,
+        "content": "Imported memory 2.",
+        "version": 1,
+        "tags": [],
+        "category": null,
+        "confidence_score": null,
+        "created_at": "2026-10-03T10:00:00Z",
+        "updated_at": null,
+        "attribution": null,
+        "unresolved_author": null,
+        "source": {
+          "tool": "github",
+          "type": "commit",
+          "id": "acme/platform/commit/2",
+          "url": "https://github.com/acme/platform/commit/ab12cd3",
+          "revision": "9f2c1d7a5b",
+          "revision_seq": 2,
+          "observed_at": "2026-10-03T10:00:00Z"
+        },
+        "authorship": {
+          "status": "shared",
+          "source_author": null,
+          "source_authors": [
+            "marcus",
+            "sara"
+          ]
+        },
+        "source_state": {
+          "status": "stale",
+          "since": "2026-10-04T05:00:00Z",
+          "reason": "source_revised",
+          "newer_source_url": "https://github.com/acme/platform/commit/ab12cd4"
+        },
+        "relation_count": 0,
+        "is_current": null,
+        "latest_memory_id": null,
+        "supersession_reason": null
+      },
+      "score": 0.8,
+      "rank": 2,
+      "match_type": "hybrid",
+      "highlight": null
+    },
+    {
+      "memory": {
+        "id": "00000000-0000-4000-8000-0000000000a3",
+        "workspace_id": "00000000-0000-4000-8000-0000000000aa",
+        "document_id": null,
+        "content": "Imported memory 3.",
+        "version": 1,
+        "tags": [],
+        "category": null,
+        "confidence_score": null,
+        "created_at": "2026-10-03T10:00:00Z",
+        "updated_at": null,
+        "attribution": null,
+        "unresolved_author": null,
+        "source": {
+          "tool": "github",
+          "type": "issue_comment",
+          "id": "acme/platform/issue_comment/1",
+          "url": "javascript:alert(1)",
+          "revision": "9f2c1d7a5b",
+          "revision_seq": 1,
+          "observed_at": "2026-10-03T10:00:00Z"
+        },
+        "authorship": {
+          "status": "unresolved",
+          "source_author": "external-dev",
+          "source_authors": null
+        },
+        "source_state": {
+          "status": "current",
+          "since": null,
+          "reason": null,
+          "newer_source_url": null
+        },
+        "relation_count": 0,
+        "is_current": null,
+        "latest_memory_id": null,
+        "supersession_reason": null
+      },
+      "score": 0.7,
+      "rank": 3,
+      "match_type": "keyword",
+      "highlight": null
+    }
+  ],
+  "total_found": 3,
+  "query": "release",
+  "mode": "hybrid",
+  "latency_ms": 12.0,
+  "search_event_id": null
+}

@@ -86,6 +86,28 @@ API_ROOT = Path(__file__).resolve().parents[2]
 _PRIVILEGES = {"SELECT", "INSERT", "UPDATE", "DELETE"}
 
 
+async def _real_connector_config(
+    session: AsyncSession, data: SecurityTenantData, creator: uuid.UUID
+) -> SimpleNamespace:
+    """A real, active connector row. The ingestion worker fails closed for a document whose
+    connector it cannot find, so a stand-in config with a random id no longer works."""
+    from sourcemind.models.connector import ConnectorConfig
+
+    row = ConnectorConfig(
+        workspace_id=data.target_workspace_id,
+        connector_type="github",
+        display_name=f"author-links-{uuid.uuid4().hex[:8]}",
+        config={"repos": ["acme/repo"]},
+        created_by=creator,
+    )
+    session.add(row)
+    await session.flush()
+    await session.commit()
+    return SimpleNamespace(
+        id=row.id, config={}, last_sync_at=None, generation=0, created_by=creator
+    )
+
+
 # ── fixtures and helpers ─────────────────────────────────────────────────────
 
 
@@ -209,6 +231,9 @@ async def _sync_commit(
         "author": {"login": login, "id": github_user_id} if github_user_id else None,
     }
     doc = GitHubMapper.from_commit("acme", "repo", raw)
+    # These tests exercise multi-memory link fan-out, so force extraction: short segments
+    # otherwise take the verbatim path (one memory) by design.
+    doc.ingestion_mode = "extract"
     # The worker closes the process-wide Redis client when it finishes.
     await init_redis()
     session = await _session(engine, initiator, None)
@@ -218,7 +243,7 @@ async def _sync_commit(
             session, initiator, data.target_workspace_id, WorkspacePermission.ADMINISTER
         )
         connector = GitHubConnector(
-            config=SimpleNamespace(id=uuid.uuid4(), config={}, last_sync_at=None),
+            config=await _real_connector_config(session, data, initiator),
             auth=SimpleNamespace(),
             session=session,
             workspace_id=data.target_workspace_id,
@@ -1000,7 +1025,7 @@ async def test_unresolved_author_stays_reported_and_missing_after_an_edit(
 
 
 def _commit_doc(sha: str, message: str, github_user_id: int | None):
-    return GitHubMapper.from_commit(
+    doc = GitHubMapper.from_commit(
         "acme",
         "repo",
         {
@@ -1013,6 +1038,8 @@ def _commit_doc(sha: str, message: str, github_user_id: int | None):
             "author": {"login": "alice", "id": github_user_id} if github_user_id else None,
         },
     )
+    doc.ingestion_mode = "extract"  # see _sync_commit: fan-out tests need extraction
+    return doc
 
 
 async def _ingest_doc(
@@ -1042,7 +1069,7 @@ async def _ingest_doc(
             session, data.admin_id, data.target_workspace_id, WorkspacePermission.ADMINISTER
         )
         connector = GitHubConnector(
-            config=SimpleNamespace(id=uuid.uuid4(), config={}, last_sync_at=None),
+            config=await _real_connector_config(session, data, data.admin_id),
             auth=SimpleNamespace(),
             session=session,
             workspace_id=data.target_workspace_id,
@@ -1104,15 +1131,31 @@ async def test_failed_publication_is_recovered_by_document_id_on_the_next_sync(
     assert stranded.ingestion_status == "pending"
     assert stranded.dispatch_state == "uncertain"
 
-    # Next sync, broker healthy, artifact EDITED since: recovery by id, not by
-    # content, so no second Document or link can appear.
-    edited = _commit_doc(sha, f"Edited message {sha}", gid)
-    assert edited.source_id == first.source_id and edited.content != first.content
+    # Next sync, broker healthy, artifact UNCHANGED: the receiver reports the same revision
+    # (no second Document or link), and the recovery sweep re-dispatches the stranded
+    # document by id.
+    same = _commit_doc(sha, f"Original message {sha}", gid)
     calls = await _ingest_doc(
-        engine, monkeypatch, data, edited, lambda **k: SimpleNamespace(id=k["task_id"])
+        engine, monkeypatch, data, same, lambda **k: SimpleNamespace(id=k["task_id"])
     )
-    publishes = [c for c in calls if "_result" not in c]
     assert calls[-1]["_result"] is False
+    documents, links = await _documents_and_links(engine, data, first.source_id)
+    assert (len(documents), links) == (1, 1)
+
+    from sourcemind.services.ingestion.receiver import recover_pending_dispatch
+    from sourcemind.workers import ingestion as worker_module
+
+    publishes: list[dict[str, Any]] = []
+
+    def apply_async(**kwargs: Any) -> Any:
+        publishes.append(kwargs)
+        return SimpleNamespace(id=kwargs["task_id"])
+
+    monkeypatch.setattr(worker_module.process_document, "apply_async", apply_async)
+    await init_redis()
+    recover_session = await _session(engine, data.admin_id, data.target_workspace_id)
+    async with recover_session:
+        await recover_pending_dispatch(recover_session, stranded.id, data.target_workspace_id)
     assert len(publishes) == 1
     assert publishes[0]["task_id"] == stranded.ingestion_job_id
     assert publishes[0]["kwargs"]["document_id"] == str(stranded.id)
@@ -1135,9 +1178,9 @@ async def test_failed_publication_is_recovered_by_document_id_on_the_next_sync(
         )
     assert int(attribution_rows or 0) == len(outcome["memory_ids"]) == 2
 
-    # A third sync finds a completed document: nothing is published.
+    # A third sync finds the same revision already ingested: nothing is published.
     calls = await _ingest_doc(
-        engine, monkeypatch, data, edited, lambda **k: SimpleNamespace(id=k["task_id"])
+        engine, monkeypatch, data, same, lambda **k: SimpleNamespace(id=k["task_id"])
     )
     assert calls == [{"_result": False}]
 

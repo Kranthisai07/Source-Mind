@@ -65,6 +65,9 @@ class ChunkExtraction(NamedTuple):
     facts: list[str]
     outcome: str          # "facts" | "empty" | "failed"
     detail: str = ""
+    # Provider usage for this extraction: {"calls", "input_tokens",
+    # "output_tokens", "estimated"}; None when no provider call was made.
+    usage: dict[str, Any] | None = None
 
 
 class ExtractionResult(NamedTuple):
@@ -78,6 +81,9 @@ class ExtractionResult(NamedTuple):
     total_chunks: int
     failed_chunks: int
     failure_reasons: list[str]
+    # Aggregated provider usage ({"calls", "input_tokens", "output_tokens",
+    # "estimated"}); None when not reported (older callers/stubs).
+    usage: dict[str, Any] | None = None
 
     @property
     def wholly_failed(self) -> bool:
@@ -89,9 +95,45 @@ _MODEL_PRIMARY = "claude-sonnet-4-6"
 _DEDUP_THRESHOLD = 0.92  # SBERT cosine similarity above which facts are considered duplicates
 
 
-def _cache_key(content: str) -> str:
-    h = hashlib.sha256(content.encode()).hexdigest()
+def _cache_key(content: str, context: str | None = None) -> str:
+    # Context changes what the model sees, so it is part of the key; without
+    # context the key is unchanged.
+    material = content if not context else f"{content}\0context\0{context}"
+    h = hashlib.sha256(material.encode()).hexdigest()
     return f"fact_extract:v1:{h}"
+
+
+def _new_usage() -> dict[str, Any]:
+    return {"calls": 0, "input_tokens": 0, "output_tokens": 0, "estimated": False}
+
+
+def _add_usage(total: dict[str, Any], part: dict[str, Any] | None) -> None:
+    if not part:
+        return
+    total["calls"] += int(part.get("calls", 0))
+    total["input_tokens"] += int(part.get("input_tokens", 0))
+    total["output_tokens"] += int(part.get("output_tokens", 0))
+    total["estimated"] = bool(total["estimated"] or part.get("estimated"))
+
+
+def _response_usage(response: object, prompt: str, raw: str) -> dict[str, Any]:
+    """Usage reported by the provider, else a character-based estimate."""
+    usage = getattr(response, "usage", None)
+    reported_in = getattr(usage, "input_tokens", None)
+    reported_out = getattr(usage, "output_tokens", None)
+    if isinstance(reported_in, int) and isinstance(reported_out, int):
+        return {
+            "calls": 1,
+            "input_tokens": reported_in,
+            "output_tokens": reported_out,
+            "estimated": False,
+        }
+    return {
+        "calls": 1,
+        "input_tokens": max(1, len(prompt) // 4),
+        "output_tokens": len(raw) // 4,
+        "estimated": True,
+    }
 
 
 async def _attempt_extraction(
@@ -99,6 +141,8 @@ async def _attempt_extraction(
     chunk_content: str,
     document_date: str | None,
     source_label: str,
+    context: str | None = None,
+    semaphore: asyncio.Semaphore | None = None,
 ) -> ChunkExtraction:
     """One extraction attempt. Never returns a bare list.
 
@@ -108,25 +152,52 @@ async def _attempt_extraction(
     away, which is a defect, while an empty array is the model correctly
     reporting that there is nothing to extract.
     """
+    context_block = ""
+    if context:
+        # Labels about where the text came from (repo, number, title, url).
+        # They are NOT authored text: the model must take facts only from the
+        # segment text below, never from these labels.
+        context_block = (
+            "Context labels (NOT authored text; use only to understand the "
+            "segment; do not extract facts from them):\n"
+            f"<context>\n{context}\n</context>\n\n"
+        )
+    content_header = (
+        "Segment text (every fact must come from this text):\n" if context else "Content:\n"
+    )
     user_prompt = (
         f"Document date: {document_date or 'unknown'}\n"
         f"Source: {source_label}\n\n"
-        f"Content:\n{chunk_content}\n\n"
+        f"{context_block}"
+        f"{content_header}{chunk_content}\n\n"
         "Extract atomic facts:"
     )
 
-    try:
-        response = await client.messages.create(  # type: ignore[union-attr]
+    async def _call() -> Any:
+        return await client.messages.create(  # type: ignore[union-attr]
             model=_MODEL_PRIMARY,
             max_tokens=1024,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
+
+    try:
+        if semaphore is not None:
+            async with semaphore:
+                response = await _call()
+        else:
+            response = await _call()
     except Exception as exc:
         log.error("fact_extract_api_error", error_type=type(exc).__name__)
-        return ChunkExtraction([], "failed", f"api_error:{type(exc).__name__}")
+        return ChunkExtraction(
+            [],
+            "failed",
+            f"api_error:{type(exc).__name__}",
+            {"calls": 1, "input_tokens": 0, "output_tokens": 0, "estimated": True},
+        )
 
     raw = response.content[0].text.strip()
+    usage = _response_usage(response, user_prompt, raw)
 
     try:
         parsed = json.loads(raw)
@@ -136,7 +207,7 @@ async def _attempt_extraction(
             error_type=type(exc).__name__,
             response_length=len(raw),
         )
-        return ChunkExtraction([], "failed", "json_error")
+        return ChunkExtraction([], "failed", "json_error", usage)
 
     if not isinstance(parsed, list):
         log.warning(
@@ -145,7 +216,7 @@ async def _attempt_extraction(
             response_length=len(raw),
         )
         return ChunkExtraction(
-            [], "failed", f"expected a list, got {type(parsed).__name__}"
+            [], "failed", f"expected a list, got {type(parsed).__name__}", usage
         )
 
     facts = [f for f in parsed if isinstance(f, str) and f.strip()]
@@ -155,15 +226,15 @@ async def _attempt_extraction(
         # to return [] for content with nothing in it, and did. Logged at info
         # because it is a real outcome worth seeing, not an error.
         log.info("fact_extract_empty", chars=len(chunk_content))
-        return ChunkExtraction([], "empty", "model returned an empty array")
+        return ChunkExtraction([], "empty", "model returned an empty array", usage)
 
     log.debug(
         "fact_extract_done",
         facts=len(facts),
-        input_tokens=response.usage.input_tokens,
-        output_tokens=response.usage.output_tokens,
+        input_tokens=usage["input_tokens"],
+        output_tokens=usage["output_tokens"],
     )
-    return ChunkExtraction(facts, "facts")
+    return ChunkExtraction(facts, "facts", "", usage)
 
 
 async def _extract_from_chunk(
@@ -171,6 +242,8 @@ async def _extract_from_chunk(
     chunk_content: str,
     document_date: str | None,
     source_label: str,
+    context: str | None = None,
+    semaphore: asyncio.Semaphore | None = None,
 ) -> ChunkExtraction:
     """Extract facts from one chunk, retrying once if nothing came back.
 
@@ -183,7 +256,7 @@ async def _extract_from_chunk(
     taken as genuinely empty; two failures as a real failure. Only the cache
     write happens once, at the end, and only for outcomes we trust.
     """
-    key = _cache_key(chunk_content)
+    key = _cache_key(chunk_content, context)
     redis = get_redis()
 
     cached = await redis.get(key)
@@ -191,12 +264,21 @@ async def _extract_from_chunk(
         log.debug("fact_extract_cache_hit")
         return ChunkExtraction(json.loads(cached), "facts", "cached")
 
-    first = await _attempt_extraction(client, chunk_content, document_date, source_label)
+    first = await _attempt_extraction(
+        client, chunk_content, document_date, source_label, context, semaphore
+    )
     if first.outcome == "facts":
         await redis.setex(key, 60 * 60 * 24 * 7, json.dumps(first.facts))
         return first
 
-    second = await _attempt_extraction(client, chunk_content, document_date, source_label)
+    second = await _attempt_extraction(
+        client, chunk_content, document_date, source_label, context, semaphore
+    )
+    total = _new_usage()
+    _add_usage(total, first.usage)
+    _add_usage(total, second.usage)
+    first = first._replace(usage=total)
+    second = second._replace(usage=total)
 
     if second.outcome == "facts":
         # The first attempt was a transient failure. Worth saying loudly: this
@@ -213,13 +295,13 @@ async def _extract_from_chunk(
     if first.outcome == "empty" and second.outcome == "empty":
         # Two independent, valid empty answers. Genuinely nothing to extract.
         await redis.setex(key, 60 * 60 * 24 * 7, json.dumps([]))
-        return ChunkExtraction([], "empty", "empty on both attempts")
+        return ChunkExtraction([], "empty", "empty on both attempts", total)
 
     # At least one hard failure and no facts either time. Never cached - a
     # failure must not be replayed for seven days as though it were an answer.
     detail = f"attempt1={first.outcome}:{first.detail} attempt2={second.outcome}:{second.detail}"
     log.error("fact_extract_failed_twice", detail=detail)
-    return ChunkExtraction([], "failed", detail)
+    return ChunkExtraction([], "failed", detail, total)
 
 
 # Module-level cache for the SBERT dedup model. Loading it costs 2–5s,
@@ -283,6 +365,7 @@ class FactExtractor:
         document_date: str | None = None,
         source_url: str | None = None,
         content_type: str = "text",
+        context: str | None = None,
     ) -> ExtractionResult:
         """
         Stage 4 entry point.
@@ -292,14 +375,26 @@ class FactExtractor:
         empty document from a broken one; `facts` alone cannot express that
         difference, which is how a failed extraction came to be recorded as a
         successfully processed empty document.
+
+        ``context`` is an optional string of contextual labels (repo, number,
+        title, url). It is NOT authored text: it is delimited in the prompt
+        and the model is told facts must come from the segment text only.
+
+        Provider calls are bounded by a semaphore of
+        ``settings.extraction_concurrency``.
         """
         if not chunks:
             return ExtractionResult([], 0, 0, [])
 
         source_label = source_url or content_type
 
+        from sourcemind.core.config import get_settings
+
+        semaphore = asyncio.Semaphore(max(1, int(get_settings().extraction_concurrency)))
         tasks = [
-            _extract_from_chunk(self._client, c.content, document_date, source_label)
+            _extract_from_chunk(
+                self._client, c.content, document_date, source_label, context, semaphore
+            )
             for c in chunks
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -307,6 +402,7 @@ class FactExtractor:
         all_facts: list[str] = []
         failed = 0
         reasons: list[str] = []
+        usage = _new_usage()
 
         for i, result in enumerate(results):
             if isinstance(result, BaseException):
@@ -319,6 +415,7 @@ class FactExtractor:
                 )
                 continue
 
+            _add_usage(usage, result.usage)
             if result.outcome == "failed":
                 failed += 1
                 reasons.append(f"chunk {i}: {result.detail}")
@@ -335,4 +432,4 @@ class FactExtractor:
             unique_facts=len(unique_facts),
             failed_chunks=failed,
         )
-        return ExtractionResult(unique_facts, len(chunks), failed, reasons)
+        return ExtractionResult(unique_facts, len(chunks), failed, reasons, usage)
