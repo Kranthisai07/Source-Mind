@@ -369,6 +369,7 @@ def upgrade() -> None:
             resume_id text,
             listing_complete boolean NOT NULL DEFAULT false,
             head_sha text,
+            consumed integer NOT NULL DEFAULT 0,
             status text NOT NULL DEFAULT 'ok',
             last_error_code text,
             authorization_verified_at timestamptz,

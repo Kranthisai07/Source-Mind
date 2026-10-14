@@ -41,6 +41,7 @@ _CURSOR_COLUMNS = frozenset(
         "resume_id",
         "listing_complete",
         "head_sha",
+        "consumed",
         "status",
         "last_error_code",
         "authorization_verified_at",

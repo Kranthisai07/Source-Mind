@@ -99,6 +99,14 @@ class _Run:
         )
         self.resume_ts = state.resume_ts if self.continuing else None
         self.resume_id = state.resume_id if self.continuing else None
+        # Cumulative backfill consumption (items read since the import began). A restart
+        # must continue from it, otherwise every run would get a fresh per-type allowance
+        # and the declared initial-import bound would grow with the number of runs.
+        self.consumed_base = (
+            state.consumed if self.continuing and state.phase == "backfill" else 0
+        )
+        self._consumed_mark = self.consumed_base  # as of the last item actually handed off
+        self._pending_mark = self.consumed_base  # set by _produce just before it yields
 
     # -- helpers -------------------------------------------------------------
     def verbatim(self) -> int:
@@ -144,6 +152,7 @@ class _Run:
                 return
             emitted += 1
             last = item.position
+            self._consumed_mark = self._pending_mark
             yield item
         self._finish(last, complete=self._complete)
 
@@ -169,6 +178,7 @@ class _Run:
                 resume_id=resume_id,
                 listing_complete=False,
                 head_sha=self._new_head if self.scope != "commits" else self.state.head_sha,
+                consumed=self._consumed_mark,
             )
         self.result = ScopeResult(
             state=state,
@@ -218,7 +228,7 @@ class _FeedRun(_Run):
     async def _produce(self) -> AsyncIterator[Discovered]:
         since = self.resume_ts if self.resume_ts is not None else self.low
         pager = self._paginator(_iso(since))
-        consumed = 0
+        consumed = self.consumed_base
         async for raw in pager:
             ts = _parse_dt(raw.get("updated_at") or raw.get("created_at"))
             if ts is not None and ts > self.high:
@@ -239,6 +249,7 @@ class _FeedRun(_Run):
                 return
             found = self.make(doc, (ts, item_id), user, body)
             if found is not None:
+                self._pending_mark = consumed
                 yield found
         if pager.exhausted is False:
             self.inventory_complete = False
@@ -352,12 +363,22 @@ class _PullRequestsRun(_PullBase):
         prev: tuple[datetime | None, str] = (self.resume_ts, self.resume_id or "")
         if self.resume_ts is None:
             prev = (floor, "0")
+        consumed = self.consumed_base
         for ts, pr in touched:
             if self.before_resume(ts, pr["number"]):
                 continue
+            consumed += 1
+            if self.backfill and consumed > self.limits.max_items_per_type:
+                # Same declared per-type initial-import bound as the feeds.
+                self.truncated["items_per_type"] += 1
+                self.inventory_complete = False
+                self._complete = True
+                return
             own = (ts, str(pr["number"]))
             segments = await self._pr_segments(pr, include_body=True, comments=False)
             for found in self._emit_pr(segments, prev, own):
+                if found.position == own:  # the PR's last segment: it is fully handed off
+                    self._pending_mark = consumed
                 yield found
             prev = own
         if not self._complete:
@@ -431,6 +452,9 @@ class _ReviewReconcileRun(_PullBase):
 
 
 class _CommitsRun(_Run):
+    _capped_by_policy = False
+    _partial_head: str | None = None
+
     async def _commit_list(self, head: str) -> list[dict[str, Any]]:
         """Oldest-first commits that are new relative to ``state.head_sha``."""
         base = self.state.head_sha
@@ -446,9 +470,14 @@ class _CommitsRun(_Run):
         if cmp is None or cmp.status in ("diverged", "behind"):
             self.history_rewritten = True
             return await self._walk(head, floor)
+        commits = list(cmp.commits)
         if not cmp.exhausted:
             self.inventory_complete = False
-        return list(cmp.commits)
+            if commits:
+                # More commits than one comparison returns: cover what came back and let
+                # the next sync compare from the last one, so the backlog drains.
+                self._partial_head = commits[-1]["sha"]
+        return commits
 
     async def _walk(self, head: str, floor: datetime) -> list[dict[str, Any]]:
         cap = min(COMMIT_FIRST_IMPORT_MAX, self.limits.max_items_per_type)
@@ -460,6 +489,10 @@ class _CommitsRun(_Run):
             if len(newest_first) >= cap:
                 self.truncated["commits_over_cap"] += 1
                 self.inventory_complete = False
+                # The declared first-import bound was reached: the older commits are out
+                # of scope for good, so the head still advances and later syncs are
+                # incremental from it (otherwise the scope would re-read the same window).
+                self._capped_by_policy = True
                 break
             newest_first.append(c)
         else:
@@ -487,8 +520,11 @@ class _CommitsRun(_Run):
             found = self.make(doc, (ts, raw["sha"]), raw.get("author"), msg)
             if found is not None:
                 yield found
-        if self.inventory_complete:
+        if self.inventory_complete or self._capped_by_policy:
             self._new_head = head
+            self._complete = True
+        elif self._partial_head is not None:
+            self._new_head = self._partial_head
             self._complete = True
 
 

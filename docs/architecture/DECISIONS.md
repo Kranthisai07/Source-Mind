@@ -3358,3 +3358,31 @@ automatic sync, natural-language search with citation, mid-sync failure, other-w
 disconnect), plus the package suites, all in the Security Acceptance exact selection. GitHub, model
 providers and embeddings are simulated; none of this is evidence about live GitHub, extraction quality
 or retrieval quality.
+
+## D-036 — Review fixes: sync task row snapshot, commit-cap progress, cumulative import bound, claim lock mode
+
+**What and why (each was reproduced before it was fixed):**
+* `workers/connector_tasks.py::_run_sync` read `config.installation_id` and handed the live ORM row to
+  the connector after `session.rollback()`. Rollback expires every instance and an expired attribute
+  cannot be refreshed in async code (`MissingGreenlet`), so every real sync would have failed. Earlier
+  tests passed a `SimpleNamespace`. Now a plain snapshot of the two fields the run uses is taken first;
+  `test_sync_task_orm_real_db.py` drives the real function with a real row and fails without the fix.
+* Commits scope: once the first-import cap (200) truncated the list, the scope never recorded a head and
+  re-read the same window on every later run, so newer commits were never imported. The head now
+  advances when the declared bound is reached (and to the last commit returned when a comparison is
+  truncated), so later syncs are incremental.
+* Import cap: each run restarted its own per-type allowance, so the "initial import" bound grew with the
+  number of runs. `connector_sync_cursors.consumed` (added to the unmerged 0013) carries the cumulative
+  count; feeds and pull requests both stop at the declared per-type bound. Items between the cap and the
+  connect-time window end are skipped by design and counted in `truncated_items_per_type`; new activity
+  after connect is imported incrementally. Pull requests previously had no cap at all.
+* The concurrent-finalize hang was not a test-barrier deadlock and not a lock cycle: the pipeline's row
+  claim (`FOR UPDATE SKIP LOCKED`, held across model calls) conflicted with the `FOR KEY SHARE` that the
+  foreign-key re-check on the newer revision's document (`supersedes_document_id`) takes on the older
+  one. Found with `log_lock_waits` and backend PIDs tagged by `application_name`. The claim is now
+  `FOR NO KEY UPDATE SKIP LOCKED`, which still excludes a second claimer. Regression:
+  `test_publication_concurrency_diagnostics_real_db.py` (fails on the old mode, passes on the new).
+
+**Alternatives:** a per-scope count derived from `artifact_links` (no schema change) was rejected because
+filtered items are not stored there; relaxing the foreign key was rejected as a schema change to fix a
+lock mode.

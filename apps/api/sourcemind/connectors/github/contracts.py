@@ -95,6 +95,7 @@ class ScopeState:
     resume_id: str | None = None
     listing_complete: bool = False
     head_sha: str | None = None  # commits scope: default-branch head already covered
+    consumed: int = 0  # backfill items read so far (cumulative across runs; see discovery)
 
 
 @dataclass(frozen=True)

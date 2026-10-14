@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import random
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 import structlog
@@ -198,19 +199,27 @@ async def _run_sync(
                     )
                 )
             ).scalar_one_or_none()
+            # rollback() expires every ORM instance and an expired attribute cannot be
+            # lazily refreshed in async code (MissingGreenlet), so copy what the run needs
+            # first and hand the connector a plain snapshot, never the live row.
+            snapshot = (
+                None
+                if config is None
+                else SimpleNamespace(id=config.id, installation_id=config.installation_id)
+            )
             await session.rollback()
-            if config is None:
+            if snapshot is None:
                 log.warning("connector_sync_not_visible", connector_id=str(connector_id))
                 return {"status": "rejected", "error_code": "connector_not_visible"}
 
             auth = GitHubAppAuth(
                 app_id=settings.github_app_id,
                 private_key_pem=settings.github_app_private_key,
-                installation_id=config.installation_id or settings.github_app_installation_id,
+                installation_id=snapshot.installation_id or settings.github_app_installation_id,
                 redis_client=get_redis(),
             )
             connector = GitHubConnector(
-                config=config,
+                config=snapshot,
                 auth=auth,
                 session=session,
                 workspace_id=workspace_id,

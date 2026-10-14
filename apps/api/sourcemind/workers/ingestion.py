@@ -150,7 +150,12 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
             result = await session.execute(
                 select(Document)
                 .where(*document_filters)
-                .with_for_update(skip_locked=True)
+                # FOR NO KEY UPDATE, not FOR UPDATE: this claim is held for the whole
+                # pipeline, model calls included. A newer revision's document references
+                # this one (supersedes_document_id), and the foreign-key re-check on its
+                # own status updates takes FOR KEY SHARE on this row, which only a full
+                # FOR UPDATE conflicts with. NO KEY UPDATE still excludes a second claimer.
+                .with_for_update(skip_locked=True, key_share=True)
                 .execution_options(populate_existing=True)
             )
             doc = result.scalar_one_or_none()
@@ -537,7 +542,7 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                         recovery_result = await session.execute(
                             select(Document)
                             .where(*document_filters)
-                            .with_for_update()
+                            .with_for_update(key_share=True)
                             .execution_options(populate_existing=True)
                         )
                         recovered_doc = recovery_result.scalar_one_or_none()

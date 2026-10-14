@@ -143,7 +143,21 @@ async def test_commit_first_import_is_capped_and_reported(fake):
     assert len(items) == 4
     assert res.truncated["commits_over_cap"] == 1
     assert res.inventory_complete is False
-    assert res.state.head_sha is None  # head not recorded: coverage incomplete
+    # The declared first-import bound was reached, so the head advances: otherwise the next
+    # sync re-reads the same capped window and never sees newer commits.
+    assert res.state.head_sha is not None and res.state.listing_complete
+
+
+@pytest.mark.unit
+async def test_commit_cap_does_not_stall_later_syncs(fake):
+    for i in range(6):
+        fake.add_commit(REPO, f"c{i}", "a")
+    limits = DiscoveryLimits(max_items_per_type=4)
+    first, res, _ = await run(fake, "commits", limits=limits)
+    newer = fake.add_commit(REPO, "c-new", "a")
+    second, res2, _ = await run(fake, "commits", res.state, limits=limits)
+    assert [i.document.source_id for i in second] == [f"acme/repo/commits/{newer}"]
+    assert len(first) == 4 and res2.state.head_sha == newer
 
 
 @pytest.mark.unit
@@ -389,3 +403,29 @@ async def test_discussions_graphql_is_never_called(fake):
                   "review_reconcile", "commits"):
         await run(fake, scope)
     assert not any("graphql" in p for _, p in fake.log)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("scope", ["issues", "pull_requests"])
+async def test_restarts_cannot_grow_the_initial_import_bound(fake, scope):
+    """Per-run budget 2, per-type bound 5, 12 items in the window: however many runs it
+    takes, the cumulative import stops at the declared bound (restarts are not new
+    allowances)."""
+    for i in range(12):
+        if scope == "issues":
+            fake.add_issue(REPO, "op", f"i{i}", f"body {i}")
+        else:
+            fake.add_pull(REPO, "op", f"p{i}", f"body {i}")
+        fake.tick(1)
+    limits = DiscoveryLimits(max_items=2, max_items_per_type=5)
+    state = ScopeState()
+    imported: list[str] = []
+    for _ in range(12):
+        items, res, _ = await run(fake, scope, state, limits=limits)
+        imported += ids(items)
+        state = res.state
+        if res.state.listing_complete:
+            break
+    assert res.state.listing_complete, "the capped import must finish"
+    assert len(imported) == len(set(imported)) == 5
+    assert res.truncated["items_per_type"] >= 1

@@ -285,6 +285,7 @@ class ConnectorSyncCursor(Base):
         Boolean(), nullable=False, server_default="false",
     )
     head_sha: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    consumed: Mapped[int] = mapped_column(Integer(), nullable=False, server_default="0")
     status: Mapped[str] = mapped_column(Text(), nullable=False, server_default="ok")
     last_error_code: Mapped[str | None] = mapped_column(Text(), nullable=True)
     authorization_verified_at: Mapped[datetime | None] = mapped_column(

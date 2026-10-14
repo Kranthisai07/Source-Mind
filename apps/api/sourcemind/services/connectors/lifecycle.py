@@ -275,7 +275,7 @@ async def rescan(
                     "ON CONFLICT (connector_id, repo, artifact_type) DO UPDATE SET "
                     " phase = 'backfill', listing_complete = false, resume_ts = NULL, "
                     " resume_id = NULL, window_low = NULL, window_high = NULL, "
-                    " head_sha = NULL, updated_at = :now"
+                    " head_sha = NULL, consumed = 0, updated_at = :now"
                 ),
                 {
                     "cid": connector_id,

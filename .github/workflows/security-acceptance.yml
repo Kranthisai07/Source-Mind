@@ -169,7 +169,7 @@ jobs:
       # pyproject so the collected count is the raw test count. Asserting the
       # exact node IDs means a rename cannot silently shrink the gate, which a
       # bare count would not catch.
-      - name: Verify exact test selection (192 nodes)
+      - name: Verify exact test selection (194 nodes)
         working-directory: apps/api
         # SECURITY_TEST_ALLOW_DISPOSABLE / TEST_DATABASE_URL / TEST_REDIS_URL
         # are already in the environment via GITHUB_ENV.
@@ -298,6 +298,7 @@ jobs:
           tests/integration/test_pilot_evidence_real_db.py::test_search_evidence_is_force_rls_scoped_and_append_only
           tests/integration/test_pilot_evidence_real_db.py::test_successful_search_event_matches_the_returned_response
           tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres
+          tests/integration/test_publication_concurrency_diagnostics_real_db.py::test_two_revisions_reach_the_head_lock_together_without_waiting
           tests/integration/test_revision_publication_real_db.py::test_budget_exhaustion_fails_document_pauses_connector_manual_unaffected
           tests/integration/test_revision_publication_real_db.py::test_caps_truncate_chunks_and_characters_and_record_it
           tests/integration/test_revision_publication_real_db.py::test_connector_the_submitter_cannot_see_counts_as_not_active
@@ -369,6 +370,7 @@ jobs:
           tests/integration/test_source_retirement_real_db.py::test_k8_invalid_targets_rejected_without_side_effects
           tests/integration/test_source_retirement_real_db.py::test_k9_valid_target_records_edit_under_acting_editor
           tests/integration/test_source_retirement_real_db.py::test_retirement_is_idempotent
+          tests/integration/test_sync_task_orm_real_db.py::test_run_sync_gives_the_connector_a_readable_config
           NODES
           python -m pytest -o addopts='' -q --collect-only \
             tests/integration/test_attribution_history_real_db.py \
@@ -380,6 +382,8 @@ jobs:
             tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres \
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
+            tests/integration/test_publication_concurrency_diagnostics_real_db.py \
+            tests/integration/test_sync_task_orm_real_db.py \
             tests/integration/test_ingestion_journey_real_db.py \
             tests/integration/test_connectors_api_real_db.py \
             tests/integration/test_connector_sync_real_db.py \
@@ -392,7 +396,7 @@ jobs:
             | grep '::' | sort > "$actual"
           echo "collected $(wc -l < "$actual") node(s)"
           diff -u "$expected" "$actual" || {
-            echo "::error::collected node IDs differ from the expected 192"
+            echo "::error::collected node IDs differ from the expected 194"
             exit 1
           }
 
@@ -402,7 +406,7 @@ jobs:
       # never reported as an acceptance timeout.
       #
       # A JUnit report is emitted so the next step can prove the tests RAN.
-      # `pytest` exits 0 on "192 skipped", and every one of these is guarded by
+      # `pytest` exits 0 on "194 skipped", and every one of these is guarded by
       # the disposable-DB check — so a silent skip is the realistic failure and
       # exit status alone cannot detect it.
       - name: Security acceptance tests
@@ -426,6 +430,8 @@ jobs:
             tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres \
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
+            tests/integration/test_publication_concurrency_diagnostics_real_db.py \
+            tests/integration/test_sync_task_orm_real_db.py \
             tests/integration/test_ingestion_journey_real_db.py \
             tests/integration/test_connectors_api_real_db.py \
             tests/integration/test_connector_sync_real_db.py \
@@ -436,7 +442,7 @@ jobs:
             tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable \
             tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs
 
-      - name: Assert all 192 tests executed and passed
+      - name: Assert all 194 tests executed and passed
         if: always() && steps.acceptance.outcome != 'skipped'
         working-directory: apps/api
         run: |
@@ -464,11 +470,11 @@ jobs:
               else:
                   bad.append(f"{node} -> {state}")
           print(f"executed {total}, passed {passed}")
-          if total != 192:
-              print(f"::error::expected 192 test cases, report contains {total}")
+          if total != 194:
+              print(f"::error::expected 194 test cases, report contains {total}")
           for b in bad:
               print(f"::error::{b}")
-          sys.exit(0 if (total == 192 and passed == 192) else 1)
+          sys.exit(0 if (total == 194 and passed == 194) else 1)
           PY
 
       - name: Upload acceptance report

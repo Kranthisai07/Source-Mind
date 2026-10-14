@@ -450,6 +450,7 @@ class GitHubConnector:
                         resume_id=row["resume_id"],
                         listing_complete=row["listing_complete"],
                         head_sha=row["head_sha"],
+                        consumed=int(row.get("consumed") or 0),
                     )
                     if row
                     else ScopeState()
@@ -653,6 +654,7 @@ class GitHubConnector:
                 resume_id=st.resume_id,
                 listing_complete=st.listing_complete,
                 head_sha=st.head_sha,
+                consumed=st.consumed,
                 status="ok",
                 last_error_code=None,
                 last_progress_at=self._now(),
