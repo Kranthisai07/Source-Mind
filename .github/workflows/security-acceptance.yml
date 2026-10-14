@@ -407,6 +407,7 @@ jobs:
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
             tests/integration/test_mcp_real_db.py \
+            tests/integration/test_version_chain_scope_real_db.py \
             tests/integration/test_extraction_budget_real_db.py \
             tests/integration/test_publication_concurrency_diagnostics_real_db.py \
             tests/integration/test_sync_task_orm_real_db.py \
@@ -457,6 +458,7 @@ jobs:
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
             tests/integration/test_mcp_real_db.py \
+            tests/integration/test_version_chain_scope_real_db.py \
             tests/integration/test_extraction_budget_real_db.py \
             tests/integration/test_publication_concurrency_diagnostics_real_db.py \
             tests/integration/test_sync_task_orm_real_db.py \
