@@ -152,12 +152,12 @@ async def _handoff(
     from sourcemind.services.ingestion.receiver import receive
 
     await init_redis()
-    session = await _session(engine, data.member_id, data.target_workspace_id)
+    session = await _session(engine, data.admin_id, data.target_workspace_id)
     async with session:
         return await receive(
             session=session,
             workspace_id=data.target_workspace_id,
-            user_id=data.member_id,
+            user_id=data.admin_id,
             content=content,
             title="t",
             ingestion_mode=mode,
@@ -186,7 +186,7 @@ async def _run(data: SecurityTenantData, document_id: Any) -> dict[str, Any]:
         FakeTask(retries=0),
         str(document_id),
         str(data.target_workspace_id),
-        str(data.member_id),
+        str(data.admin_id),
     )
 
 
@@ -528,7 +528,7 @@ async def test_p3_partial_extraction_keeps_prior_live_and_retry_publishes(world)
 
     from sourcemind.services.ingestion.receiver import requeue_transient_failure
 
-    session = await _session(w.engine, w.data.member_id, w.data.target_workspace_id)
+    session = await _session(w.engine, w.data.admin_id, w.data.target_workspace_id)
     async with session:
         assert await requeue_transient_failure(
             session, d2, w.data.target_workspace_id, now=datetime.now(UTC)
@@ -686,7 +686,7 @@ async def test_provider_failure_is_transient_after_retries_exhausted(world) -> N
             FakeTask(retries=3),
             str(d1),
             str(w.data.target_workspace_id),
-            str(w.data.member_id),
+            str(w.data.admin_id),
         )
     doc = await _doc(w.engine, w.data, d1)
     assert doc["status"] == "failed"
@@ -816,6 +816,35 @@ async def test_paused_connector_is_reported_as_paused_not_disconnected_and_is_re
     done = await _run(w.data, doc)
     assert done["status"] == "completed", done
     assert await _live(w.engine, w.data, doc) == 1
+
+
+async def test_submitter_demoted_mid_flight_fails_closed_instead_of_publishing_without_the_head(
+    world,
+) -> None:
+    """Writes to the ingestion tables need owner/admin. If the submitting administrator is demoted
+    while the document is queued, the head row is no longer visible to them: the publication lock must
+    refuse (task retried, ends failed), not publish without it."""
+    w = world
+    _install_retire(w.mp, _local_retire)
+    _facts(w.harness, [_fact()])
+    sid = _sid()
+    r = await _handoff(w.engine, w.data, w.connector, sid, _text())
+    doc = uuid.UUID(r["document_id"])
+    session = await _session(w.engine, w.data.owner_id, w.data.target_workspace_id)
+    async with session:
+        await session.execute(
+            text("UPDATE workspace_members SET role = 'member' WHERE user_id = CAST(:u AS uuid) "
+                 "AND workspace_id = CAST(:w AS uuid)"),
+            {"u": str(w.data.admin_id), "w": str(w.data.target_workspace_id)},
+        )
+        await session.commit()
+
+    from tests.integration.test_ingestion_worker_contract import RetryScheduled
+
+    with pytest.raises(RetryScheduled):  # the worker refuses and Celery would retry it
+        await _run(w.data, doc)
+    assert await _live(w.engine, w.data, doc) == 0  # nothing was published
+    assert (await _head(w.engine, w.data, sid)).published_seq == 0
 
 
 async def test_connector_the_submitter_cannot_see_counts_as_not_active(world) -> None:
@@ -981,12 +1010,12 @@ async def test_budget_exhaustion_fails_document_pauses_connector_manual_unaffect
     # Manual ingestion is not budgeted.
     from sourcemind.workers.ingestion import _run_pipeline
 
-    _job, manual_id = await _submit(w.engine, w.mp, w.data)
+    _job, manual_id = await _submit(w.engine, w.mp, w.data, user_id=w.data.admin_id)
     manual = await _run_pipeline(
         FakeTask(retries=0),
         str(manual_id),
         str(w.data.target_workspace_id),
-        str(w.data.member_id),
+        str(w.data.admin_id),
     )
     assert manual["status"] == "completed" and manual["memories_created"] == 1
 
@@ -1005,7 +1034,7 @@ async def _failed_incomplete(w) -> uuid.UUID:
 async def _requeue(w, document_id) -> bool:
     from sourcemind.services.ingestion.receiver import requeue_transient_failure
 
-    session = await _session(w.engine, w.data.member_id, w.data.target_workspace_id)
+    session = await _session(w.engine, w.data.admin_id, w.data.target_workspace_id)
     async with session:
         return await requeue_transient_failure(
             session, document_id, w.data.target_workspace_id, now=datetime.now(UTC)

@@ -169,7 +169,7 @@ jobs:
       # pyproject so the collected count is the raw test count. Asserting the
       # exact node IDs means a rename cannot silently shrink the gate, which a
       # bare count would not catch.
-      - name: Verify exact test selection (204 nodes)
+      - name: Verify exact test selection (213 nodes)
         working-directory: apps/api
         # SECURITY_TEST_ALLOW_DISPOSABLE / TEST_DATABASE_URL / TEST_REDIS_URL
         # are already in the environment via GITHUB_ENV.
@@ -277,6 +277,14 @@ jobs:
           tests/integration/test_github_author_links_real_db.py::test_sync_credits_linked_author_not_initiator_and_finalizes_all_links
           tests/integration/test_github_author_links_real_db.py::test_unresolved_author_stays_reported_and_missing_after_an_edit
           tests/integration/test_handoff_assignment_real_db.py::test_handoff_assignment_is_atomic_and_limited_to_seeded_memories
+          tests/integration/test_ingest_authz_real_db.py::test_an_admin_of_one_workspace_cannot_read_or_write_the_other[artifact_heads]
+          tests/integration/test_ingest_authz_real_db.py::test_an_admin_of_one_workspace_cannot_read_or_write_the_other[connector_sync_cursors]
+          tests/integration/test_ingest_authz_real_db.py::test_an_admin_of_one_workspace_cannot_read_or_write_the_other[connector_work_items]
+          tests/integration/test_ingest_authz_real_db.py::test_cross_tenant_objects_are_reachable_only_as_designed
+          tests/integration/test_ingest_authz_real_db.py::test_the_migration_sweeps_grants_held_by_any_other_role
+          tests/integration/test_ingest_authz_real_db.py::test_viewers_and_members_read_but_never_write_or_lock[artifact_heads]
+          tests/integration/test_ingest_authz_real_db.py::test_viewers_and_members_read_but_never_write_or_lock[connector_sync_cursors]
+          tests/integration/test_ingest_authz_real_db.py::test_viewers_and_members_read_but_never_write_or_lock[connector_work_items]
           tests/integration/test_ingest_schema_real_db.py::test_artifact_head_refuses_published_ahead_of_latest
           tests/integration/test_ingest_schema_real_db.py::test_check_constraints_accept_new_values_and_reject_unknown
           tests/integration/test_ingest_schema_real_db.py::test_connector_nobody_can_act_for_is_not_listed_as_due
@@ -337,6 +345,7 @@ jobs:
           tests/integration/test_revision_publication_real_db.py::test_s5_verbatim_then_extract_revision
           tests/integration/test_revision_publication_real_db.py::test_s6_extract_then_verbatim_revision_and_verbatim_never_no_facts
           tests/integration/test_revision_publication_real_db.py::test_salted_hash_keeps_both_provenance_rows_for_identical_text
+          tests/integration/test_revision_publication_real_db.py::test_submitter_demoted_mid_flight_fails_closed_instead_of_publishing_without_the_head
           tests/integration/test_security_acceptance_real_services.py::test_concurrent_first_requests_create_exactly_one_user
           tests/integration/test_security_acceptance_real_services.py::test_friends_release_journey_over_http_with_signed_tokens
           tests/integration/test_security_acceptance_real_services.py::test_real_redis_counters_scopes_expiry_sharing_and_fail_closed
@@ -392,6 +401,7 @@ jobs:
             tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres \
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
+            tests/integration/test_ingest_authz_real_db.py \
             tests/integration/test_extraction_budget_real_db.py \
             tests/integration/test_publication_concurrency_diagnostics_real_db.py \
             tests/integration/test_sync_task_orm_real_db.py \
@@ -407,7 +417,7 @@ jobs:
             | grep '::' | sort > "$actual"
           echo "collected $(wc -l < "$actual") node(s)"
           diff -u "$expected" "$actual" || {
-            echo "::error::collected node IDs differ from the expected 204"
+            echo "::error::collected node IDs differ from the expected 213"
             exit 1
           }
 
@@ -417,7 +427,7 @@ jobs:
       # never reported as an acceptance timeout.
       #
       # A JUnit report is emitted so the next step can prove the tests RAN.
-      # `pytest` exits 0 on "204 skipped", and every one of these is guarded by
+      # `pytest` exits 0 on "213 skipped", and every one of these is guarded by
       # the disposable-DB check — so a silent skip is the realistic failure and
       # exit status alone cannot detect it.
       - name: Security acceptance tests
@@ -441,6 +451,7 @@ jobs:
             tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres \
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
+            tests/integration/test_ingest_authz_real_db.py \
             tests/integration/test_extraction_budget_real_db.py \
             tests/integration/test_publication_concurrency_diagnostics_real_db.py \
             tests/integration/test_sync_task_orm_real_db.py \
@@ -454,7 +465,7 @@ jobs:
             tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable \
             tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs
 
-      - name: Assert all 204 tests executed and passed
+      - name: Assert all 213 tests executed and passed
         if: always() && steps.acceptance.outcome != 'skipped'
         working-directory: apps/api
         run: |
@@ -482,11 +493,11 @@ jobs:
               else:
                   bad.append(f"{node} -> {state}")
           print(f"executed {total}, passed {passed}")
-          if total != 204:
-              print(f"::error::expected 204 test cases, report contains {total}")
+          if total != 213:
+              print(f"::error::expected 213 test cases, report contains {total}")
           for b in bad:
               print(f"::error::{b}")
-          sys.exit(0 if (total == 204 and passed == 204) else 1)
+          sys.exit(0 if (total == 213 and passed == 213) else 1)
           PY
 
       - name: Upload acceptance report

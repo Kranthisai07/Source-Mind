@@ -40,3 +40,15 @@ async def _authorize_user(code: str, **_kw: object) -> connect_flow.UserAuthoriz
 connect_flow.build_authorize_url = _authorize_url  # type: ignore[assignment]
 connect_flow.authorize_user = _authorize_user  # type: ignore[assignment]
 _ = connectors_api
+
+
+# The query embedding would call the model provider; SIMULATED with a constant vector. Ranking in the
+# browser journey therefore comes from keyword matching, not from semantic similarity.
+from sourcemind.services.search import hybrid as _hybrid  # noqa: E402
+
+
+async def _fake_query_embedding(query: str, openai_client: object | None = None):
+    return [0.01] * 3072, False
+
+
+_hybrid._get_query_embedding = _fake_query_embedding  # type: ignore[assignment]

@@ -3460,3 +3460,35 @@ scope's cumulative import counter on purpose, like a re-scan. (3) A paused, budg
 connector now fails queued documents as `connector_paused` (recoverable with Retry failed after resume)
 instead of `connector_disconnected`. (4) D-039's migration fixes were moved into #29 (the schema PR) so
 that PR is valid alone at its merge point.
+
+**What:** 0013 (a) skipped the schedule table's revoke when the runtime role owns it (single-role setups),
+(b) leaves connectors nobody can act for out of `sm_list_due_connectors` (they could never be
+rescheduled and would starve healthy ones), and (c) carries `connector_sync_cursors.consumed`, the
+cumulative import counter the later sync code uses. These were first made on the ingestion branch; they
+belong to the schema PR that owns 0013, so this PR is valid on its own at every merge point: a database
+migrated by it alone has the schema the later code expects and none of the defects above. Single-role
+chain and round trip were run against this head.
+
+## D-043 — Write access to the ingestion tables is owner/admin only; grants on cross-tenant objects are swept
+
+**Gap 1, viewer-role writes.** `artifact_heads`, `connector_sync_cursors` and `connector_work_items` used the
+member-level tenancy rule for reads and writes. With the restricted runtime role (reproduced; the test failed
+on the old policies) a viewer or plain member could insert, rewrite, delete and row-lock these rows, e.g. forge
+`published_seq` so a revision is never published or delete quarantine records. **Reachable action:** none over
+HTTP (every connector route needs ADMINISTER and the ingestion worker requires CONTRIBUTE and runs as the
+sync's administrator); only a compromised or mistaken runtime path. **Fix:** SELECT stays member-level;
+INSERT/UPDATE/DELETE, and therefore SELECT ... FOR UPDATE (which evaluates UPDATE USING), need owner/admin,
+like `github_author_links` (0010). The code that writes these tables always runs as the connector's
+administrator, so nothing legitimate changes; a submitter demoted mid-run now fails closed with a
+row-level-security error (and the publication lock refuses a connector document whose head row is invisible).
+**Cross-workspace** reads/writes of these tables were already blocked (tests pass before and after, with and
+without a workspace context).
+
+**Gap 2, cross-workspace grants.** `sm_connector_schedule` is intentionally outside RLS and
+`sm_list_due_connectors` is intentionally cross-tenant (the scheduler has no user). Demonstrated: the
+runtime role cannot read the table, can call the function (ids and status only, no content), PUBLIC can do
+neither, the trigger function is not executable by the runtime role. Not covered before: roles other than
+PUBLIC and the runtime role (platforms with default privileges grant new objects to their own roles).
+0013 now sweeps every other grantee on the new tables, the schedule table and both functions (as 0007 does
+for its internal tables); proven by naming a different role as the runtime role inside a rolled-back
+transaction (the real runtime role is then an "other grantee" and loses its grants).
