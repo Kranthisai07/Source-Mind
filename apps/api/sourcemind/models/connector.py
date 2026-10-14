@@ -156,6 +156,18 @@ class ArtifactLink(Base):
     artifact_metadata: Mapped[dict] = mapped_column(
         "metadata", JSONB(), nullable=False, server_default="'{}'",
     )
+    source_revision: Mapped[str | None] = mapped_column(
+        Text(), nullable=True,
+        comment="SHA-256 of the mapped source content this link describes.",
+    )
+    revision_seq: Mapped[int] = mapped_column(
+        nullable=False, server_default="1",
+        comment="Per-artifact revision counter (1 = first import).",
+    )
+    connector_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True,
+        comment="Connector that produced this link; deliberately no foreign key.",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default="NOW()",
     )

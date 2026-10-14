@@ -169,7 +169,7 @@ jobs:
       # pyproject so the collected count is the raw test count. Asserting the
       # exact node IDs means a rename cannot silently shrink the gate, which a
       # bare count would not catch.
-      - name: Verify exact test selection (97 nodes)
+      - name: Verify exact test selection (101 nodes)
         working-directory: apps/api
         # SECURITY_TEST_ALLOW_DISPOSABLE / TEST_DATABASE_URL / TEST_REDIS_URL
         # are already in the environment via GITHUB_ENV.
@@ -274,6 +274,10 @@ jobs:
           tests/integration/test_security_foundation_real_db.py::test_workspace_context_cannot_substitute_for_membership
           tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable
           tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs
+          tests/integration/test_source_provenance_real_db.py::test_get_memory_for_user_enforces_membership
+          tests/integration/test_source_provenance_real_db.py::test_rest_route_and_service_expose_identical_source_objects
+          tests/integration/test_source_provenance_real_db.py::test_search_for_user_denies_non_members_and_ignores_selector
+          tests/integration/test_source_provenance_real_db.py::test_source_context_reports_source_authorship_and_state
           NODES
           python -m pytest -o addopts='' -q --collect-only \
             tests/integration/test_attribution_history_real_db.py \
@@ -285,12 +289,13 @@ jobs:
             tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres \
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
+            tests/integration/test_source_provenance_real_db.py \
             tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable \
             tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs \
             | grep '::' | sort > "$actual"
           echo "collected $(wc -l < "$actual") node(s)"
           diff -u "$expected" "$actual" || {
-            echo "::error::collected node IDs differ from the expected 97"
+            echo "::error::collected node IDs differ from the expected 101"
             exit 1
           }
 
@@ -300,7 +305,7 @@ jobs:
       # never reported as an acceptance timeout.
       #
       # A JUnit report is emitted so the next step can prove the tests RAN.
-      # `pytest` exits 0 on "97 skipped", and every one of these is guarded by
+      # `pytest` exits 0 on "101 skipped", and every one of these is guarded by
       # the disposable-DB check — so a silent skip is the realistic failure and
       # exit status alone cannot detect it.
       - name: Security acceptance tests
@@ -324,10 +329,11 @@ jobs:
             tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres \
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
+            tests/integration/test_source_provenance_real_db.py \
             tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable \
             tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs
 
-      - name: Assert all 97 tests executed and passed
+      - name: Assert all 101 tests executed and passed
         if: always() && steps.acceptance.outcome != 'skipped'
         working-directory: apps/api
         run: |
@@ -355,11 +361,11 @@ jobs:
               else:
                   bad.append(f"{node} -> {state}")
           print(f"executed {total}, passed {passed}")
-          if total != 97:
-              print(f"::error::expected 97 test cases, report contains {total}")
+          if total != 101:
+              print(f"::error::expected 101 test cases, report contains {total}")
           for b in bad:
               print(f"::error::{b}")
-          sys.exit(0 if (total == 97 and passed == 97) else 1)
+          sys.exit(0 if (total == 101 and passed == 101) else 1)
           PY
 
       - name: Upload acceptance report
