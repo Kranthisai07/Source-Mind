@@ -204,10 +204,14 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
 
                 # C8: a disconnected connector must cost nothing. Checked before
                 # any provider or embedding call.
-                if is_connector and not await _connector_is_active(
-                    session, doc, ws_uuid, keep_lock=False
-                ):
-                    return await _fail_disconnected(session, doc_uuid, document_id, start)
+                if is_connector:
+                    blocked = await _connector_block_reason(
+                        session, doc, ws_uuid, keep_lock=False
+                    )
+                    if blocked:
+                        return await _fail_disconnected(
+                            session, doc_uuid, document_id, start, reason=blocked
+                        )
 
                 if verbatim:
                     if not isinstance(raw_content, str) or not raw_content.strip():
@@ -350,8 +354,10 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                         # memories live (C6d); an older revision is just
                         # superseded.
                         state, _head = await _lock_for_publication(session, doc, ws_uuid)
-                        if state == "disconnected":
-                            return await _fail_disconnected(session, doc_uuid, document_id, start)
+                        if state in _BLOCKED_STATES:
+                            return await _fail_disconnected(
+                                session, doc_uuid, document_id, start, reason=state
+                            )
                         publication = "superseded_before_publish" if state == "superseded" else (
                             "noop" if state == "noop" else "no_facts"
                         )
@@ -429,8 +435,10 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                     # C6 / C8 / C10: connector row FOR SHARE, then the artifact
                     # head FOR UPDATE, before any memory row exists.
                     state, head = await _lock_for_publication(session, doc, ws_uuid)
-                    if state == "disconnected":
-                        return await _fail_disconnected(session, doc_uuid, document_id, start)
+                    if state in _BLOCKED_STATES:
+                        return await _fail_disconnected(
+                            session, doc_uuid, document_id, start, reason=state
+                        )
                     if state in {"superseded", "noop"}:
                         publication = (
                             "superseded_before_publish" if state == "superseded" else "noop"
@@ -656,12 +664,21 @@ def _failure_patch(
     }
 
 
-async def _connector_is_active(session, doc, ws_uuid: uuid.UUID, *, keep_lock: bool) -> bool:
-    """True when the document's connector is active at the document's generation.
+_BLOCKED_STATES = frozenset({"disconnected", "paused"})
 
-    Read ``FOR SHARE``. A row the caller's RLS context cannot see counts as not
-    active (fail closed). With ``keep_lock=False`` the share lock is taken in a
-    savepoint that is rolled back, so it is not held across provider calls.
+
+async def _connector_block_reason(
+    session, doc, ws_uuid: uuid.UUID, *, keep_lock: bool
+) -> str | None:
+    """Why this document's connector may not be worked on right now, or ``None`` if it may.
+
+    ``disconnected``: gone, invisible to this caller (fail closed), or re-created since the
+    document was stamped (generation mismatch); permanent. ``paused``: paused by an admin,
+    paused for the daily budget, or in error; the document is recoverable once the connector is
+    active again, so it must not be reported as a disconnect.
+
+    Read ``FOR SHARE``. With ``keep_lock=False`` the share lock is taken in a savepoint that is
+    rolled back, so it is not held across provider calls.
     """
     from sqlalchemy import text
 
@@ -678,11 +695,13 @@ async def _connector_is_active(session, doc, ws_uuid: uuid.UUID, *, keep_lock: b
             row = (await session.execute(statement, params)).first()
         finally:
             await nested.rollback()
-    return (
-        row is not None
-        and row.status == "active"
-        and row.generation == getattr(doc, "connector_generation", None)
-    )
+    if row is None or row.status == "disconnected":
+        return "disconnected"
+    if row.generation != getattr(doc, "connector_generation", None):
+        return "disconnected"
+    if row.status != "active":
+        return "paused"
+    return None
 
 
 async def _lock_for_publication(session, doc, ws_uuid: uuid.UUID) -> tuple[str, dict | None]:
@@ -694,8 +713,9 @@ async def _lock_for_publication(session, doc, ws_uuid: uuid.UUID) -> tuple[str, 
     """
     from sqlalchemy import text
 
-    if not await _connector_is_active(session, doc, ws_uuid, keep_lock=True):
-        return "disconnected", None
+    blocked = await _connector_block_reason(session, doc, ws_uuid, keep_lock=True)
+    if blocked:
+        return blocked, None
     link = (
         await session.execute(
             text(
@@ -763,32 +783,40 @@ async def _mark_published(session, head: dict, doc_uuid: uuid.UUID) -> None:
     )
 
 
-async def _fail_disconnected(session, doc_uuid: uuid.UUID, document_id: str, start) -> dict:
-    """C8: no provider call, no publication; the document fails and is committed."""
+async def _fail_disconnected(
+    session, doc_uuid: uuid.UUID, document_id: str, start, *, reason: str = "disconnected"
+) -> dict:
+    """C8: no provider call, no publication; the document fails and is committed.
+
+    ``reason`` is ``disconnected`` (permanent) or ``paused`` (recoverable: ``retry-failed`` after
+    the connector is active again). The error code says which; a pause is not a disconnect.
+    """
+    code = "connector_paused" if reason == "paused" else "connector_disconnected"
+    text_ = "connector paused" if reason == "paused" else "connector disconnected"
     from sourcemind.models.document import IngestionStatus
     from sourcemind.services.memory import store
 
-    log.warning("pipeline_connector_disconnected", document_id=document_id)
+    log.warning("pipeline_connector_blocked", document_id=document_id, reason=reason)
     await store.update_document_status(
         session,
         doc_uuid,
         IngestionStatus.FAILED,
         memory_count=0,
-        error_message="connector disconnected",
+        error_message=text_,
         current_stage="failed",
     )
     await store.merge_pipeline_data(
         session,
         doc_uuid,
-        {"error_code": "connector_disconnected", "next_retry_at": None},
+        {"error_code": code, "next_retry_at": None},
     )
     await session.commit()
     return {
         "status": "failed",
         "document_id": document_id,
         "memories_created": 0,
-        "error": "connector disconnected",
-        "error_code": "connector_disconnected",
+        "error": text_,
+        "error_code": code,
         "duration_ms": _elapsed_ms(start),
     }
 

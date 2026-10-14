@@ -830,6 +830,9 @@ export const realApi = {
         request(`/v1/connectors/${encodeURIComponent(connId)}/retry-failed`, { method: "POST" }),
     rescanConnector: (connId) =>
         request(`/v1/connectors/${encodeURIComponent(connId)}/rescan`, { method: "POST" }),
+    // 202 RearmQuarantinedResponse {connector_id, rearmed, scopes_marked, message}
+    rearmQuarantined: (connId) =>
+        request(`/v1/connectors/${encodeURIComponent(connId)}/rearm-quarantined`, { method: "POST" }),
     // SyncLogsResponse: {items: SyncLogResponse[], total}
     getSyncLogs: (connId, { limit = 20, offset = 0 } = {}) =>
         request(`/v1/connectors/${encodeURIComponent(connId)}/sync-logs`, {

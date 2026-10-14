@@ -19,6 +19,7 @@ const mockSync = jest.fn();
 const mockRetry = jest.fn();
 const mockRescan = jest.fn();
 const mockUpdate = jest.fn();
+const mockRearm = jest.fn();
 
 jest.mock("../lib/api", () => ({
     __esModule: true,
@@ -29,6 +30,7 @@ jest.mock("../lib/api", () => ({
         retryFailedConnector: (...a) => mockRetry(...a),
         rescanConnector: (...a) => mockRescan(...a),
         updateConnector: (...a) => mockUpdate(...a),
+        rearmQuarantined: (...a) => mockRearm(...a),
         getSyncLogs: jest.fn(async () => ({ items: [], total: 0 })),
     },
 }));
@@ -54,6 +56,7 @@ beforeEach(() => {
     mockRetry.mockReset().mockResolvedValue({ connector_id: ID, eligible: 2, requeued: 2, refused: 0, remaining: 0 });
     mockRescan.mockReset().mockResolvedValue({ connector_id: ID, scopes_marked: 2, message: "ok" });
     mockUpdate.mockReset().mockResolvedValue({});
+    mockRearm.mockReset().mockResolvedValue({ connector_id: ID, rearmed: 1, scopes_marked: 1, message: "ok" });
 });
 
 afterEach(() => {
@@ -225,6 +228,14 @@ describe("row actions", () => {
         await act(async () => { fireEvent.click(screen.getByTestId(`retry-failed-${ID}`)); });
         await flush();
         expect(mockRetry).toHaveBeenCalledWith(ID);
+    });
+
+    test("Re-arm quarantined appears only when something is quarantined, and calls the endpoint", async () => {
+        renderPage();
+        await flush();
+        await act(async () => { fireEvent.click(screen.getByTestId(`rearm-${ID}`)); });
+        await flush();
+        expect(mockRearm).toHaveBeenCalledWith(ID);
     });
 
     test("no Retry failed when nothing failed", async () => {

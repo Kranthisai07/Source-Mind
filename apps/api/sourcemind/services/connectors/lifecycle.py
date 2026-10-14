@@ -24,7 +24,9 @@ from sourcemind.schemas.connector import GitHubConnectorConfig
 
 log = structlog.get_logger(__name__)
 
-RETRYABLE_CODES = ("transient", "incomplete_extraction", "budget", "connector_disconnected")
+RETRYABLE_CODES = (
+    "transient", "incomplete_extraction", "budget", "connector_disconnected", "connector_paused",
+)
 RETRY_BATCH_LIMIT = 200
 
 RetireFn = Callable[..., Awaitable[Any]]
@@ -294,3 +296,61 @@ async def rescan(
         {"id": connector_id, "now": now},
     )
     return marked
+
+
+@dataclass(frozen=True)
+class RearmResult:
+    rearmed: int
+    scopes_marked: int
+
+
+async def rearm_quarantined(
+    session: AsyncSession, connector_id: uuid.UUID, *, now: datetime
+) -> RearmResult:
+    """Give quarantined work items a fresh budget and make discovery see them again.
+
+    A quarantined item was skipped and the scope's resume key moved past it, so flipping the row
+    back to ``pending`` is not enough: nothing would look at it again. The scopes that hold
+    quarantined items are therefore restarted from the import-window start (as a re-scan does) and a
+    run is scheduled. Everything stays in the database (state, cursors, schedule), so a crash or a
+    redeploy between this call and the next sync loses nothing. Publication cannot duplicate:
+    an item whose revision is already the artifact's latest hands off as ``same_revision`` and
+    only the item that really failed produces a new revision. Locked like every lifecycle change.
+    """
+    row = await _lock(session, connector_id)
+    if row["status"] in ("disconnected", "paused"):
+        raise LifecycleConflictError(f"connector_{row['status']}")
+    items = (
+        await session.execute(
+            text(
+                "UPDATE connector_work_items SET state = 'pending', attempts = 0, "
+                "last_error_code = NULL, updated_at = :now "
+                "WHERE connector_id = :id AND state = 'quarantined' "
+                "RETURNING repo, artifact_type"
+            ),
+            {"id": connector_id, "now": now},
+        )
+    ).all()
+    scopes = {(r[0], r[1]) for r in items}
+    for repo, scope in scopes:
+        await session.execute(
+            text(
+                "INSERT INTO connector_sync_cursors "
+                "(connector_id, workspace_id, repo, artifact_type, phase, "
+                " listing_complete, status, updated_at) "
+                "VALUES (:cid, :ws, :repo, :scope, 'backfill', false, 'ok', :now) "
+                "ON CONFLICT (connector_id, repo, artifact_type) DO UPDATE SET "
+                " phase = 'backfill', listing_complete = false, resume_ts = NULL, "
+                " resume_id = NULL, window_low = NULL, window_high = NULL, "
+                " head_sha = NULL, consumed = 0, updated_at = :now"
+            ),
+            {"cid": connector_id, "ws": row["workspace_id"], "repo": repo, "scope": scope,
+             "now": now},
+        )
+    if items:
+        await session.execute(
+            text("UPDATE connector_configs SET next_sync_at = :now WHERE id = :id AND "
+                 "status = 'active'"),
+            {"id": connector_id, "now": now},
+        )
+    return RearmResult(rearmed=len(items), scopes_marked=len(scopes))

@@ -129,7 +129,22 @@ def _install_github() -> None:
 
     inner = fake._handle
 
+    edit_file = Path(os.environ.get("E2E_GITHUB_EDIT", "/tmp/e2e_github_edit.json"))
+
+    def apply_pending_edits() -> None:
+        """Browser journey: a JSON list of {"number": n, "body": "..."} edits applied once."""
+        if not edit_file.exists():
+            return
+        import json
+
+        edits = json.loads(edit_file.read_text(encoding="utf-8"))
+        edit_file.unlink()
+        for e in edits:
+            fake.tick(5)
+            fake.edit_item(REPO, int(e["number"]), body=e["body"])
+
     async def handler(request: httpx.Request) -> httpx.Response:
+        apply_pending_edits()
         waited = 0.0
         while HANG_GITHUB.exists() and waited < 120:
             await asyncio.sleep(0.2)

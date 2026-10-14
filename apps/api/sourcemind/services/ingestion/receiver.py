@@ -68,7 +68,7 @@ _ARTIFACT_LINK_FIELDS = frozenset(
 )
 
 # Failure codes eligible for the recovery sweep (contract C4/C6c).
-_REQUEUE_ELIGIBLE_CODES = frozenset({"transient", "incomplete_extraction"})
+_REQUEUE_ELIGIBLE_CODES = frozenset({"transient", "incomplete_extraction", "connector_paused"})
 _REQUEUE_BACKOFF_BASE_SECONDS = 60
 _REQUEUE_BACKOFF_MAX_SECONDS = 6 * 60 * 60
 
@@ -205,6 +205,31 @@ async def receive(
     )
     if not ws_result.scalar_one_or_none():
         raise WorkspaceNotFoundError(f"Workspace {workspace_id} not found.")
+
+    if artifact_link and artifact_link.get("connector_id") is not None:
+        # A connector handoff is deduplicated by the artifact head, which is authoritative and
+        # revision-aware: the same content as the LATEST revision is a no-op (same_revision), but
+        # content that differs from the latest revision is a new revision even if it equals an
+        # OLDER one. A time-boxed cache keyed on the content alone cannot tell "replay" from
+        # "the source went back to A", so a revert A -> B -> A used to be swallowed for 24 h.
+        # The head row is locked by the handoff itself, so concurrent duplicates serialise there.
+        return await _receive_reserved(
+            session=session,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            content=content,
+            url=url,
+            source_type=source_type,
+            title=title,
+            tags=tags,
+            category=category,
+            ingestion_mode=ingestion_mode,
+            idempotency_key=idempotency_key,
+            artifact_link=artifact_link,
+            attribution=attribution,
+            context=context,
+            pre_commit=pre_commit,
+        )
 
     redis = get_redis()
     idem_key = _idempotency_cache_key(workspace_id, user_id, idempotency_key)

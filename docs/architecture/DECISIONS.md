@@ -3485,3 +3485,18 @@ production default visibility timeout is one hour, so a task killed mid-flight (
 unprocessed for up to an hour, and nothing sweeps stale `processing` documents. Recommend setting
 `broker_transport_options.visibility_timeout` deliberately (longer than the longest task) and treating
 stale `processing` documents in the recovery sweep.
+
+## D-042 — Revert publishes a new revision; admin re-arm; paused is not disconnected
+
+**What:** (1) A connector handoff is no longer deduplicated by the 24 h Redis cache keyed on content: the
+artifact head decides. Same content as the LATEST revision is `same_revision`; content equal to an OLDER
+revision is a new revision, so A -> B -> A publishes the final A (B retired by the normal rules, human-edit
+protections unchanged, history kept). The old behaviour swallowed the revert and left B live for a day.
+(2) `POST /connectors/{id}/rearm-quarantined` (ADMINISTER, rate limited): quarantined items go back to
+`pending` with a fresh budget and the scopes that held them restart from the import-window start, so they
+are actually re-read; all state is in the database, so a crash between the call and the next sync loses
+nothing, and an already-published revision hands off as `same_revision` (no duplicate). It resets the
+scope's cumulative import counter on purpose, like a re-scan. (3) A paused, budget-paused or errored
+connector now fails queued documents as `connector_paused` (recoverable with Retry failed after resume)
+instead of `connector_disconnected`. (4) D-039's migration fixes were moved into #29 (the schema PR) so
+that PR is valid alone at its merge point.

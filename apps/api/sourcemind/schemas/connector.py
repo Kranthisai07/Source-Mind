@@ -406,6 +406,15 @@ class RetryFailedResponse(BaseModel):
     remaining: int = Field(description="Eligible documents beyond this call's batch limit")
 
 
+class RearmQuarantinedResponse(BaseModel):
+    """POST /connectors/{id}/rearm-quarantined."""
+
+    connector_id: UUID
+    rearmed: int
+    scopes_marked: int
+    message: str
+
+
 class RescanResponse(BaseModel):
     """POST /connectors/{id}/rescan."""
 
