@@ -5,7 +5,7 @@
     "dockerBuildTarget": "production"
   },
   "deploy": {
-    "startCommand": "sh -c 'celery -A sourcemind.workers.celery_app worker --loglevel=info -Q default,ingestion,connectors --concurrency=2'",
+    "startCommand": "sh -c 'celery -A sourcemind.workers.celery_app worker -B --loglevel=info -Q default,ingestion,connectors --concurrency=2'",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }
