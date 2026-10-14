@@ -72,7 +72,8 @@ test("normal mode asks for attribution and shows the real contributor", async ()
     results = [item("m1", { attribution: [person("Frank Friend", 100, true)] })];
     await search();
 
-    expect(bodies[0]).toEqual({ query: "release notes", mode: "hybrid", limit: 24, include_attribution: true });
+    // Normal mode also asks for the source link, authorship and source state.
+    expect(bodies[0]).toEqual({ query: "release notes", mode: "hybrid", limit: 24, include_attribution: true, include_source: true });
     expect(screen.getByText("Frank Friend")).toBeTruthy();
     expect(screen.getByTestId("memory-attribution-pct").textContent).toBe("100%");
     expect(document.body.textContent).not.toContain("Unattributed");

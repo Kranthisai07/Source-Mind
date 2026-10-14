@@ -3281,3 +3281,48 @@ pending-anchor uniqueness, head sequence constraint. Local acceptance run: 108 c
 108 passed, 0 skipped. Migration downgrade/upgrade round trip passed on a clean database; the downgrade
 guards count rows with FORCE RLS lifted inside the transaction so they are not blind when run by a role
 without BYPASSRLS (the 0011 guard has the same blind spot and is not changed here).
+
+## D-033 — Web: real GitHub connect flow, honest connector status, source provenance on memories
+
+**What:** `apps/web` Connectors page now speaks the backend's real contract. Add flow = authorize
+(browser to GitHub) -> `/connectors/github/callback` -> repository picker -> mandatory workspace-readable
+consent -> `POST /connectors` with the ticket. The previous `onAdded` path that reported success without a
+create call is gone. Cards read `GET /connectors/{id}/status` (state chip, last/next sync, last success,
+document counters, filtered counts, per-scope table, current-run progress) and offer Sync now, Retry failed,
+Re-scan, Pause/Resume, and a Disconnect dialog that states the keep/remove choice in plain words (nothing
+preselected). The sync-log drawer reads `items` and maps `error_code` to text because the backend's
+`error_message` is deliberately generic. Memory cards and detail show source type and link, revision,
+authorship (resolved name, "Unresolved author: x", "Multiple authors: a, b", never a percentage), and a
+"source changed" notice with the newer link. A 409 `source_retired` shows the server's candidates as an
+explicit choice (never preselected) and re-applies through `POST /memories/{id}/reapply`; with no candidates
+the draft is kept and the page says so.
+
+**Why this approach:**
+- The single-use OAuth `code` is moved from the URL into a module variable by the callback route, and the URL
+  is replaced at once; it is taken once (ref-guarded for Strict Mode), never stored or logged.
+- `authorize_url` is only followed when it is `https` on github.com (or this app's own origin, which is how
+  mock mode stands in for GitHub). A tampered response cannot redirect the admin elsewhere.
+- Status polling is one `setTimeout` re-armed after each completed read, only while `state=syncing` (or for
+  30 s after Sync now, while the worker picks the run up), cleared on unmount. A failed read keeps the last
+  good status, says it may be stale, and does not speed up. No tight loop.
+- Scope statuses use distinct wording: `authorization_unverified` ("could not confirm ... nothing is imported
+  until we can; not a denial") versus `access_lost` and `reauthorization_required`. Unknown error codes fall
+  back to "failed (code: x)" rather than invented text.
+- Only `https:` URLs become links, always `target=_blank rel="noopener noreferrer"`; others render as text.
+- `include_source` is sent by `realApi.searchMemories` by default only when not in pilot mode, so the pilot
+  body stays exactly `{query, mode, limit}` without touching `Memories.jsx`.
+
+**Why no new library:** native radio/checkbox inputs and the existing Dialog/Sheet were enough; no
+dependency was added.
+
+**Alternatives rejected:** keeping the code in router state or sessionStorage (a second place a single-use
+secret could leak); client-side auto-selecting the only retired-memory candidate (the contract says the
+server never chooses and neither does the client); polling forever (an idle page would hammer `/status`).
+
+**Fixtures:** `src/pages/__fixtures__/{connectorList.populated,connectorStatus.variants,githubCallback.real,
+syncLogs.real,disconnect.real,searchResponse.withSource,sourceRetired.error}.json` are generated from the
+backend pydantic schemas (`model_dump(mode="json")`), values invented, not captured live. Mock API
+(`mockApi.js`/`mockData.js`) now returns the same shapes.
+
+**Not verified:** no real browser run, no real GitHub App redirect, no live backend; everything above is
+covered by jest tests with faked fetch/api only.
