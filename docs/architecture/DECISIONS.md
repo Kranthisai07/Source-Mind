@@ -3599,3 +3599,11 @@ status is read without a lock on purpose: disconnect is permanent, so a stale re
 documented lock order. Regressions include a concurrent create (four racing creators, exactly one wins;
 fails with the lock removed, using a deliberate pause between check and insert) and a concurrent handoff
 (fails with the ownership check removed).
+
+**D-045 addendum (found by CI, not locally).** The first CI run with the network guard failed in
+`test_chunker.py`: `tiktoken` downloads its `cl100k_base` vocabulary from
+`openaipublic.blob.core.windows.net` on first use. It never showed locally because an earlier, unguarded
+run had cached the file in `/tmp/data-gym-cache`. Tests now use a deterministic offline tokenizer
+(`tests/conftest.py`); production still uses `tiktoken` and downloads once per worker (an outbound
+dependency of the ingestion worker that was not documented before). Verified locally with an empty
+`TIKTOKEN_CACHE_DIR` (unit 902 and acceptance 233 passed).
