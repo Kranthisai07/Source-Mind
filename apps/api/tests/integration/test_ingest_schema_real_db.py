@@ -36,6 +36,10 @@ from sourcemind.models.connector import (
     ConnectorWorkItem,
 )
 from sourcemind.models.document import Document
+from tests.integration.test_github_author_links_real_db import (  # noqa: F401 - fixtures
+    owner_database_url,
+    owner_engine,
+)
 from tests.integration.test_security_foundation_real_db import (
     SecurityTenantData,
     _seed_security_tenants,
@@ -356,3 +360,28 @@ async def test_inactive_creator_is_reported_with_an_active_admin_to_act_as(
             text("UPDATE connector_configs SET status='active' WHERE id = :i"), {"i": gone}
         )
         assert result.rowcount == 0
+
+
+async def test_connector_nobody_can_act_for_is_not_listed_as_due(
+    supabase_engine: AsyncEngine, owner_engine: AsyncEngine
+) -> None:
+    """A connector in a soft-deleted workspace can never be rescheduled by the tick (it cannot
+    write under RLS), so listing it would keep it at the front of the 500-row window forever and
+    starve healthy connectors. The due list leaves it out."""
+    data = await _seed_security_tenants(supabase_engine)
+    healthy = await _connector(supabase_engine, data, data.target_workspace_id, "healthy")
+    doomed = await _connector(supabase_engine, data, data.other_workspace_id, "doomed")
+    # Soft-delete the workspace the way the sync trigger records it (internal table, owner only).
+    async with owner_engine.begin() as conn:
+        result = await conn.execute(
+            text("UPDATE sm_workspace_bootstraps SET deleted_at = now() WHERE workspace_id = :w"),
+            {"w": data.other_workspace_id},
+        )
+        assert result.rowcount == 1
+
+    async with AsyncSession(supabase_engine) as db:
+        due = {
+            r.connector_id for r in (await db.execute(text("SELECT * FROM sm_list_due_connectors(500)"))).all()
+        }
+    assert healthy in due
+    assert doomed not in due

@@ -114,6 +114,14 @@ not established by GitHub's documentation and is pending live verification; unti
 verified (`authorization_denial_semantics_verified`, default false) even an explicit denial is reported as
 `authorization_unverified`.
 
+"Import nothing beyond the connect-time selection" has two parts, both enforced: (1) the selection is
+the upper bound of WHAT may be read (the ticket's repository list; later edits can only narrow it), and
+(2) it is never by itself permission to read. Permission to fetch content exists only while the check
+above passes for that batch, including the very first run after connecting. A selection with no
+verifier, an unresolvable authorizing user, an exception from the check, or an unverifiable answer
+results in zero content requests and zero handoffs (test `test_T_U4_unverified_or_missing_verification_makes_zero_content_calls`,
+which asserts the fake GitHub saw no content call).
+
 ## Bounds
 
 At most 5 repositories per connector; initial import limited to 90 days and 500 items per type per

@@ -3404,3 +3404,18 @@ not detected, the re-scan message says it only re-reads the import window, the "
 `connector_disconnected` (misleading code, no data effect; recorded as a gap), and nothing resumes
 `paused_budget` automatically at the next UTC midnight (an admin resumes it; the per-reservation budget
 check still holds, so the cap is not bypassed by resuming).
+
+## D-039 — Migration 0013 review fixes: single-role revoke, due-list starvation
+
+**What:** (1) `sm_connector_schedule` revoked all privileges from the runtime role even when that role
+owns the table (single-role local setups, which migration 0010 and `grant_runtime_privileges` already
+support); the revoke is now skipped for the owner. Verified by running the full chain with
+`SOURCEMIND_RUNTIME_ROLE` equal to the migrating role (`migrate_single_role.sh`). (2) `sm_list_due_connectors`
+now lists only connectors some active owner/admin of a non-deleted workspace can act for; others can never
+be rescheduled by the tick and would otherwise stay at the front of the 500-row window and starve healthy
+connectors. This edits the unmerged 0013 in place (no database has applied it outside tests).
+
+**Reviewed, not changed:** other-grantee sweeps for default-privilege platforms (the repo's deployment
+roles are explicit; recorded as an operator check), backfill of `artifact_heads` for pre-existing
+connector links (none exist: connectors with `created_by` did not exist before this release), and the
+viewer-role write scope on the three new tables (application layer is the control, as stated in the docstring).

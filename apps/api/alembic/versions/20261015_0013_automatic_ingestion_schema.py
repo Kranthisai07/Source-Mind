@@ -170,7 +170,11 @@ def _create_schedule_index(role: str) -> None:
         """
     )
     op.execute("REVOKE ALL ON TABLE sm_connector_schedule FROM PUBLIC")
-    op.execute(f'REVOKE ALL ON TABLE sm_connector_schedule FROM "{role}"')
+    # In a single-role setup the runtime role owns the table; revoking from the owner would strip
+    # its own privileges and break the trigger and the backfill below (same rule as
+    # grant_runtime_privileges and migration 0010).
+    if _table_owner("sm_connector_schedule") != role:
+        op.execute(f'REVOKE ALL ON TABLE sm_connector_schedule FROM "{role}"')
     op.execute(
         """
         CREATE FUNCTION sm_sync_connector_schedule() RETURNS trigger
@@ -250,6 +254,19 @@ def _create_schedule_index(role: str) -> None:
             WHERE s.status = 'active'
               AND (s.next_sync_at IS NULL OR s.next_sync_at <= now())
               AND (s.sync_lease_expires_at IS NULL OR s.sync_lease_expires_at < now())
+              -- A connector nobody can act for (workspace deleted, or no owner/admin left) can
+              -- never be rescheduled by the tick, so it would stay at the front of the queue
+              -- forever and starve healthy connectors.
+              AND EXISTS (
+                  SELECT 1
+                  FROM public.sm_workspace_access_grants AS a
+                  JOIN public.sm_workspace_bootstraps AS wb ON wb.workspace_id = a.workspace_id
+                  WHERE a.workspace_id = s.workspace_id
+                    AND a.status = 'active'
+                    AND a.departed_at IS NULL
+                    AND a.role IN ('owner', 'admin')
+                    AND wb.deleted_at IS NULL
+              )
             ORDER BY s.next_sync_at NULLS FIRST, s.connector_id
             LIMIT GREATEST(1, LEAST(max_rows, 500))
         $$
