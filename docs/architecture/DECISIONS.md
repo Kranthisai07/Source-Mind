@@ -3460,3 +3460,28 @@ operation; recorded as a gap), the shared `rate-limit:search` budget with the RE
 unfiltered version chain (identical in the REST endpoint; a shared-code change belongs with that
 endpoint). A required scope / client allowlist depends on what the identity provider can issue and is
 part of the pending Clerk verification.
+
+## D-040 — Real Celery worker end-to-end run (opt-in, outside the acceptance gate)
+
+**What:** `apps/api/tests/e2e_celery` starts real `celery worker` and `celery beat` processes (prefork,
+`acks_late`, the production task routes) against a real Redis broker and PostgreSQL under FORCE RLS as
+the restricted runtime role. GitHub (in-memory fake behind the real client), the model providers, GitHub
+App auth and the repository verifier are stubbed inside the worker process (`e2e_app.py`); nothing in the
+code under test knows. Run with `CELERY_E2E=1`. It is not in the Security Acceptance list because it
+starts operating-system processes and takes ~3 minutes.
+
+**Covered (5 tests, all passing on 2026-10-14 in WSL, CPython 3.12):** beat tick schedules a sync that a
+connectors-only worker runs while the three resulting `process_document` messages wait in the separate
+`ingestion` queue until an ingestion consumer starts; the same message delivered three times produces one
+memory; a worker SIGKILLed mid-task has its message redelivered and finishes with no duplicate memory; a
+sync worker killed holding the lease blocks takeover until expiry, then a new worker reaps the stale run
+(`interrupted`) and completes with a higher fence (the expiry itself is a labelled time shift in the
+database, not a 10-minute wait); a disconnect with queued documents makes the later ingestion worker fail
+them as `connector_disconnected` with zero provider calls and zero memories.
+
+**Observed, not fixed (operations):** with `visibility_timeout=5` the killed task's message still took
+~95 s to return (hypothesis: the Kombu Redis unacked-restore cadence and mutex, not tested). The
+production default visibility timeout is one hour, so a task killed mid-flight (OOM, node loss) can sit
+unprocessed for up to an hour, and nothing sweeps stale `processing` documents. Recommend setting
+`broker_transport_options.visibility_timeout` deliberately (longer than the longest task) and treating
+stale `processing` documents in the recovery sweep.
