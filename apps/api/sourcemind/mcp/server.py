@@ -74,6 +74,8 @@ def build_mcp_server(settings: McpSettings | None = None) -> MCPServer:
         jwks_url=f"{issuer}/.well-known/jwks.json",
         issuer=issuer,
         resource_url=cfg.resource_url,
+        required_scopes=list(cfg.required_scopes),
+        allowed_client_ids=list(cfg.allowed_client_ids),
     )
     mcp = MCPServer(
         "SourceMind",

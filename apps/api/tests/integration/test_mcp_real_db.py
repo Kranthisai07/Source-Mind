@@ -76,7 +76,7 @@ class _Keys:
              kid: str = KID, pem: str | None = None, extra: dict | None = None) -> str:
         now = int(time.time())
         claims = {"iss": iss, "sub": sub, "aud": aud, "iat": now, "exp": now + exp_in,
-                  "client_id": "test-client", **(extra or {})}
+                  "client_id": "test-client", "scope": "memories:read", **(extra or {})}
         return jose_jwt.encode(claims, pem or self.pem, algorithm="RS256", headers={"kid": kid})
 
 
@@ -190,6 +190,7 @@ async def mcp_env(supabase_engine: AsyncEngine, supabase_url: str):
         patch("sourcemind.mcp.auth._fetch_jwks", new=fake_jwks),
         patch("sourcemind.services.search.hybrid._get_query_embedding", new=fake_embedding),
         patch("sourcemind.services.memory.read.enforce_rate_limit", new=AsyncMock()),
+        patch("sourcemind.mcp.service.enforce_rate_limit", new=AsyncMock()),
     ]
     for p in patches:
         p.start()
@@ -391,6 +392,12 @@ async def test_token_rules_wrong_audience_issuer_signature_expiry_are_all_401(
             sub=fx.clerk["member"], aud=fx.url, pem=OTHER_KEYS.pem
         ),
         "unknown kid": KEYS.mint(sub=fx.clerk["member"], aud=fx.url, kid="nope"),
+        "audience-bound but no scope": KEYS.mint(
+            sub=fx.clerk["member"], aud=fx.url, extra={"scope": ""}
+        ),
+        "audience-bound but only unrelated scopes": KEYS.mint(
+            sub=fx.clerk["member"], aud=fx.url, extra={"scope": "openid email profile"}
+        ),
     }
     bodies = set()
     for label, token in bad.items():
@@ -400,6 +407,21 @@ async def test_token_rules_wrong_audience_issuer_signature_expiry_are_all_401(
         bodies.add(r.text)
     assert len(bodies) == 1, "failures must not reveal which check failed"
 
+
+
+async def test_get_memory_has_its_own_rate_limit(mcp_env: Fixture) -> None:
+    from sourcemind.core.exceptions import RateLimitExceededError
+
+    fx = mcp_env
+    tok = KEYS.mint(sub=fx.clerk["member"], aud=fx.url)
+    with patch(
+        "sourcemind.mcp.service.enforce_rate_limit",
+        new=AsyncMock(side_effect=RateLimitExceededError("limit", retry_after_seconds=5)),
+    ) as limiter:
+        async with _client(fx, tok, "2026-07-28") as c:
+            r = await c.call_tool("get_memory", {"memory_id": str(fx.ids["target"])})
+    assert _code(r) == "rate_limited"
+    assert limiter.await_args.args[0].value == "mcp-read"  # not the interactive search budget
 
 
 async def test_protected_resource_metadata_names_this_resource(mcp_env: Fixture) -> None:

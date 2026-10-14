@@ -472,11 +472,17 @@ async def create_new_version(
 async def get_version_chain(
     session: AsyncSession,
     memory_id: uuid.UUID,
+    workspace_id: uuid.UUID,
 ) -> list[dict]:
     """
     Return the full version chain for a memory using a recursive CTE.
 
-    Walks backwards through parent_memory_id links.
+    Walks backwards through parent_memory_id links, staying inside ``workspace_id`` (the
+    workspace the caller was already authorised for) and skipping soft-deleted rows. The
+    scope is explicit in both arms of the CTE rather than left to row-level security alone:
+    a parent link is a plain foreign key, so a row written with a parent id from another
+    workspace is legal at the database level, and a caller who belongs to both workspaces
+    with no workspace context set would otherwise be shown the other workspace's history.
     Returns ordered list from latest to oldest (version DESC).
     """
     result = await session.execute(
@@ -486,6 +492,8 @@ async def get_version_chain(
                        parent_memory_id, created_at, deleted_at
                 FROM memories
                 WHERE id = CAST(:memory_id AS uuid)
+                  AND workspace_id = CAST(:workspace_id AS uuid)
+                  AND deleted_at IS NULL
 
                 UNION ALL
 
@@ -493,12 +501,14 @@ async def get_version_chain(
                        m.parent_memory_id, m.created_at, m.deleted_at
                 FROM memories m
                 JOIN version_chain vc ON m.id = vc.parent_memory_id
+                WHERE m.workspace_id = CAST(:workspace_id AS uuid)
+                  AND m.deleted_at IS NULL
             )
             SELECT id::text, version, current_version, content, created_at
             FROM version_chain
             ORDER BY version DESC
         """),
-        {"memory_id": str(memory_id)},
+        {"memory_id": str(memory_id), "workspace_id": str(workspace_id)},
     )
     rows = result.fetchall()
     return [

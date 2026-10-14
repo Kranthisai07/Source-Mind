@@ -92,10 +92,20 @@ async def verify_access_jwt(
 class ClerkAccessTokenVerifier(TokenVerifier):
     """``TokenVerifier`` for Clerk-issued OAuth access tokens (JWT format)."""
 
-    def __init__(self, *, jwks_url: str, issuer: str, resource_url: str) -> None:
+    def __init__(
+        self,
+        *,
+        jwks_url: str,
+        issuer: str,
+        resource_url: str,
+        required_scopes: list[str] | None = None,
+        allowed_client_ids: list[str] | None = None,
+    ) -> None:
         self._jwks_url = jwks_url
         self._issuer = issuer
         self._resource_url = resource_url
+        self._required_scopes = list(required_scopes or [])
+        self._allowed_clients = set(allowed_client_ids or [])
 
     async def verify_token(self, token: str) -> AccessToken | None:
         claims = await verify_access_jwt(
@@ -106,10 +116,17 @@ class ClerkAccessTokenVerifier(TokenVerifier):
         )
         if claims is None:
             return None
+        scopes = _scopes(claims)
+        # Enforced here, not only by the SDK, so the rule holds wherever the verifier is used.
+        if not set(self._required_scopes) <= set(scopes):
+            return None
+        client_id = str(claims.get("client_id") or claims.get("azp") or "")
+        if self._allowed_clients and client_id not in self._allowed_clients:
+            return None
         return AccessToken(
             token=token,
-            client_id=str(claims.get("client_id") or claims.get("azp") or ""),
-            scopes=_scopes(claims),
+            client_id=client_id,
+            scopes=scopes,
             expires_at=int(claims["exp"]),
             # The SDK compares this with its own resource URL when validate_token_resource is
             # on; the audience was already checked above, so copy the matched resource.

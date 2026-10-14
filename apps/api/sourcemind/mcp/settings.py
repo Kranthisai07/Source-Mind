@@ -27,8 +27,15 @@ class McpSettings(BaseSettings):
     allowed_hosts: list[str] = Field(default_factory=list)
     #: Origin header values accepted. Empty = browsers are not allowed (CLI clients send none).
     allowed_origins: list[str] = Field(default_factory=list)
-    #: Scopes a token must carry. Empty = the audience binding is the only gate.
-    required_scopes: list[str] = Field(default_factory=list)
+    #: Scopes a token must carry. MANDATORY when the interface is enabled: the audience says the
+    #: token is for this server, the scope says the user consented to what the server does with it
+    #: (read memories). The default is the one scope the tools need.
+    required_scopes: list[str] = Field(default_factory=lambda: ["memories:read"])
+    #: OPTIONAL allowlist of OAuth client ids. Empty = any client that obtained an audience-bound,
+    #: scoped token from the issuer. Not required by policy: user consent plus audience plus scope
+    #: plus the per-call membership check already bound what a client can reach; an allowlist only
+    #: narrows WHICH applications may be used. Turn it on if the deployment wants that.
+    allowed_client_ids: list[str] = Field(default_factory=list)
     #: Reads per call.
     max_search_results: int = 10
     default_search_results: int = 5
@@ -38,6 +45,10 @@ class McpSettings(BaseSettings):
     @model_validator(mode="after")
     def _validate(self) -> McpSettings:
         if self.enabled:
+            if not [x for x in self.required_scopes if x.strip()]:
+                raise ValueError(
+                    "MCP_REQUIRED_SCOPES must name at least one scope when MCP_ENABLED is true."
+                )
             parts = urlsplit(self.resource_url)
             if parts.scheme not in {"https", "http"} or not parts.netloc or parts.fragment:
                 raise ValueError(

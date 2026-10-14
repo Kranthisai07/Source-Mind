@@ -28,6 +28,7 @@ from sourcemind.core.exceptions import (
     WorkspaceAccessDeniedError,
     WorkspaceNotFoundError,
 )
+from sourcemind.core.rate_limit import RateLimitedOperation, enforce_rate_limit
 from sourcemind.mcp.auth import resolve_user
 from sourcemind.mcp.settings import McpSettings
 from sourcemind.models.workspace import Workspace, WorkspaceMember
@@ -313,20 +314,25 @@ async def get_memory(
             raise McpToolError("invalid_argument", "workspace_id must be a UUID.") from exc
     user_id = await _user_id(session, subject)
     try:
+        # Per user (the workspace is not known before the memory is resolved). Its own budget:
+        # an agent looping over ids must not exhaust the interactive search allowance.
+        await enforce_rate_limit(RateLimitedOperation.MCP_READ, user_id, None)
         memory = await get_memory_for_user(
             session, user_id=user_id, memory_id=mid, include_attribution=True
         )
         # The selector can only NARROW the lookup, never widen it.
         if ws_selector is not None and memory.workspace_id != ws_selector:
             raise MemoryNotFoundError("selector mismatch")
-        chain = await get_version_chain(session, mid)
+        chain = await get_version_chain(session, mid, memory.workspace_id)
+    except RateLimitExceededError:
+        raise McpToolError("rate_limited", "Too many reads; retry shortly.") from None
     except (MemoryNotFoundError, WorkspaceNotFoundError, WorkspaceAccessDeniedError):
         raise McpToolError("not_found", "No such memory.") from None
     history = [
         VersionRef(
             memory_id=str(v["id"]),
             version=int(v["version"]),
-            is_current=bool(v.get("current_version")),
+            is_current=bool(v.get("is_current")),
             created_at=v["created_at"],
         )
         for v in chain

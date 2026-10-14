@@ -166,7 +166,7 @@ async def test_version_chain_query_returns_all_versions_in_order():
     result_mock.fetchall = MagicMock(return_value=rows)
     mock_session.execute = AsyncMock(return_value=result_mock)
 
-    chain = await get_version_chain(mock_session, mid)
+    chain = await get_version_chain(mock_session, mid, uuid.uuid4())
 
     assert len(chain) == 3
     assert chain[0]["version"] == 3

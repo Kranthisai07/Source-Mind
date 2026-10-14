@@ -47,6 +47,7 @@ from sourcemind.core.redis_client import get_redis_dep
 
 # In-memory JWKS cache: {url: {"keys": [...], "fetched_at": float}}
 _jwks_cache: dict[str, dict] = {}
+_JWKS_MIN_REFRESH_SECONDS = 30
 
 logger = structlog.get_logger(__name__)
 
@@ -218,6 +219,12 @@ async def _fetch_jwks(jwks_url: str, *, force_refresh: bool = False) -> list[dic
 
     cached = _jwks_cache.get(jwks_url)
     if not force_refresh and cached and (time.time() - cached["fetched_at"]) < 300:
+        return cached["keys"]
+    if force_refresh and cached and (time.time() - cached["fetched_at"]) < _JWKS_MIN_REFRESH_SECONDS:
+        # A token naming an unknown key id forces a refresh. Unauthenticated callers choose
+        # the key id, so without a floor every request would cost an outbound call. Keys
+        # are re-fetched at most once per interval; a legitimate rotation is picked up by the
+        # next refresh after it.
         return cached["keys"]
 
     async with httpx.AsyncClient(timeout=10) as client:

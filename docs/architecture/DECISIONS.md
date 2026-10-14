@@ -3500,3 +3500,20 @@ scope's cumulative import counter on purpose, like a re-scan. (3) A paused, budg
 connector now fails queued documents as `connector_paused` (recoverable with Retry failed after resume)
 instead of `connector_disconnected`. (4) D-039's migration fixes were moved into #29 (the schema PR) so
 that PR is valid alone at its merge point.
+
+## D-041 — MCP policy: mandatory audience and scope, own read limit, bounded JWKS refresh; version-chain scope
+
+**What:** (1) The MCP verifier already required the resource audience; it now also requires the scope
+(`memories:read` by default, non-empty when enabled), enforced in the verifier itself. A client allowlist
+is optional and off by default: policy does not require it, because audience + scope + per-call membership
+already bound what any client can reach. (2) `get_memory` has its own per-user limit. (3) An unknown key id
+can force a JWKS refetch at most once per 30 s (both the REST and MCP verifiers). (4) Revocation is recorded
+honestly in MCP_INTERFACE.md: offline JWT verification does not give next-call revocation of the token.
+(5) The version-chain query is now explicitly scoped to the authorised workspace and skips soft-deleted
+rows. Evidence it was not "low": a parent link is a plain foreign key (not checked by RLS), and a caller who
+belongs to two workspaces with no workspace context set crossed the boundary in the old query (the test
+shows the unconstrained walk returning the other workspace's row). A one-workspace caller was already
+protected by RLS. (6) MCP `is_current` was always false (wrong key name); fixed.
+
+**Not decided:** the revocation remedy (needs the Clerk probe and your approval, see the doc).
+

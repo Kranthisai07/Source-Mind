@@ -538,11 +538,11 @@ async def get_memory_versions(
     request_id: RequestID,
 ) -> MemoryVersionsResponse:
     """Return the complete version chain via recursive CTE."""
-    await require_memory_access(db, current_user.user_id, memory_id)
+    workspace_id = await require_memory_access(db, current_user.user_id, memory_id)
 
     from sourcemind.services.attribution.versioning import get_version_chain
 
-    chain = await get_version_chain(db, memory_id)
+    chain = await get_version_chain(db, memory_id, workspace_id)
     return MemoryVersionsResponse(
         versions=[MemoryVersionEntry(**v) for v in chain],
         total=len(chain),
