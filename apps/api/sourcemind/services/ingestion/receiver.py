@@ -519,6 +519,37 @@ async def _receive_connector_revision(
         ).first()
         if previous is not None:
             previous_document_id = previous.document_id
+            # OWNERSHIP, decided under the artifact-head lock taken above and in the same
+            # transaction that would allocate the next revision: a connector may not supersede, and
+            # through publication retire, content whose latest revision belongs to ANOTHER connector
+            # that is still live. (Overlapping connectors are rejected when they are created or
+            # resumed; this is the guard for data that got here some other way, and for the race
+            # window.) Reading the owner's status without a lock is safe: "disconnected" is
+            # permanent: a stale read can only answer "still live", which refuses, never the
+            # reverse.
+            # A connector row this caller cannot see counts as live (fail closed).
+            if previous.connector_id is not None and previous.connector_id != connector_id:
+                owner_status = (
+                    await session.execute(
+                        text("SELECT status FROM connector_configs WHERE id = :c"),
+                        {"c": previous.connector_id},
+                    )
+                ).scalar_one_or_none()
+                if owner_status != "disconnected":
+                    log.warning(
+                        "connector_handoff_refused_owned_elsewhere",
+                        workspace_id=str(workspace_id),
+                        connector_id=str(connector_id),
+                    )
+                    if pre_commit is not None:
+                        await pre_commit(session)
+                    await session.commit()
+                    if previous_document_id is None:
+                        raise RuntimeError("latest revision has no document")
+                    return await _same_revision_response(
+                        session, previous_document_id, workspace_id, latest_seq,
+                        reason="owned_by_other_connector",
+                    )
             # "Same revision" is a statement about what THIS connector already handed off. A new
             # connector (a reconnect after a disconnect, possibly with "remove memories") that sees
             # identical content is a new revision: the earlier one's memories may have been removed
@@ -613,6 +644,8 @@ async def _same_revision_response(
     document_id: uuid.UUID,
     workspace_id: uuid.UUID,
     revision_seq: int,
+    *,
+    reason: str = "same_revision",
 ) -> dict[str, Any]:
     doc = (
         await session.execute(
@@ -626,10 +659,14 @@ async def _same_revision_response(
         "job_id": doc.ingestion_job_id or "",
         "document_id": str(doc.id),
         "status": doc.ingestion_status,
-        "message": "Source revision already ingested.",
+        "message": (
+            "Source revision already ingested."
+            if reason == "same_revision"
+            else "This source is imported by another connector."
+        ),
         "memory_count": doc.memory_count,
         "already_exists": True,
-        "reason": "same_revision",
+        "reason": reason,
         "revision_seq": revision_seq,
     }
 

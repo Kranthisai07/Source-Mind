@@ -88,6 +88,8 @@ const CONNECT_REASON_TEXT = {
     repository_not_authorized:
         "One or more selected repositories are not covered by your GitHub authorization. Start again and pick from the list.",
     connector_exists: "A connector with this name already exists. Choose another name.",
+    repository_already_connected:
+        "Another connector in this workspace already imports one of these repositories. Disconnect it first, or pick different repositories.",
     connector_disconnected: "This connector is disconnected.",
     connector_paused: "The connector was paused while this was queued. Resume it, then use Retry failed.",
     connector_paused: "This connector is paused. Resume it first.",

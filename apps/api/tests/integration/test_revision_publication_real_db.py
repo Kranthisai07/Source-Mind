@@ -419,6 +419,126 @@ async def test_reconnect_after_remove_memories_imports_the_same_content_again(wo
     assert replay["already_exists"] is True and replay["reason"] == "same_revision"
 
 
+# ── two connectors, one source ───────────────────────────────────────────────────────────────
+
+
+async def _links(w, sid):
+    return sorted(
+        r.revision_seq
+        for r in await _rows(
+            w.engine, w.data,
+            "SELECT revision_seq FROM artifact_links WHERE source_id = :s", s=sid,
+        )
+    )
+
+
+async def test_a_second_live_connector_cannot_supersede_content_the_first_one_owns(world) -> None:
+    """Overlapping connectors are rejected at creation; this is the guard for data that got here some
+    other way. B must not publish a revision over A's, and A's memory stays live."""
+    w = world
+    _install_retire(w.mp, _local_retire)
+    _facts(w.harness, [_fact()])
+    a, b = w.connector, await _connector(w.engine, w.data)
+    sid = _sid()
+    first = await _handoff(w.engine, w.data, a, sid, _text("a-content"))
+    d1 = uuid.UUID(first["document_id"])
+    await _run(w.data, d1)
+
+    refused = await _handoff(w.engine, w.data, b, sid, _text("b-content"))
+    assert refused["already_exists"] is True and refused["reason"] == "owned_by_other_connector"
+    assert refused["document_id"] == str(d1) and refused["revision_seq"] == 1
+    assert await _links(w, sid) == [1]
+    assert (await _head(w.engine, w.data, sid)).latest_seq == 1
+    assert await _live(w.engine, w.data, d1) == 1  # A's memory untouched
+
+    # Once A is gone for good, B legitimately takes the source over.
+    await _disconnect(w.engine, w.data, a)
+    _facts(w.harness, [_fact()])
+    taken = await _handoff(w.engine, w.data, b, sid, _text("b-content"))
+    assert taken["already_exists"] is False and taken["revision_seq"] == 2
+    d2 = uuid.UUID(taken["document_id"])
+    await _run(w.data, d2)
+    assert [await _live(w.engine, w.data, d) for d in (d1, d2)] == [0, 1]
+
+
+async def test_two_connectors_handing_off_the_same_source_at_once_produce_one_revision(
+    world,
+) -> None:
+    """Concurrent regression: the ownership decision is made under the artifact-head lock in the same
+    transaction that allocates the revision, so exactly one connector owns the artifact."""
+    import asyncio
+
+    w = world
+    a, b = w.connector, await _connector(w.engine, w.data)
+    sid = _sid()
+    results = await asyncio.gather(
+        _handoff(w.engine, w.data, a, sid, _text("from-a")),
+        _handoff(w.engine, w.data, b, sid, _text("from-b")),
+        return_exceptions=True,
+    )
+    assert not [r for r in results if isinstance(r, BaseException)], results
+    created = [r for r in results if r["already_exists"] is False]
+    refused = [r for r in results if r["already_exists"] is True]
+    assert len(created) == 1 and len(refused) == 1, results
+    assert refused[0]["reason"] == "owned_by_other_connector"
+    assert await _links(w, sid) == [1]
+    assert (await _head(w.engine, w.data, sid)).latest_seq == 1
+
+
+async def test_reconnect_after_keep_publishes_one_new_revision_without_duplicates(world) -> None:
+    w = world
+    _install_retire(w.mp, _local_retire)
+    sid, content = _sid(), _text("same")
+    _facts(w.harness, [_fact()])
+    first = await _handoff(w.engine, w.data, w.connector, sid, content)
+    d1 = uuid.UUID(first["document_id"])
+    await _run(w.data, d1)
+
+    await _disconnect(w.engine, w.data, w.connector)  # "Keep": its memories stay live
+    assert await _live(w.engine, w.data, d1) == 1
+    c = await _connector(w.engine, w.data)
+    _facts(w.harness, [_fact()])
+    again = await _handoff(w.engine, w.data, c, sid, content)
+    assert again["already_exists"] is False and again["revision_seq"] == 2
+    d2 = uuid.UUID(again["document_id"])
+    await _run(w.data, d2)
+
+    assert [await _live(w.engine, w.data, d) for d in (d1, d2)] == [0, 1]  # one live copy, not two
+    assert await _links(w, sid) == [1, 2]
+    replay = await _handoff(w.engine, w.data, c, sid, content)
+    assert replay["reason"] == "same_revision" and await _links(w, sid) == [1, 2]
+
+
+async def test_removing_one_connectors_memories_never_touches_another_connectors_content(
+    world,
+) -> None:
+    from sourcemind.services.connectors import lifecycle
+    from sourcemind.services.memory.retire import retire_document_memories
+
+    w = world
+    _install_retire(w.mp, _local_retire)
+    a, b = w.connector, await _connector(w.engine, w.data)
+    sid_a, sid_b = _sid(), _sid()
+    _facts(w.harness, [_fact()])
+    da = uuid.UUID((await _handoff(w.engine, w.data, a, sid_a, _text("owned-by-a")))["document_id"])
+    db = uuid.UUID((await _handoff(w.engine, w.data, b, sid_b, _text("owned-by-b")))["document_id"])
+    await _run(w.data, da)
+    await _run(w.data, db)
+    assert (await _live(w.engine, w.data, da), await _live(w.engine, w.data, db)) == (1, 1)
+
+    session = await _session(w.engine, w.data.admin_id, w.data.target_workspace_id)
+    async with session:
+        await lifecycle.disconnect(session, a, remove_memories=True, retire=retire_document_memories)
+        await session.commit()
+
+    assert await _live(w.engine, w.data, da) == 0  # A's own content was removed
+    assert await _live(w.engine, w.data, db) == 1  # B's content is untouched
+    (status,) = await _rows(
+        w.engine, w.data, "SELECT status FROM connector_configs WHERE id = CAST(:c AS uuid)",
+        c=str(b))
+    assert status.status == "active"
+
+
 async def test_handoff_pre_commit_runs_and_raising_rolls_everything_back(world) -> None:
     w = world
     ran: list[bool] = []

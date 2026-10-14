@@ -254,4 +254,18 @@ describe("picking repositories and consenting", () => {
         await settle();
         expect(screen.getByTestId("create-error").textContent).toMatch(/already exists/i);
     });
+
+    test("a repository another connector already imports is explained, not shown as a generic failure", async () => {
+        mockCreate.mockRejectedValue({
+            status: 409,
+            body: { error: { code: "SM010", details: { reason: "repository_already_connected", repositories: ["acme/platform"] } } },
+        });
+        await open();
+        fireEvent.click(screen.getByTestId("repo-acme/platform"));
+        fireEvent.click(screen.getByTestId("consent-checkbox"));
+        await act(async () => { fireEvent.click(screen.getByTestId("connector-connect-btn")); });
+        await settle();
+        expect(screen.getByTestId("create-error").textContent).toMatch(/already imports one of these repositories/i);
+        expect(screen.getByTestId("repo-picker")).toBeTruthy();
+    });
 });
