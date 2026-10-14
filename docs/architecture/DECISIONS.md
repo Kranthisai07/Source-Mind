@@ -3233,3 +3233,31 @@ new column; the stale marker is a column because search and the edit path filter
 Acceptance exact selection: 97 -> 101, zero skips) runs as the restricted runtime role under RLS and
 checks the three authorship states, current/stale with the newer link, non-member and cross-workspace
 denial, and REST/service equality. Full unit suite 744 passed locally on CPython 3.12.3.
+
+
+---
+
+## D-033 — A read-only MCP interface, OAuth resource server only, off by default
+
+**What:** `sourcemind/mcp` mounts a Streamable HTTP MCP endpoint (`/mcp`) with two read-only tools,
+`search_memories` and `get_memory`, built on the official `mcp==2.3.0` SDK and the shared read service
+from D-031. Documented in `docs/architecture/MCP_INTERFACE.md`.
+
+**Why this shape:** AI clients need to retrieve authorized project context; they must not get a second,
+weaker authorization path. Every call resolves the token subject to an existing user, sets the RLS user
+context and asserts workspace membership through the same functions the REST routes use; a supplied
+workspace id only selects. The server accepts a token only if its audience is exactly this MCP resource,
+which the MCP specification requires and which a Clerk session token can never satisfy.
+
+**Not built, deliberately:** a personal-access-token or any other bearer scheme (a different design with
+its own storage, revocation and exposure; to be decided by the owner if the OAuth path proves
+unavailable), writes, resources, prompts, GitHub-through-MCP ingestion.
+
+**Open verification (owner actions, nothing assumed):** whether Clerk access tokens can carry an `aud`
+equal to the MCP resource URL (the spike found only a third-party claim of an instance setting), how
+grants are revoked, development-instance support for client registration, and a real Claude Code run.
+The memo is `D:\SourceMind-Operationsuto-ingest0-spike\B0_MEMO.md` (not in the repository).
+
+**Verification done:** `tests/integration/test_mcp_real_db.py`, 11 nodes in the Security Acceptance exact
+selection (101 -> 112, zero skips locally), official client in both protocol eras against the real
+server and database; the identity provider and embeddings are simulated.

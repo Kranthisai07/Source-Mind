@@ -169,7 +169,7 @@ jobs:
       # pyproject so the collected count is the raw test count. Asserting the
       # exact node IDs means a rename cannot silently shrink the gate, which a
       # bare count would not catch.
-      - name: Verify exact test selection (101 nodes)
+      - name: Verify exact test selection (112 nodes)
         working-directory: apps/api
         # SECURITY_TEST_ALLOW_DISPOSABLE / TEST_DATABASE_URL / TEST_REDIS_URL
         # are already in the environment via GITHUB_ENV.
@@ -244,6 +244,17 @@ jobs:
           tests/integration/test_ingestion_worker_contract.py::test_stale_processing_state_is_recovered_after_worker_crash
           tests/integration/test_ingestion_worker_contract.py::test_transient_error_is_retrying_then_worker_succeeds
           tests/integration/test_ingestion_worker_contract.py::test_verbatim_ingestion_stores_exactly_one_unextracted_memory
+          tests/integration/test_mcp_real_db.py::test_get_memory_and_cross_workspace_denial[2026-07-28]
+          tests/integration/test_mcp_real_db.py::test_get_memory_and_cross_workspace_denial[legacy]
+          tests/integration/test_mcp_real_db.py::test_invalid_arguments_return_stable_error_codes
+          tests/integration/test_mcp_real_db.py::test_membership_removal_takes_effect_on_the_next_call
+          tests/integration/test_mcp_real_db.py::test_origin_host_and_method_rules
+          tests/integration/test_mcp_real_db.py::test_protected_resource_metadata_names_this_resource
+          tests/integration/test_mcp_real_db.py::test_real_client_lists_two_read_only_tools_and_searches_with_citations[2026-07-28]
+          tests/integration/test_mcp_real_db.py::test_real_client_lists_two_read_only_tools_and_searches_with_citations[legacy]
+          tests/integration/test_mcp_real_db.py::test_search_payload_is_bounded
+          tests/integration/test_mcp_real_db.py::test_token_rules_wrong_audience_issuer_signature_expiry_are_all_401
+          tests/integration/test_mcp_real_db.py::test_unknown_account_and_non_member_cannot_read
           tests/integration/test_pilot_evidence_real_db.py::test_rating_rejects_cross_workspace_event_and_memory
           tests/integration/test_pilot_evidence_real_db.py::test_rating_validation_uses_recorded_edit_history
           tests/integration/test_pilot_evidence_real_db.py::test_search_evidence_is_force_rls_scoped_and_append_only
@@ -289,13 +300,14 @@ jobs:
             tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres \
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
+            tests/integration/test_mcp_real_db.py \
             tests/integration/test_source_provenance_real_db.py \
             tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable \
             tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs \
             | grep '::' | sort > "$actual"
           echo "collected $(wc -l < "$actual") node(s)"
           diff -u "$expected" "$actual" || {
-            echo "::error::collected node IDs differ from the expected 101"
+            echo "::error::collected node IDs differ from the expected 112"
             exit 1
           }
 
@@ -305,7 +317,7 @@ jobs:
       # never reported as an acceptance timeout.
       #
       # A JUnit report is emitted so the next step can prove the tests RAN.
-      # `pytest` exits 0 on "101 skipped", and every one of these is guarded by
+      # `pytest` exits 0 on "112 skipped", and every one of these is guarded by
       # the disposable-DB check — so a silent skip is the realistic failure and
       # exit status alone cannot detect it.
       - name: Security acceptance tests
@@ -329,11 +341,12 @@ jobs:
             tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres \
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
+            tests/integration/test_mcp_real_db.py \
             tests/integration/test_source_provenance_real_db.py \
             tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable \
             tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs
 
-      - name: Assert all 101 tests executed and passed
+      - name: Assert all 112 tests executed and passed
         if: always() && steps.acceptance.outcome != 'skipped'
         working-directory: apps/api
         run: |
@@ -361,11 +374,11 @@ jobs:
               else:
                   bad.append(f"{node} -> {state}")
           print(f"executed {total}, passed {passed}")
-          if total != 101:
-              print(f"::error::expected 101 test cases, report contains {total}")
+          if total != 112:
+              print(f"::error::expected 112 test cases, report contains {total}")
           for b in bad:
               print(f"::error::{b}")
-          sys.exit(0 if (total == 101 and passed == 101) else 1)
+          sys.exit(0 if (total == 112 and passed == 112) else 1)
           PY
 
       - name: Upload acceptance report
