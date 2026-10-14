@@ -3261,3 +3261,17 @@ The memo is `D:\SourceMind-Operationsuto-ingest0-spike\B0_MEMO.md` (not in the
 **Verification done:** `tests/integration/test_mcp_real_db.py`, 11 nodes in the Security Acceptance exact
 selection (101 -> 112, zero skips locally), official client in both protocol eras against the real
 server and database; the identity provider and embeddings are simulated.
+
+## D-037 — MCP review hardening: fixed internal errors, all-fields-untrusted notice, bounded strings
+
+**What:** (1) any exception that is not a mapped `McpToolError` is logged server-side and returned as
+the fixed text `internal_error`, because the SDK would otherwise render exception text (SQL, parameters,
+tenant data) to the client; (2) the notice and tool output now say that every string field (tags,
+category, contributor names, source fields), not only `content`, is untrusted; (3) tags, contributors and
+category are length- and count-bounded so one hostile source field cannot flood an agent's context.
+
+**Reviewed and deliberately not changed here:** no rate limit on `get_memory` (needs a new limiter
+operation; recorded as a gap), the shared `rate-limit:search` budget with the REST search, and the
+unfiltered version chain (identical in the REST endpoint; a shared-code change belongs with that
+endpoint). A required scope / client allowlist depends on what the identity provider can issue and is
+part of the pending Clerk verification.

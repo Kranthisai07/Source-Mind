@@ -60,6 +60,13 @@ def _fail(exc: service.McpToolError) -> ToolError:
     return ToolError(f"{exc.code}: {exc.message}")
 
 
+def _internal_error() -> ToolError:
+    # Anything unmapped (database, limiter outage, validation) is logged server-side and reaches
+    # the client as a fixed string: exception text can carry SQL, parameters or tenant data.
+    log.exception("mcp_tool_failed")
+    return ToolError("internal_error: The request could not be completed.")
+
+
 def build_mcp_server(settings: McpSettings | None = None) -> MCPServer:
     cfg = settings or get_mcp_settings()
     issuer = _issuer(cfg)
@@ -108,6 +115,8 @@ def build_mcp_server(settings: McpSettings | None = None) -> MCPServer:
                 )
             except service.McpToolError as exc:
                 raise _fail(exc) from None
+            except Exception:
+                raise _internal_error() from None
 
     @mcp.tool(
         name="get_memory",
@@ -130,6 +139,8 @@ def build_mcp_server(settings: McpSettings | None = None) -> MCPServer:
                 )
             except service.McpToolError as exc:
                 raise _fail(exc) from None
+            except Exception:
+                raise _internal_error() from None
 
     return mcp
 

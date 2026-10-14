@@ -344,6 +344,24 @@ async def test_invalid_arguments_return_stable_error_codes(mcp_env: Fixture) -> 
             assert _code(r) == code, (tool, args)
 
 
+async def test_unexpected_failure_reaches_the_client_as_a_fixed_internal_error(
+    mcp_env: Fixture,
+) -> None:
+    """Exception text (SQL, parameters, tenant data) must never be echoed to the client."""
+    fx = mcp_env
+    tok = KEYS.mint(sub=fx.clerk["member"], aud=fx.url)
+    leak = "SELECT secret FROM users WHERE email = 'victim@example.test'"
+    with patch(
+        "sourcemind.mcp.service.search_memories", AsyncMock(side_effect=RuntimeError(leak))
+    ):
+        async with _client(fx, tok, "2026-07-28") as c:
+            r = await c.call_tool("search_memories", {"query": "anything"})
+    assert r.is_error is True
+    text_ = r.content[0].text
+    assert "internal_error" in text_
+    assert "victim@example.test" not in text_ and "SELECT" not in text_
+
+
 # ── authentication and transport (raw HTTP; these are the spec's MUST rules) ──
 
 
