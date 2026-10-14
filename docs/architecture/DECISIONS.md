@@ -3281,3 +3281,13 @@ pending-anchor uniqueness, head sequence constraint. Local acceptance run: 108 c
 108 passed, 0 skipped. Migration downgrade/upgrade round trip passed on a clean database; the downgrade
 guards count rows with FORCE RLS lifted inside the transaction so they are not blind when run by a role
 without BYPASSRLS (the 0011 guard has the same blind spot and is not changed here).
+
+## D-039 — Migration 0013 fixes live in the schema PR, not only in the integration branch
+
+**What:** 0013 (a) skipped the schedule table's revoke when the runtime role owns it (single-role setups),
+(b) leaves connectors nobody can act for out of `sm_list_due_connectors` (they could never be
+rescheduled and would starve healthy ones), and (c) carries `connector_sync_cursors.consumed`, the
+cumulative import counter the later sync code uses. These were first made on the ingestion branch; they
+belong to the schema PR that owns 0013, so this PR is valid on its own at every merge point: a database
+migrated by it alone has the schema the later code expects and none of the defects above. Single-role
+chain and round trip were run against this head.
