@@ -26,10 +26,12 @@ from sourcemind.core.exceptions import (
     MemoryNotFoundError,
     MemoryVersionStaleError,
     SourceMindError,
+    SourceRetiredError,
 )
 from sourcemind.models.memory import Memory
 from sourcemind.services.attribution.engine import MAX_CHAIN_DEPTH
 from sourcemind.services.ingestion.embedder import EmbeddingService
+from sourcemind.services.memory.retire import SOURCE_RETIRE_REASONS
 
 log = structlog.get_logger(__name__)
 
@@ -221,6 +223,138 @@ async def unavailable_version_error(
     )
 
 
+#: Longest candidate preview returned in a ``source_retired`` payload.
+CANDIDATE_PREVIEW_CHARS = 200
+
+
+async def find_source_retired_candidates(
+    session: AsyncSession,
+    *,
+    workspace_id: uuid.UUID,
+    document_id: uuid.UUID | None,
+) -> tuple[str | None, list[tuple[uuid.UUID, str]]]:
+    """Candidate replacements for a memory retired by a source refresh (C10).
+
+    Identity = the ``artifact_links`` row of the retired memory's document. Newer
+    revisions of the same (workspace, tool, type, source id) are walked newest first;
+    the candidates are the current, non-deleted memories of the newest revision that
+    has any. Returns ``(newer_source_url, [(memory_id, content), ...])``; the list may be
+    empty or hold several memories and NOTHING here chooses between them.
+    """
+    if document_id is None:
+        return None, []
+    own = (
+        await session.execute(
+            text(
+                "SELECT source_tool, source_type, source_id, revision_seq "
+                "FROM artifact_links WHERE workspace_id = CAST(:ws AS uuid) "
+                "AND document_id = CAST(:doc AS uuid) "
+                "ORDER BY revision_seq DESC LIMIT 1"
+            ),
+            {"ws": str(workspace_id), "doc": str(document_id)},
+        )
+    ).first()
+    if own is None:
+        return None, []
+    newer = (
+        await session.execute(
+            text(
+                "SELECT document_id, source_url FROM artifact_links "
+                "WHERE workspace_id = CAST(:ws AS uuid) AND source_tool = :tool "
+                "AND source_type = :stype AND source_id = :sid "
+                "AND revision_seq > :seq ORDER BY revision_seq DESC, created_at DESC"
+            ),
+            {
+                "ws": str(workspace_id),
+                "tool": own.source_tool,
+                "stype": own.source_type,
+                "sid": own.source_id,
+                "seq": own.revision_seq,
+            },
+        )
+    ).all()
+    newer_url = next((r.source_url for r in newer if r.source_url), None)
+    for link in newer:
+        if link.document_id is None:
+            continue
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT id, content FROM memories "
+                    "WHERE workspace_id = CAST(:ws AS uuid) "
+                    "AND document_id = CAST(:doc AS uuid) "
+                    "AND current_version AND deleted_at IS NULL "
+                    "ORDER BY source_chunk_index NULLS LAST, id"
+                ),
+                {"ws": str(workspace_id), "doc": str(link.document_id)},
+            )
+        ).all()
+        if rows:
+            return newer_url, [(r.id, r.content) for r in rows]
+    return newer_url, []
+
+
+async def build_source_retired_error(session: AsyncSession, memory: Memory) -> SourceRetiredError:
+    """The 409 ``source_retired`` error for a memory retired by source refresh."""
+    newer_url, found = await find_source_retired_candidates(
+        session, workspace_id=memory.workspace_id, document_id=memory.document_id
+    )
+    return SourceRetiredError(
+        "The source of this memory changed and the memory was retired. "
+        "Your edit was not applied; re-apply it to one of the candidates.",
+        details={
+            "reason": memory.deleted_reason,
+            "newer_source_url": newer_url,
+            "candidates": [
+                {
+                    "memory_id": str(mid),
+                    "preview": content[:CANDIDATE_PREVIEW_CHARS],
+                }
+                for mid, content in found
+            ],
+        },
+    )
+
+
+async def lock_editable_head(
+    session: AsyncSession,
+    memory_id: uuid.UUID,
+    *,
+    user_id: uuid.UUID | None,
+) -> Memory:
+    """Lock a lineage head ``FOR UPDATE`` and REVALIDATE it under the lock (C10).
+
+    The lock is taken WITHOUT state filters on purpose: a filtered locking SELECT
+    that loses a race silently returns no row, which would be indistinguishable from
+    "missing". With the row locked, its committed state is final for this transaction:
+
+      deleted by source refresh -> SourceRetiredError (409 source_retired)
+      deleted otherwise / missing / not current -> the existing 404 / 409 SM035
+      current and live (stale or not) -> returned, editable
+
+    CONTRIBUTE access to ``memory_id`` must already have passed.
+    """
+    from sqlalchemy import select
+
+    row = (
+        await session.execute(
+            select(Memory)
+            .where(Memory.id == memory_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise await unavailable_version_error(session, memory_id, user_id=user_id)
+    if row.deleted_at is not None:
+        if row.deleted_reason in SOURCE_RETIRE_REASONS:
+            raise await build_source_retired_error(session, row)
+        raise await unavailable_version_error(session, memory_id, user_id=user_id)
+    if not row.current_version:
+        raise await unavailable_version_error(session, memory_id, user_id=user_id)
+    return row
+
+
 async def create_new_version(
     session: AsyncSession,
     memory_id: uuid.UUID,
@@ -241,23 +375,8 @@ async def create_new_version(
 
     Returns VersionResult with the new Memory ORM object.
     """
-    from sqlalchemy import select
-
-    # 1. Load current version
-    result = await session.execute(
-        select(Memory).where(
-            Memory.id == memory_id,
-            Memory.current_version.is_(True),
-            Memory.deleted_at.is_(None),
-        )
-        # Serialise concurrent edits of the same version: a second writer
-        # blocks, then re-evaluates current_version and finds none instead
-        # of forking the chain.
-        .with_for_update()
-    )
-    old = result.scalar_one_or_none()
-    if not old:
-        raise await unavailable_version_error(session, memory_id, user_id=user_id)
+    # 1. Lock and revalidate the head (retired by a source refresh -> 409 source_retired)
+    old = await lock_editable_head(session, memory_id, user_id=user_id)
 
     content_changed = old.content != new_content
 
@@ -297,6 +416,10 @@ async def create_new_version(
         category=old.category,
         source_chunk_index=old.source_chunk_index,
         confidence_score=old.confidence_score,
+        # An edit does not reconcile the memory with its changed source, so the
+        # stale flag moves to the new head instead of silently disappearing.
+        source_stale_at=old.source_stale_at,
+        source_stale_reason=old.source_stale_reason,
     )
     session.add(new_memory)
     await session.flush()  # get new_memory.id

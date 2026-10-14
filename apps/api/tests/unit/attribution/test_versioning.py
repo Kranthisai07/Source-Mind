@@ -21,6 +21,10 @@ def _make_memory(
     m.embedding = [0.1] * 3072
     m.version = version
     m.current_version = True
+    m.deleted_at = None
+    m.deleted_reason = None
+    m.source_stale_at = None
+    m.source_stale_reason = None
     m.tags = None
     m.category = None
     m.source_chunk_index = None

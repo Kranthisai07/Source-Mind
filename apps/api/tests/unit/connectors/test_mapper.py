@@ -6,7 +6,6 @@ import pytest
 
 from sourcemind.connectors.github.mapper import ConnectorDocument, GitHubMapper
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -90,8 +89,8 @@ def test_commit_source_fields(raw_commit):
 @pytest.mark.unit
 def test_commit_content_contains_message(raw_commit):
     doc = GitHubMapper.from_commit("acme", "repo", raw_commit)
-    assert "resolve null pointer" in doc.content
-    assert "acme/repo" in doc.content
+    assert doc.content == raw_commit["commit"]["message"]
+    assert doc.context["repo"] == "acme/repo"
 
 
 @pytest.mark.unit
@@ -116,7 +115,7 @@ def test_pr_source_fields(raw_pr):
 def test_pr_merged_state_reflected(raw_pr):
     doc = GitHubMapper.from_pull_request("acme", "repo", raw_pr)
     assert doc.metadata["merged"] is True
-    assert "merged" in doc.content
+    assert doc.content == "This PR adds OAuth2 support to the auth service."
 
 
 @pytest.mark.unit
@@ -150,7 +149,9 @@ def test_issue_excludes_pull_requests():
 @pytest.mark.unit
 def test_issue_content_contains_title(raw_issue):
     doc = GitHubMapper.from_issue("acme", "repo", raw_issue)
-    assert "Bug: login fails on Safari" in doc.content
+    assert doc.content == "Steps to reproduce: ..."
+    assert doc.context["title"] == "Bug: login fails on Safari"
+    assert "Safari" in doc.title
 
 
 # ── Discussion tests ──────────────────────────────────────────────────────────

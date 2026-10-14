@@ -139,6 +139,39 @@ class MemoryUpdate(BaseModel):
     model_config = {"str_strip_whitespace": True}
 
 
+class MemoryReapply(BaseModel):
+    """
+    Input for POST /v1/memories/:id/reapply.
+
+    ``memory_id`` (path) is a memory retired by a source refresh. ``target_memory_id``
+    must be one of the candidate replacements the server derives for it; the server
+    never chooses one. ``base_version`` optionally pins the target version the draft
+    was written against.
+    """
+
+    target_memory_id: UUID
+    content: str = Field(min_length=1, max_length=500_000)
+    base_version: int | None = Field(default=None, ge=1)
+    tags: list[str] | None = None
+
+    model_config = {"str_strip_whitespace": True}
+
+
+class SourceRetiredCandidate(BaseModel):
+    """One candidate replacement memory from the newer revision of the same source segment."""
+
+    memory_id: UUID
+    preview: str
+
+
+class SourceRetiredPayload(BaseModel):
+    """Shape of ``error.details`` for a ``source_retired`` 409 (contract C10)."""
+
+    reason: str
+    newer_source_url: str | None = None
+    candidates: list[SourceRetiredCandidate] = Field(default_factory=list)
+
+
 # ─── Response schemas ─────────────────────────────────────────────────────────
 
 class IngestionJobResponse(BaseModel):

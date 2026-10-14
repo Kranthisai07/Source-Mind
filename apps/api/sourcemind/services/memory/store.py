@@ -8,6 +8,7 @@ Updates Document.ingestion_status and Document.memory_count on completion.
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -24,32 +25,17 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
-async def store_memories(
-    session: AsyncSession,
+def build_memories(
     workspace_id: uuid.UUID,
     document_id: uuid.UUID,
     embedding_results: list[EmbeddingResult],
     source_metadata: dict[str, Any],
 ) -> list[Memory]:
-    """
-    Insert Memory rows for all EmbeddingResults.
+    """Construct (but do not persist) Memory rows with pre-assigned ids.
 
-    Each memory is version=1, current_version=True.
-    Flushes after each insert to get the generated UUID.
-    Returns all created Memory objects.
-
-    Args:
-        source_metadata: Carried through the pipeline from the ingestion
-            request. Recognised keys:
-              tags     — list[str], applied to every memory from this document
-              category — str, one of decision/process/definition/fact/question
-
-    `source_metadata` was previously accepted and ignored, so every memory was
-    stored with tags=NULL and category=NULL. That silently disabled three
-    downstream features: the importance scorer's category signal always fell
-    back to its 0.5 neutral default, the high_conflict_area knowledge-gap
-    detector groups by unnest(tags) and so could never fire, and tag-based
-    search filters had nothing to match.
+    Connector publication plans relations (a model call) BEFORE it takes the
+    publication locks, and persists afterwards with ``persist_memories``; the
+    ids exist up front so the plan can exclude the new rows.
     """
     tags = source_metadata.get("tags") or None
     category = source_metadata.get("category") or None
@@ -64,36 +50,69 @@ async def store_memories(
         category = None
 
     memories: list[Memory] = []
-
     for i, result in enumerate(embedding_results):
-        content_hash = hashlib.sha256(result.content.encode()).hexdigest()
-
-        memory = Memory(
-            workspace_id=workspace_id,
-            document_id=document_id,
-            content=result.content,
-            embedding=result.embedding,
-            content_hash=content_hash,
-            version=1,
-            current_version=True,
-            source_chunk_index=i,
-            confidence_score=0.9,
-            tags=tags,
-            category=category,
+        memories.append(
+            Memory(
+                id=uuid.uuid4(),
+                workspace_id=workspace_id,
+                document_id=document_id,
+                content=result.content,
+                embedding=result.embedding,
+                content_hash=hashlib.sha256(result.content.encode()).hexdigest(),
+                version=1,
+                current_version=True,
+                source_chunk_index=i,
+                confidence_score=0.9,
+                tags=tags,
+                category=category,
+            )
         )
-        session.add(memory)
-        memories.append(memory)
-
-    # Flush to generate UUIDs for all memories
-    await session.flush()
-
-    log.info(
-        "memories_stored",
-        count=len(memories),
-        document_id=str(document_id),
-        workspace_id=str(workspace_id),
-    )
     return memories
+
+
+async def persist_memories(session: AsyncSession, memories: list[Memory]) -> list[Memory]:
+    """Add and flush memories built by ``build_memories``."""
+    for memory in memories:
+        session.add(memory)
+    await session.flush()
+    if memories:
+        log.info(
+            "memories_stored",
+            count=len(memories),
+            document_id=str(memories[0].document_id),
+            workspace_id=str(memories[0].workspace_id),
+        )
+    return memories
+
+
+async def store_memories(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    document_id: uuid.UUID,
+    embedding_results: list[EmbeddingResult],
+    source_metadata: dict[str, Any],
+) -> list[Memory]:
+    """
+    Insert Memory rows for all EmbeddingResults.
+
+    Each memory is version=1, current_version=True.
+    Flushes to get the generated UUIDs. Returns all created Memory objects.
+
+    Args:
+        source_metadata: Carried through the pipeline from the ingestion
+            request. Recognised keys:
+              tags     — list[str], applied to every memory from this document
+              category — str, one of decision/process/definition/fact/question
+
+    `source_metadata` was previously accepted and ignored, so every memory was
+    stored with tags=NULL and category=NULL. That silently disabled three
+    downstream features: the importance scorer's category signal always fell
+    back to its 0.5 neutral default, the high_conflict_area knowledge-gap
+    detector groups by unnest(tags) and so could never fire, and tag-based
+    search filters had nothing to match.
+    """
+    memories = build_memories(workspace_id, document_id, embedding_results, source_metadata)
+    return await persist_memories(session, memories)
 
 
 async def backfill_artifact_links(
@@ -219,4 +238,26 @@ async def update_document_status(
     # are set, never the content of any value.
     sql = f"UPDATE documents SET {', '.join(updates)} WHERE id = CAST(:doc_id AS uuid)"  # noqa: S608
     await session.execute(text(sql), params)
+    await session.flush()
+
+
+async def merge_pipeline_data(
+    session: AsyncSession,
+    document_id: uuid.UUID,
+    patch: dict[str, Any],
+) -> None:
+    """Shallow-merge ``patch`` into documents.metadata (pipeline_data).
+
+    Keys whose value is None are removed. Runs in the caller's transaction.
+    """
+    sets = {k: v for k, v in patch.items() if v is not None}
+    removals = [k for k, v in patch.items() if v is None]
+    await session.execute(
+        text(
+            "UPDATE documents SET metadata = "
+            "(COALESCE(metadata, '{}'::jsonb) - CAST(:removals AS text[])) "
+            "|| CAST(:patch AS jsonb) WHERE id = CAST(:doc_id AS uuid)"
+        ),
+        {"removals": removals, "patch": json.dumps(sets), "doc_id": str(document_id)},
+    )
     await session.flush()

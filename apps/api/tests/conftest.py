@@ -20,6 +20,18 @@ import pytest_asyncio
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from tests import netguard  # noqa: E402
+
+# Installed before anything can open a socket: no test may reach a non-loopback host (a model
+# provider, GitHub, Clerk, ...) unless NETGUARD_ALLOW names it exactly. See tests/netguard.py.
+netguard.install()
+
+# Model weights are not downloaded during tests (the sentence-transformer used for fact de-duplication
+# and attribution would otherwise fetch them from huggingface.co on first use). Offline makes the load
+# fail fast and locally, which the code already handles (de-duplication is skipped).
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 os.environ["ENVIRONMENT"] = "development"
 os.environ["DEBUG"] = "false"
 os.environ["AUTH_DEV_BYPASS_ENABLED"] = "true"
@@ -247,3 +259,35 @@ async def test_user(db_session: AsyncSession):
 def _hash(content: str) -> str:
     """SHA-256 of content — Memory.content_hash is NOT NULL."""
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def _no_unexpected_external_network(request: pytest.FixtureRequest):
+    """Fail any test during which an outbound connection to a non-allowed host was attempted,
+    even if the code under test swallowed the resulting error."""
+    netguard.take_attempts()  # attempts made outside any test (collection, fixtures of other scopes)
+    yield
+    if request.node.get_closest_marker("netguard_expected"):
+        return
+    attempts = netguard.take_attempts()
+    assert not attempts, f"unexpected external network attempt(s): {attempts}"
+
+
+class _OfflineEncoder:
+    """Deterministic stand-in for tiktoken's cl100k_base: roughly one token per word or punctuation
+    mark. The real encoder downloads its vocabulary from openaipublic.blob.core.windows.net on first
+    use, which a test process must never do (tests/netguard.py caught it in CI, where nothing is
+    cached). Chunking logic is what the tests check; exact token counts are not asserted."""
+
+    _TOKEN = __import__("re").compile(r"\w+|[^\w\s]")
+
+    def encode(self, text: str) -> list[int]:
+        return list(range(len(self._TOKEN.findall(text))))
+
+
+@pytest.fixture(autouse=True)
+def _offline_tokenizer(monkeypatch: pytest.MonkeyPatch):
+    from sourcemind.services.ingestion import chunker
+
+    monkeypatch.setattr(chunker, "_get_encoder", lambda: _OfflineEncoder())
+    yield

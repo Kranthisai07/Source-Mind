@@ -114,6 +114,14 @@ not established by GitHub's documentation and is pending live verification; unti
 verified (`authorization_denial_semantics_verified`, default false) even an explicit denial is reported as
 `authorization_unverified`.
 
+"Import nothing beyond the connect-time selection" has two parts, both enforced: (1) the selection is
+the upper bound of WHAT may be read (the ticket's repository list; later edits can only narrow it), and
+(2) it is never by itself permission to read. Permission to fetch content exists only while the check
+above passes for that batch, including the very first run after connecting. A selection with no
+verifier, an unresolvable authorizing user, an exception from the check, or an unverifiable answer
+results in zero content requests and zero handoffs (test `test_T_U4_unverified_or_missing_verification_makes_zero_content_calls`,
+which asserts the fake GitHub saw no content call).
+
 ## Bounds
 
 At most 5 repositories per connector; initial import limited to 90 days and 500 items per type per
@@ -159,3 +167,40 @@ re-scan deletion rule (`source_deleted`).
 **Sync orchestration.** The orchestrator owns lease acquisition, fence checks, cursor and work-item
 writes, the recovery sweep and the deletion rule; it consumes `ScopeRun` objects and a
 `RepoAccessVerifier` from `connectors/github/contracts.py` and never calls GitHub endpoints directly.
+
+## Implementation status and deviations from the rules above
+
+These are the places where the implementation is narrower than the contract. Each is deliberate
+and safe-by-default; none is hidden.
+
+* **Deletion detection is off (C7).** The orchestrator implements the two-complete-inventory rule,
+  but it reads `ScopeResult.full_inventory`, and discovery imports a bounded window (days and item
+  caps), so it never reports a full inventory. A window that was fully read is not an inventory of
+  the source; treating it as one would retire every unchanged artifact after two scans. Until a
+  full-listing mode exists, a source deleted on GitHub keeps its memories, with the original source
+  link. A 410 on a direct refetch is also not used yet.
+* **Recovery sweep runs at the start of every sync run (C4), not on a separate tick.** A scheduled
+  run happens at least every interval for an active connector, and a paused or disconnected
+  connector must not be retried anyway. Stale `processing` documents are recovered by the worker's
+  own redelivery handling, not by the sweep.
+* **Scheduling identity.** The tick runs the sync as the connector creator, or as an active
+  owner/admin when the creator left (`sm_list_due_connectors`); the orchestrator then records
+  `owner_inactive` and stops. No policy was loosened and no privileged write exists.
+* **Review sweep ETags are not persisted.** The sweep re-reads every PR in scope each cycle; it is
+  correct but not cheap.
+* **Per-type import caps are cumulative, not per run.** `connector_sync_cursors.consumed` carries the
+  count across continuation runs, so restarts cannot enlarge the declared initial-import bound
+  (`max_items_per_type`, default 500; commits 200). The cap keeps the OLDEST items in the window and
+  skips the rest of the window, counted as `truncated_items_per_type`; new activity after the
+  connect-time window end is imported incrementally. A re-scan resets the counter on purpose.
+* **Re-scan is not a deletion pass.** It restarts discovery from the window start and re-reads it;
+  the UI and API say so and never report a deletion reconciliation.
+* **"idle" is not "complete".** The idle state means no run is in progress; it does not claim that
+  every scope finished its backfill (see the per-scope table).
+* **Short segments use the existing verbatim mode,** so a short authored segment becomes one memory
+  with the exact text. The 200-character threshold is an unvalidated starting value, not a quality
+  claim.
+* **Access verification is not established against live GitHub (C11).** The verifier makes one extra
+  call (`GET /user/{id}`) to turn the stored numeric id into a login; whether an installation token
+  may call it, and the permission endpoint semantics, are pending live verification. Any failure
+  reports `authorization_unverified` and nothing is imported.
