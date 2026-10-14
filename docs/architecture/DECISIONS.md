@@ -3205,3 +3205,31 @@ list 96 -> 97.
 
 **Search result duplicates:** a search showing two near-identical hits was checked against `parent_memory_id`, `version` and `current_version`. No superseded version appeared in the 12 closeout searches; the second hit is a separate extracted fact. No defect.
 
+
+---
+
+## D-031 — Memories expose source, authorship and source state through one read service
+
+**What:** `source` (tool, type, id, url, revision), `authorship` (`resolved|shared|unresolved`)
+and `source_state` (`current|stale`, reason, newer source url) are returned by
+`GET /v1/memories/:id` always and by search when `include_source` is set. They are built in
+`services/memory/read.py`, which also provides `get_memory_for_user` and
+`search_memories_for_user` (authorization inside the function: RLS user context, membership
+and READ on every call; a non-member and a missing id give the same not-found). Migration
+`20261014_0012` adds the provenance columns (`artifact_links.source_revision/revision_seq/connector_id`,
+`memories.source_stale_at/source_stale_reason/deleted_reason`); it is additive, creates no table
+and needs no new grant.
+
+**Why:** retrieval had no way to show where a memory came from (`source_url` was stored but never
+returned), and an AI client interface must not re-implement authorization or response shaping. One
+definition keeps REST and the later MCP server identical.
+
+**Alternatives:** a separate provenance endpoint (extra round trip, two shapes to keep aligned);
+computing authorship from the attribution table (it has no row for unresolved authors, which is
+exactly the case that must be visible). `shared` is stored in `artifact_links.metadata` rather than a
+new column; the stale marker is a column because search and the edit path filter on it.
+
+**Verification:** `tests/integration/test_source_provenance_real_db.py` (4 nodes, now in the Security
+Acceptance exact selection: 97 -> 101, zero skips) runs as the restricted runtime role under RLS and
+checks the three authorship states, current/stale with the newer link, non-member and cross-workspace
+denial, and REST/service equality. Full unit suite 744 passed locally on CPython 3.12.3.

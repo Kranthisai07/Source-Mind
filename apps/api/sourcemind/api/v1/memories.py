@@ -43,7 +43,7 @@ from sourcemind.schemas.memory import (
     MemoryResponse,
     MemoryUpdate,
 )
-from sourcemind.services.attribution.versioning import find_latest_version
+from sourcemind.services.memory.read import build_memory_response
 
 logger = structlog.get_logger(__name__)
 
@@ -214,62 +214,12 @@ async def get_memory(
     if not memory:
         raise MemoryNotFoundError(f"Memory {memory_id} not found.")
 
-    rel_count_result = await db.execute(
-        text(
-            "SELECT COUNT(*) FROM memory_relations "
-            "WHERE source_memory_id = CAST(:id AS uuid) OR target_memory_id = CAST(:id AS uuid)"
-        ),
-        {"id": str(memory_id)},
-    )
-    relation_count = rel_count_result.scalar() or 0
-
-    # include_attribution was declared, documented ("Null unless
-    # include_attribution=true") and advertised in this route's own summary
-    # ("Retrieve a memory with attribution"), but never read — so `attribution`
-    # was unconditionally None no matter what the caller asked for.
-    #
-    # Reuses hybrid.py's _fetch_attributions rather than reimplementing the
-    # query. It is module-private, but duplicating it would mean duplicating
-    # the DISTINCT ON that keeps an append-only attributions table from
-    # returning one row per recomputation and inflating the percentages past
-    # 100. One implementation of that subtlety is safer than two.
-    attribution = None
-    unresolved_author = None
-    if include_attribution:
-        from sourcemind.services.search.hybrid import (
-            _fetch_attributions,
-            _fetch_unresolved_authors,
-        )
-
-        by_memory = await _fetch_attributions(db, [str(memory_id)])
-        attribution = by_memory.get(str(memory_id)) or []
-        unresolved_author = (
-            await _fetch_unresolved_authors(db, [str(memory_id)])
-        ).get(str(memory_id))
-
-    # Superseded content stays readable (200); these fields tell the client it
-    # is no longer the editable version and, when unambiguous, where it went.
-    latest = await find_latest_version(
-        db, memory_id, memory.workspace_id, user_id=current_user.user_id
-    )
-
-    mem_resp = MemoryResponse(
-        id=memory.id,
-        workspace_id=memory.workspace_id,
-        document_id=memory.document_id,
-        content=memory.content,
-        version=memory.version,
-        tags=memory.tags,
-        category=memory.category,
-        confidence_score=memory.confidence_score,
-        created_at=memory.created_at,
-        updated_at=memory.updated_at,
-        relation_count=relation_count,
-        attribution=attribution,
-        unresolved_author=unresolved_author,
-        is_current=latest.reason is None,
-        latest_memory_id=latest.latest_memory_id,
-        supersession_reason=latest.reason.value if latest.reason else None,
+    mem_resp = await build_memory_response(
+        db,
+        memory,
+        user_id=current_user.user_id,
+        include_attribution=include_attribution,
+        include_source=True,
     )
 
     return APIResponse(data=mem_resp, meta=_make_meta(request_id, start))
