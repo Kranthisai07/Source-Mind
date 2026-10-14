@@ -169,7 +169,7 @@ jobs:
       # pyproject so the collected count is the raw test count. Asserting the
       # exact node IDs means a rename cannot silently shrink the gate, which a
       # bare count would not catch.
-      - name: Verify exact test selection (214 nodes)
+      - name: Verify exact test selection (222 nodes)
         working-directory: apps/api
         # SECURITY_TEST_ALLOW_DISPOSABLE / TEST_DATABASE_URL / TEST_REDIS_URL
         # are already in the environment via GITHUB_ENV.
@@ -391,6 +391,14 @@ jobs:
           tests/integration/test_source_retirement_real_db.py::test_k9_valid_target_records_edit_under_acting_editor
           tests/integration/test_source_retirement_real_db.py::test_retirement_is_idempotent
           tests/integration/test_sync_task_orm_real_db.py::test_run_sync_gives_the_connector_a_readable_config
+          tests/unit/test_netguard.py::test_a_raw_ip_connection_is_blocked_without_name_resolution
+          tests/unit/test_netguard.py::test_a_swallowed_error_still_leaves_a_record
+          tests/unit/test_netguard.py::test_allowlist_is_exact_host_and_port_with_no_wildcards
+          tests/unit/test_netguard.py::test_anthropic_call_is_blocked
+          tests/unit/test_netguard.py::test_loopback_and_unix_sockets_still_work
+          tests/unit/test_netguard.py::test_openai_embeddings_call_is_blocked_before_any_byte_is_sent
+          tests/unit/test_netguard.py::test_plain_httpx_to_a_provider_host_is_blocked
+          tests/unit/test_netguard_check.py::test_a_test_that_swallows_an_external_attempt_fails_the_run
           NODES
           python -m pytest -o addopts='' -q --collect-only \
             tests/integration/test_attribution_history_real_db.py \
@@ -402,6 +410,8 @@ jobs:
             tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres \
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
+            tests/unit/test_netguard_check.py \
+            tests/unit/test_netguard.py \
             tests/integration/test_ingest_authz_real_db.py \
             tests/integration/test_extraction_budget_real_db.py \
             tests/integration/test_publication_concurrency_diagnostics_real_db.py \
@@ -418,7 +428,7 @@ jobs:
             | grep '::' | sort > "$actual"
           echo "collected $(wc -l < "$actual") node(s)"
           diff -u "$expected" "$actual" || {
-            echo "::error::collected node IDs differ from the expected 214"
+            echo "::error::collected node IDs differ from the expected 222"
             exit 1
           }
 
@@ -428,7 +438,7 @@ jobs:
       # never reported as an acceptance timeout.
       #
       # A JUnit report is emitted so the next step can prove the tests RAN.
-      # `pytest` exits 0 on "214 skipped", and every one of these is guarded by
+      # `pytest` exits 0 on "222 skipped", and every one of these is guarded by
       # the disposable-DB check — so a silent skip is the realistic failure and
       # exit status alone cannot detect it.
       - name: Security acceptance tests
@@ -452,6 +462,8 @@ jobs:
             tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres \
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
+            tests/unit/test_netguard_check.py \
+            tests/unit/test_netguard.py \
             tests/integration/test_ingest_authz_real_db.py \
             tests/integration/test_extraction_budget_real_db.py \
             tests/integration/test_publication_concurrency_diagnostics_real_db.py \
@@ -466,7 +478,7 @@ jobs:
             tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable \
             tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs
 
-      - name: Assert all 214 tests executed and passed
+      - name: Assert all 222 tests executed and passed
         if: always() && steps.acceptance.outcome != 'skipped'
         working-directory: apps/api
         run: |
@@ -494,11 +506,11 @@ jobs:
               else:
                   bad.append(f"{node} -> {state}")
           print(f"executed {total}, passed {passed}")
-          if total != 214:
-              print(f"::error::expected 214 test cases, report contains {total}")
+          if total != 222:
+              print(f"::error::expected 222 test cases, report contains {total}")
           for b in bad:
               print(f"::error::{b}")
-          sys.exit(0 if (total == 214 and passed == 214) else 1)
+          sys.exit(0 if (total == 222 and passed == 222) else 1)
           PY
 
       - name: Upload acceptance report
