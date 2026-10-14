@@ -563,6 +563,9 @@ def _current(content="same text", tags=None):
         confidence_score=None,
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
         updated_at=None,
+        deleted_at=None,
+        deleted_reason=None,
+        current_version=True,
     )
 
 
