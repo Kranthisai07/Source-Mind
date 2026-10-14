@@ -384,6 +384,151 @@ async def test_rescan_marks_all_scopes_and_schedules(supabase_engine, world, fak
     assert nxt is not None
 
 
+# ── overlapping connectors are rejected, consistently, and under concurrency ──────────────────
+
+async def _ticket_for(world, admin, repos):
+    return await connect_ticket.store_ticket(
+        workspace_id=world.data.target_workspace_id, user_id=admin.user_id, github_user_id=555,
+        installation_id=99, repositories=repos)
+
+
+def _create_req(repos, name, tid):
+    return ConnectorCreateRequest(
+        connector_type="github", display_name=name,
+        config={"repos": repos, "consent_workspace_readable": True}, ticket_id=tid)
+
+
+async def _create(engine, world, admin, repos, name):
+    tid = await _ticket_for(world, admin, repos)
+    async with AsyncSession(engine, expire_on_commit=False) as db:
+        await set_rls_user_context(db, admin.user_id)
+        return await api.create_connector(
+            world.data.target_workspace_id, _create_req(repos, name, tid), db, admin, "r")
+
+
+async def test_creating_a_connector_for_a_repository_another_live_connector_has_is_rejected(
+    supabase_engine, world, fake_redis
+):
+    admin = _user(world.data.admin_id)
+    with patch.object(api, "enforce_rate_limit", AsyncMock()), pytest.raises(Exception) as e:
+        await _create(supabase_engine, world, admin, ["O/A", "o/free"], "overlap-1")  # world has o/a
+    assert getattr(e.value, "http_status", None) == 409
+    assert e.value.details["reason"] == "repository_already_connected"
+    assert e.value.details["repositories"] == ["o/a"]  # only the clashing repo is named
+    async with await _session(supabase_engine, world.data.owner_id,
+                              world.data.target_workspace_id) as s:
+        n = (await s.execute(text(
+            "SELECT count(*) FROM connector_configs WHERE display_name = 'overlap-1'"))).scalar_one()
+    assert n == 0
+
+
+async def test_a_reconnect_after_the_old_connector_was_disconnected_is_allowed(
+    supabase_engine, world, fake_redis
+):
+    admin = _user(world.data.admin_id)
+    async with await _session(supabase_engine, world.data.owner_id,
+                              world.data.target_workspace_id) as s:
+        await s.execute(text("UPDATE connector_configs SET status='disconnected', generation = "
+                             "generation + 1 WHERE id=:i"), {"i": world.connector_id})
+        await s.commit()
+    with patch.object(api, "enforce_rate_limit", AsyncMock()):
+        out = await _create(supabase_engine, world, admin, ["o/a"], "reconnected")
+    assert out.config["repos"] == ["o/a"]
+
+
+@pytest.mark.parametrize("held_status", ["paused", "paused_budget", "error"])
+async def test_a_paused_or_errored_connector_still_owns_its_repositories(
+    supabase_engine, world, fake_redis, held_status
+):
+    admin = _user(world.data.admin_id)
+    async with await _session(supabase_engine, world.data.owner_id,
+                              world.data.target_workspace_id) as s:
+        await s.execute(text("UPDATE connector_configs SET status=:st WHERE id=:i"),
+                        {"st": held_status, "i": world.connector_id})
+        await s.commit()
+    with patch.object(api, "enforce_rate_limit", AsyncMock()), pytest.raises(Exception) as e:
+        await _create(supabase_engine, world, admin, ["o/a"], "overlap-held")
+    assert e.value.details["reason"] == "repository_already_connected"
+
+
+async def test_resume_is_refused_when_a_live_connector_has_taken_the_repository(
+    supabase_engine, world, fake_redis
+):
+    """Legacy / racing data: B is paused with the same repo that A (active) holds. Resuming B must not
+    produce two live connectors on one repo."""
+    admin = _user(world.data.admin_id)
+    ws = world.data.target_workspace_id
+    b = uuid.uuid4()
+    async with await _session(supabase_engine, world.data.owner_id, ws) as s:
+        s.add(ConnectorConfig(
+            id=b, workspace_id=ws, connector_type="github", display_name=f"legacy-{b.hex[:6]}",
+            config={"repos": ["O/A"]}, status="paused", installation_id=77,
+            authorized_github_user_id=4242, created_by=world.data.owner_id))
+        await s.commit()
+    from datetime import UTC, datetime
+
+    from sourcemind.services.connectors import lifecycle
+    async with AsyncSession(supabase_engine, expire_on_commit=False) as db:
+        await set_rls_user_context(db, admin.user_id)
+        with pytest.raises(lifecycle.RepositoryConflictError) as e:
+            await lifecycle.resume(db, b, now=datetime.now(UTC))
+        assert e.value.repos == ["O/A"] or e.value.repos == ["o/a"]
+        await db.rollback()
+    # Through the route the same refusal is a 409.
+    with patch.object(api, "enforce_rate_limit", AsyncMock()):
+        async with AsyncSession(supabase_engine, expire_on_commit=False) as db:
+            await set_rls_user_context(db, admin.user_id)
+            with pytest.raises(Exception) as e2:
+                await api.update_connector(
+                    b, api.ConnectorUpdateRequest(status="active"), db, admin)
+    assert getattr(e2.value, "http_status", None) == 409
+    async with await _session(supabase_engine, world.data.owner_id, ws) as s:
+        st = (await s.execute(text("SELECT status FROM connector_configs WHERE id=:i"),
+                              {"i": b})).scalar_one()
+    assert st == "paused"
+
+
+async def test_concurrent_creates_for_the_same_repository_exactly_one_wins(
+    supabase_engine, world, fake_redis, monkeypatch
+):
+    import asyncio
+
+    from sourcemind.services.connectors import lifecycle
+
+    # Hold every creator between "the check passed" and "the row is inserted". Without the
+    # workspace lock all four pass the check inside this window and all four insert; with it the
+    # others wait for the winner's commit and then fail the check.
+    real_check = lifecycle.assert_repositories_unclaimed
+
+    async def slow_check(*a, **k):
+        await real_check(*a, **k)
+        await asyncio.sleep(0.4)
+
+    monkeypatch.setattr(lifecycle, "assert_repositories_unclaimed", slow_check)
+    admin = _user(world.data.admin_id)
+    async with await _session(supabase_engine, world.data.owner_id,
+                              world.data.target_workspace_id) as s:
+        await s.execute(text("UPDATE connector_configs SET status='disconnected' WHERE id=:i"),
+                        {"i": world.connector_id})
+        await s.commit()
+    with patch.object(api, "enforce_rate_limit", AsyncMock()):
+        results = await asyncio.gather(
+            *[_create(supabase_engine, world, admin, ["race/repo"], f"race-{i}") for i in range(4)],
+            return_exceptions=True,
+        )
+    wins = [r for r in results if not isinstance(r, BaseException)]
+    losses = [r for r in results if isinstance(r, BaseException)]
+    assert len(wins) == 1, results
+    assert all(getattr(x, "details", {}).get("reason") == "repository_already_connected"
+               for x in losses), losses
+    async with await _session(supabase_engine, world.data.owner_id,
+                              world.data.target_workspace_id) as s:
+        n = (await s.execute(text(
+            "SELECT count(*) FROM connector_configs WHERE config->'repos' ? 'race/repo' "
+            "AND status <> 'disconnected'"))).scalar_one()
+    assert n == 1
+
+
 # ── re-arm quarantined items ─────────────────────────────────────────────────
 
 async def _quarantine(engine, world, n: int = 2) -> None:

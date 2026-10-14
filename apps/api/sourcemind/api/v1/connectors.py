@@ -80,10 +80,10 @@ router = APIRouter(tags=["connectors"])
 _RECENT_LOGS = 10
 
 
-def _conflict(code: str, message: str) -> SourceMindError:
+def _conflict(code: str, message: str, **details: object) -> SourceMindError:
     return SourceMindError(
         message,
-        details={"reason": code},
+        details={"reason": code, **details},
         code=ErrorCode.VALIDATION_ERROR,
         http_status=HTTPStatus.CONFLICT,
     )
@@ -262,6 +262,14 @@ async def create_connector(
             authorized_github_user_id=ticket.github_user_id,
             repos=[repo for repo in canonical if repo is not None],
         )
+    except lifecycle.RepositoryConflictError as exc:
+        await db.rollback()
+        raise _conflict(
+            exc.code,
+            "Another connector in this workspace already imports one of these repositories. "
+            "Disconnect it first.",
+            repositories=exc.repos,
+        ) from None
     except IntegrityError:
         await db.rollback()
         raise _conflict(
@@ -373,6 +381,13 @@ async def update_connector(
             await lifecycle.pause(db, connector_id)
         elif body.status == "active" and connector.status != "active":
             await lifecycle.resume(db, connector_id, now=datetime.now(UTC))
+    except lifecycle.RepositoryConflictError as exc:
+        await db.rollback()
+        raise _conflict(
+            exc.code,
+            "Another connector in this workspace already imports one of these repositories.",
+            repositories=exc.repos,
+        ) from None
     except lifecycle.LifecycleConflictError as exc:
         raise _conflict(exc.code, "The connector is disconnected.") from None
     await db.flush()

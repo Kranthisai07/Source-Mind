@@ -33,6 +33,16 @@ RetireFn = Callable[..., Awaitable[Any]]
 RequeueFn = Callable[..., Awaitable[bool]]
 
 
+class RepositoryConflictError(Exception):
+    """Another live connector in the workspace already covers one of these repositories."""
+
+    code = "repository_already_connected"
+
+    def __init__(self, repos: list[str]) -> None:
+        super().__init__(self.code)
+        self.repos = repos
+
+
 class LifecycleConflictError(Exception):
     """The requested transition is not allowed from the current state. ``code`` is stable."""
 
@@ -62,6 +72,53 @@ def scopes_for(config: dict[str, Any]) -> list[str]:
     return list(selected) if selected else list(SCOPES)
 
 
+async def lock_workspace_repositories(session: AsyncSession, workspace_id: uuid.UUID) -> None:
+    """Serialise every change that can make a connector CLAIM repositories in this workspace.
+
+    One transaction-scoped advisory lock per workspace, taken BEFORE any connector row lock, by
+    create (which covers a reconnect: a reconnect is a create after the old connector was
+    disconnected) and by resume. Two of them racing therefore decide one after the other, and the
+    second sees the first's committed row.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+        {"k": f"connector-repos:{workspace_id}"},
+    )
+
+
+async def assert_repositories_unclaimed(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    repos: list[str],
+    *,
+    exclude_connector_id: uuid.UUID | None = None,
+) -> None:
+    """Overlapping connectors are NOT supported: refuse when any other live connector (any status
+    except ``disconnected``, so a paused or errored one still owns its sources) covers a repo.
+    Call only while holding ``lock_workspace_repositories``."""
+    wanted = {r.casefold() for r in repos}
+    rows = (
+        await session.execute(
+            text(
+                "SELECT id, config -> 'repos' AS repos FROM connector_configs "
+                "WHERE workspace_id = :w AND status <> 'disconnected' "
+                "AND (CAST(:ex AS uuid) IS NULL OR id <> CAST(:ex AS uuid))"
+            ),
+            {"w": workspace_id, "ex": str(exclude_connector_id) if exclude_connector_id else None},
+        )
+    ).all()
+    clash = sorted(
+        {
+            r
+            for row in rows
+            for r in (row.repos or [])
+            if isinstance(r, str) and r.casefold() in wanted
+        }
+    )
+    if clash:
+        raise RepositoryConflictError(clash)
+
+
 async def create_connector(
     session: AsyncSession,
     *,
@@ -73,7 +130,13 @@ async def create_connector(
     authorized_github_user_id: int,
     repos: list[str],
 ) -> ConnectorConfig:
-    """Insert the connector with the server-set installation binding."""
+    """Insert the connector with the server-set installation binding.
+
+    Refuses (``RepositoryConflictError``) when another live connector in the workspace already
+    covers one of the repositories. The advisory lock is held until the caller commits.
+    """
+    await lock_workspace_repositories(session, workspace_id)
+    await assert_repositories_unclaimed(session, workspace_id, repos)
     stored = config.model_dump(exclude_none=True)
     stored["repos"] = repos
     connector = ConnectorConfig(
@@ -121,9 +184,26 @@ async def pause(session: AsyncSession, connector_id: uuid.UUID) -> None:
 
 
 async def resume(session: AsyncSession, connector_id: uuid.UUID, *, now: datetime) -> None:
+    # Workspace lock first (same order as create), then the connector row.
+    workspace_id = (
+        await session.execute(
+            text("SELECT workspace_id FROM connector_configs WHERE id = :id"), {"id": connector_id}
+        )
+    ).scalar_one()
+    await lock_workspace_repositories(session, workspace_id)
     row = await _lock(session, connector_id)
     if row["status"] == "disconnected":
         raise LifecycleConflictError("connector_disconnected")
+    repos = (
+        await session.execute(
+            text("SELECT config -> 'repos' FROM connector_configs WHERE id = :id"),
+            {"id": connector_id},
+        )
+    ).scalar_one() or []
+    await assert_repositories_unclaimed(
+        session, workspace_id, [r for r in repos if isinstance(r, str)],
+        exclude_connector_id=connector_id,
+    )
     await session.execute(
         text(
             "UPDATE connector_configs SET status = 'active', next_sync_at = :now "

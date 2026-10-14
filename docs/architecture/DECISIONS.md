@@ -3513,3 +3513,33 @@ a clear error; sync, status table, source link (https, new tab, noopener), "Unre
 signed-in user), human edit credited to the editor, revised source -> new revision memory and the edited
 memory kept with a "source changed since" notice, rate-limit message, remove vs keep disconnect, and the
 deletion-not-detected note.
+
+## D-045 — Live-verification preparation: network guard, overlapping connectors rejected
+
+**Network restriction (two layers).** (1) `tests/netguard.py`, installed for the whole pytest session:
+non-loopback connects and name lookups are refused and recorded, `NETGUARD_ALLOW` takes exact `host:port`
+only (a wildcard entry matches nothing); a per-test check fails any test during which an attempt was
+recorded, so a client that swallows `OSError` cannot hide it. It already found two unit tests that
+downloaded model weights from huggingface.co; model loading is now explicitly offline in tests. Regressions
+use real-looking OpenAI/Anthropic keys and no mocks. (2) For the live probes, `auto-ingest/airlock`: the
+processes run in a new network namespace (`unshare -rn`) with no route anywhere; the only exits are a
+deny-by-default CONNECT proxy (exact `host:port` allowlist, no wildcards, names resolving to private
+addresses refused, audit log), fixed loopback bridges to the disposable PostgreSQL/Redis, and an ingress
+port. No fallback: if the namespace cannot be created nothing runs. Self-test (18 checks) proves direct
+connections, DNS and proxy attempts to model providers fail, `evil.api.github.com`, `api.github.com:80` and
+`x.openai.com` are denied, a host-loopback decoy is unreachable, and the single exact allowlisted
+destination works. Limit: it protects only processes started under it.
+
+**Overlapping connectors are unsupported and rejected, consistently.** A workspace-scoped advisory lock
+(`lock_workspace_repositories`, always taken before any connector row lock) serialises create (a reconnect is
+a create after a disconnect) and resume (including PATCH status=active); the check refuses a repository
+(case-insensitive) held by any other connector that is not `disconnected`, so paused/errored ones still
+own their sources. 409 `repository_already_connected` lists only the clashing repository names. The receiver
+decides ownership after the artifact-head lock, in the transaction that allocates the revision: a handoff
+for an artifact whose latest revision belongs to another connector that is not disconnected is refused
+(`owned_by_other_connector`, no revision, nothing retired; an invisible owner counts as live). The owner's
+status is read without a lock on purpose: disconnect is permanent, so a stale read can only say "live"
+(refuse), never the reverse, and locking another connector row after the head lock would break the
+documented lock order. Regressions include a concurrent create (four racing creators, exactly one wins;
+fails with the lock removed, using a deliberate pause between check and insert) and a concurrent handoff
+(fails with the ownership check removed).
