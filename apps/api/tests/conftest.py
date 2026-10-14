@@ -271,3 +271,23 @@ def _no_unexpected_external_network(request: pytest.FixtureRequest):
         return
     attempts = netguard.take_attempts()
     assert not attempts, f"unexpected external network attempt(s): {attempts}"
+
+
+class _OfflineEncoder:
+    """Deterministic stand-in for tiktoken's cl100k_base: roughly one token per word or punctuation
+    mark. The real encoder downloads its vocabulary from openaipublic.blob.core.windows.net on first
+    use, which a test process must never do (tests/netguard.py caught it in CI, where nothing is
+    cached). Chunking logic is what the tests check; exact token counts are not asserted."""
+
+    _TOKEN = __import__("re").compile(r"\w+|[^\w\s]")
+
+    def encode(self, text: str) -> list[int]:
+        return list(range(len(self._TOKEN.findall(text))))
+
+
+@pytest.fixture(autouse=True)
+def _offline_tokenizer(monkeypatch: pytest.MonkeyPatch):
+    from sourcemind.services.ingestion import chunker
+
+    monkeypatch.setattr(chunker, "_get_encoder", lambda: _OfflineEncoder())
+    yield
