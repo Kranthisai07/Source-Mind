@@ -120,3 +120,42 @@ At most 5 repositories per connector; initial import limited to 90 days and 500 
 repository; at most 300 handoffs per run; at most 12 chunks and 40,000 characters per artifact; extraction
 concurrency 4; a per-workspace daily extraction-call budget (default 600) that pauses the connector when
 reached. Estimated cost is reported separately from these enforced caps.
+
+## Package interfaces (fixed so the packages can be built in parallel)
+
+**Handoff (`receive` in `services/ingestion/receiver.py`, additive keyword arguments).**
+`artifact_link` additionally accepts `source_revision` (sha256 hex of the exact segment text),
+`connector_id`, `connector_generation`. New keyword arguments: `context: dict | None` (contextual
+labels; stored in `pipeline_data["context"]`, passed to extraction as a separate non-authored field,
+never part of the stored text) and `pre_commit: Callable[[AsyncSession], Awaitable[None]] | None`.
+`pre_commit` runs inside the handoff transaction after the Document, ArtifactLink and head row are
+written and before the commit; if it raises, nothing is committed (this is where the sync orchestrator
+renews its lease fence and writes the discovery position, so both are atomic with the handoff).
+With `connector_id` set, the receiver (a) salts the content hash with the source identity so identical
+text from two sources keeps both provenance rows, (b) locks `artifact_heads` for the artifact, returns
+`already_exists=True` with `reason="same_revision"` when the latest link's `source_revision` equals the
+new one, otherwise allocates `revision_seq = latest_seq + 1` and sets `documents.supersedes_document_id`
+to the published (else latest) previous document. Return dict additionally carries `revision_seq`.
+
+**Failure codes (`documents.pipeline_data["error_code"]`, set with `ingestion_status = failed`).**
+`transient` (provider/infra, eligible for the recovery sweep), `permanent`, `budget` (daily extraction
+budget reached; retried only after the budget window resets), `connector_disconnected` (C8; re-armable
+only after reconnect), `incomplete_extraction` (C6c, eligible like `transient`). Attempts live in
+`pipeline_data["attempts"]`, the earliest retry in `pipeline_data["next_retry_at"]` (ISO 8601 UTC).
+A completed document that published nothing records `pipeline_data["publication"]` as one of
+`published`, `superseded_before_publish`, `no_facts`, `noop`.
+
+**Recovery (`requeue_transient_failure` in the receiver module).**
+`requeue_transient_failure(session, document_id, workspace_id, *, now)` resets an eligible failed
+connector document to `pending`, increments `attempts`, sets `next_retry_at` by exponential backoff,
+and re-dispatches it through the existing outbox. It refuses (returns False) when attempts reached
+`connector_max_handoff_attempts`, the error code is not eligible, or the connector is no longer active at
+the document's generation.
+
+**Retirement.** `services/memory/retire.py::retire_document_memories` (signature in the stub) is called
+by publication (reason `source_superseded`), by the connector-removal path (`connector_removed`) and by the
+re-scan deletion rule (`source_deleted`).
+
+**Sync orchestration.** The orchestrator owns lease acquisition, fence checks, cursor and work-item
+writes, the recovery sweep and the deletion rule; it consumes `ScopeRun` objects and a
+`RepoAccessVerifier` from `connectors/github/contracts.py` and never calls GitHub endpoints directly.
