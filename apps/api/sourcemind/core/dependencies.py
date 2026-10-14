@@ -220,7 +220,8 @@ async def _fetch_jwks(jwks_url: str, *, force_refresh: bool = False) -> list[dic
     cached = _jwks_cache.get(jwks_url)
     if not force_refresh and cached and (time.time() - cached["fetched_at"]) < 300:
         return cached["keys"]
-    if force_refresh and cached and (time.time() - cached["fetched_at"]) < _JWKS_MIN_REFRESH_SECONDS:
+    age = time.time() - cached["fetched_at"] if cached else None
+    if force_refresh and age is not None and age < _JWKS_MIN_REFRESH_SECONDS:
         # A token naming an unknown key id forces a refresh. Unauthenticated callers choose
         # the key id, so without a floor every request would cost an outbound call. Keys
         # are re-fetched at most once per interval; a legitimate rotation is picked up by the
