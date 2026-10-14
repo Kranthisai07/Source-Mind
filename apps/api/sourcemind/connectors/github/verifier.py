@@ -10,6 +10,8 @@ only this mapping, not GitHub's behavior.
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 import structlog
 
@@ -104,3 +106,17 @@ class CollaboratorPermissionVerifier:
                 return VerifierResult(AccessVerdict.DENIED, "denied")
             return _unverified("denial_semantics_unverified")
         return _unverified("malformed_response")
+
+def build_verifier(auth: Any) -> CollaboratorPermissionVerifier:
+    """The verifier the sync worker uses, wired to the installation-token client.
+
+    ``authorization_denial_semantics_verified`` stays False until the owner confirms the live
+    response semantics (contract C11); while False an explicit denial is reported as
+    unverified, never as a definitive denial.
+    """
+    from sourcemind.core.config import get_settings
+
+    return CollaboratorPermissionVerifier(
+        GitHubClient(auth),
+        denial_semantics_verified=bool(get_settings().authorization_denial_semantics_verified),
+    )

@@ -147,6 +147,7 @@ class _FakeRun:
                 listing_complete=exhausted,
             ),
             inventory_complete=d.inventory_complete and exhausted,
+            full_inventory=d.inventory_complete and exhausted,
             seen_source_ids=frozenset(e.id for e in d.catalog.get((self.repo, self.scope), [])),
         )
 

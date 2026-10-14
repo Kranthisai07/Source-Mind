@@ -128,7 +128,14 @@ class ScopeResult:
     """Available after ``ScopeRun.items()`` is exhausted."""
 
     state: ScopeState  # persist once the last yielded item is durably handed off
-    inventory_complete: bool  # listing exhausted; no cap, error or rate limit hit (C7)
+    inventory_complete: bool  # this pass read its whole window; no cap, error or rate limit hit
+    #: True ONLY when the pass listed the ENTIRE source for this scope (no time floor, no
+    #: item cap, listing exhausted). The deletion rule (C7) reads this and nothing else:
+    #: "window fully read" is not "everything that exists was seen", and treating it so
+    #: would retire every unchanged artifact after two incremental scans. Discovery in
+    #: v1 imports a bounded window, so it never sets this; automatic deletion detection
+    #: is therefore off, deliberately, rather than risking live memories.
+    full_inventory: bool = False
     filtered: dict[str, int] = field(default_factory=dict)  # reason -> count (visible)
     truncated: dict[str, int] = field(default_factory=dict)  # e.g. segments over the PR cap
     seen_source_ids: frozenset[str] = frozenset()  # for the two-scan deletion rule

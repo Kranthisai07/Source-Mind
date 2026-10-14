@@ -117,7 +117,10 @@ def test_tick_enqueues_a_scheduled_sync_for_every_due_connector() -> None:
     from sourcemind.workers import connector_tasks
 
     cid, ws, creator = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-    rows = [{"connector_id": cid, "workspace_id": ws, "created_by": creator}]
+    rows = [
+        {"connector_id": cid, "workspace_id": ws, "created_by": creator,
+         "creator_active": True, "acting_admin": uuid.uuid4()}
+    ]
     with (
         patch.object(connector_tasks, "_list_due", new=AsyncMock(return_value=rows)),
         patch.object(connector_tasks.sync_connector, "apply_async") as enqueue,
@@ -150,3 +153,26 @@ def test_retry_backoff_grows_and_is_bounded() -> None:
     assert 30 <= _backoff_seconds(0) <= 45
     assert _backoff_seconds(10) <= 1350
     assert _backoff_seconds(3) > _backoff_seconds(0) - 1
+
+
+@pytest.mark.unit
+def test_tick_uses_an_acting_admin_when_the_creator_left_and_skips_orphans() -> None:
+    from sourcemind.workers import connector_tasks
+
+    cid, ws, creator, admin = (uuid.uuid4() for _ in range(4))
+    orphan = uuid.uuid4()
+    rows = [
+        {"connector_id": cid, "workspace_id": ws, "created_by": creator,
+         "creator_active": False, "acting_admin": admin},
+        {"connector_id": orphan, "workspace_id": ws, "created_by": creator,
+         "creator_active": False, "acting_admin": None},
+    ]
+    with (
+        patch.object(connector_tasks, "_list_due", new=AsyncMock(return_value=rows)),
+        patch.object(connector_tasks.sync_connector, "apply_async") as enqueue,
+    ):
+        result = connector_tasks.dispatch_due_syncs()
+
+    assert result == {"dispatched": 1}
+    assert enqueue.call_count == 1
+    assert enqueue.call_args.kwargs["kwargs"]["user_id"] == str(admin)  # never the departed creator

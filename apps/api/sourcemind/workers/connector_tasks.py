@@ -44,18 +44,26 @@ def _backoff_seconds(retries: int) -> int:
 def dispatch_due_syncs() -> dict:
     """Beat tick: enqueue ``sync_connector`` for every due connector (no user context)."""
     due = asyncio.run(_list_due(_TICK_BATCH))
+    dispatched = 0
     for row in due:
-        created_by = row.get("created_by")
+        # The run uses the creator's RLS context. When the creator is no longer an active
+        # owner/admin the connector is invisible to them, so an active admin's context is
+        # used instead: the orchestrator then records ``owner_inactive`` and stops.
+        acting = row.get("created_by") if row.get("creator_active") else row.get("acting_admin")
+        if not acting:
+            log.warning("connector_tick_no_admin", connector_id=str(row["connector_id"]))
+            continue
         sync_connector.apply_async(
             kwargs={
                 "connector_id": str(row["connector_id"]),
                 "workspace_id": str(row["workspace_id"]),
-                "user_id": str(created_by) if created_by else None,
+                "user_id": str(acting),
                 "trigger": "scheduled",
             }
         )
-    log.info("connector_tick_dispatched", due=len(due))
-    return {"dispatched": len(due)}
+        dispatched += 1
+    log.info("connector_tick_dispatched", due=len(due), dispatched=dispatched)
+    return {"dispatched": dispatched}
 
 
 async def _list_due(limit: int) -> list[dict[str, Any]]:
@@ -167,8 +175,7 @@ async def _run_sync(
     from sourcemind.models.connector import ConnectorConfig
 
     if user_id is None:
-        # The scheduler cannot read the creator under RLS (sm_list_due_connectors does
-        # not return it); the run is refused rather than guessed.
+        # A run needs a user context; the tick always supplies one, so this is a caller bug.
         log.warning("connector_sync_creator_unknown", connector_id=str(connector_id))
         return {"status": "rejected", "error_code": "creator_unknown"}
 
@@ -223,14 +230,8 @@ async def _run_sync(
         await close_redis()
 
 
-def _build_verifier(auth: GitHubAppAuth) -> Any | None:
-    """The RepoAccessVerifier lives in verifier.py (another package). Until it exists
-    the orchestrator reports every scope ``authorization_unverified`` and calls no
-    content endpoint (C11): fail closed."""
-    try:
-        from sourcemind.connectors.github.verifier import (
-            build_verifier,  # type: ignore[import-not-found]
-        )
-    except ImportError:
-        return None
+def _build_verifier(auth: GitHubAppAuth) -> Any:
+    """The repository-access verifier (contract C11), wired to the installation token."""
+    from sourcemind.connectors.github.verifier import build_verifier
+
     return build_verifier(auth)

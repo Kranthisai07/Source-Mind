@@ -406,7 +406,16 @@ class GitHubConnector:
         lister = getattr(self._client, "list_installation_repositories", None)
         if lister is None:
             return None
-        return {str(n).lower() for n in await lister()}
+        result = lister()
+        if hasattr(result, "__aiter__"):  # the real client returns a Paginator of repo dicts
+            names: set[str] = set()
+            async for item in result:
+                full = item.get("full_name") if isinstance(item, dict) else item
+                if full:
+                    names.add(str(full).lower())
+            # A page-capped listing cannot say a repo is absent: fail closed.
+            return names if getattr(result, "exhausted", True) is not False else None
+        return {str(n).lower() for n in await result}
 
     # ── scopes ───────────────────────────────────────────────────────────────
 
@@ -627,7 +636,7 @@ class GitHubConnector:
             filtered[key] = filtered.get(key, 0) + int(n)
         sc.state = result.state
         await self._persist_state(sc)
-        if result.inventory_complete and result.seen_source_ids:
+        if result.full_inventory and result.seen_source_ids:
             await self._apply_deletion_rule(sc, result.seen_source_ids)
         return handed, handed >= budget and not result.state.listing_complete, None
 
