@@ -34,8 +34,27 @@ definition in `services/memory/read.py`).
   database session gets that user's RLS context, and workspace membership with READ is asserted.
   `workspace_id` is a selector only. A workspace or memory the caller cannot access gets the same
   `not_found` result as one that does not exist.
-* Rate limiting reuses the search limiter. Logs record user id, workspace id and result counts, never
-  memory text.
+* **Mandatory checks** (a token failing any of them gets the same 401): signature and issuer, **audience**
+  equal to the resource URL, expiry, and the **required scope** (`MCP_REQUIRED_SCOPES`, default
+  `memories:read`, must be non-empty when the interface is enabled). The audience says the token was
+  issued for this server; the scope says the user consented to what it does (read memories).
+* **Optional check:** `MCP_ALLOWED_CLIENT_IDS` restricts WHICH OAuth clients may be used. It is not required
+  by policy (consent + audience + scope + the per-call membership check already bound what a client can
+  reach), is empty by default, and only narrows. Do not read an empty allowlist as "no policy".
+* Rate limiting: `search_memories` uses the search limiter; `get_memory` has its own per-user budget
+  (`RATE_LIMIT_MCP_READ_PER_MINUTE`, default 120) so an agent looping over ids cannot exhaust the
+  interactive search allowance. JWKS refreshes forced by an unknown key id are limited to one per 30 s.
+  Logs record user id, workspace id and result counts, never memory text.
+* **Revocation (honest status).** Access tokens are JWTs verified offline. Revoking a grant therefore
+  does not stop an already issued token until it expires (Clerk documents a one-day lifetime for OAuth
+  access tokens). That does NOT meet "revocation takes effect on the next call" for the token itself.
+  What does take effect on the next call: removing the user from the workspace, and deleting or
+  deactivating the user row (both are checked per call against the database). The smallest supported
+  change, to be chosen after the Clerk probe (`operator/clerk_compat.py`), is one of: (a) a shorter
+  access-token lifetime configured in Clerk if the dashboard allows it, or (b) opaque access tokens
+  verified by a call to Clerk per request (needs the verify endpoint's documented response, plus latency
+  and an availability dependency, so it changes this contract and needs your approval). Until one is
+  measured and accepted, keep MCP disabled.
 
 ## Untrusted content
 

@@ -30,6 +30,7 @@ return {current, remaining_ms}
 
 class RateLimitedOperation(StrEnum):
     SEARCH = "search"
+    MCP_READ = "mcp-read"
     INGEST = "ingest"
     ANALYTICS = "analytics"
     WORKSPACE_CREATE = "workspace-create"
@@ -43,6 +44,7 @@ def _operation_limit(operation: RateLimitedOperation) -> tuple[int, int]:
     settings = get_settings()
     limits = {
         RateLimitedOperation.SEARCH: (settings.rate_limit_search_per_minute, 60),
+        RateLimitedOperation.MCP_READ: (settings.rate_limit_mcp_read_per_minute, 60),
         RateLimitedOperation.INGEST: (settings.rate_limit_ingestion_per_minute, 60),
         RateLimitedOperation.ANALYTICS: (settings.rate_limit_analytics_per_minute, 60),
         RateLimitedOperation.WORKSPACE_CREATE: (
