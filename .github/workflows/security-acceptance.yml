@@ -236,10 +236,10 @@ jobs:
           tests/integration/test_handoff_assignment_real_db.py::test_handoff_assignment_is_atomic_and_limited_to_seeded_memories
           tests/integration/test_ingest_schema_real_db.py::test_artifact_head_refuses_published_ahead_of_latest
           tests/integration/test_ingest_schema_real_db.py::test_check_constraints_accept_new_values_and_reject_unknown
+          tests/integration/test_ingest_schema_real_db.py::test_due_connector_listing_is_cross_tenant_but_ids_only
           tests/integration/test_ingest_schema_real_db.py::test_new_tables_are_workspace_scoped_under_force_rls
           tests/integration/test_ingest_schema_real_db.py::test_pending_anchor_uniqueness_is_per_revision
           tests/integration/test_ingest_schema_real_db.py::test_runtime_grants_are_exact_and_public_has_none
-          tests/integration/test_ingest_schema_real_db.py::test_due_connector_listing_is_cross_tenant_but_ids_only
           tests/integration/test_ingestion_worker_contract.py::test_ambiguous_publication_redelivery_preserves_committed_output
           tests/integration/test_ingestion_worker_contract.py::test_concurrent_duplicate_deliveries_commit_output_once
           tests/integration/test_ingestion_worker_contract.py::test_exhausted_retries_are_terminal_failed
