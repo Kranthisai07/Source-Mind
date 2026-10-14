@@ -3492,3 +3492,24 @@ PUBLIC and the runtime role (platforms with default privileges grant new objects
 0013 now sweeps every other grantee on the new tables, the schedule table and both functions (as 0007 does
 for its internal tables); proven by naming a different role as the runtime role inside a rolled-back
 transaction (the real runtime role is then an "other grantee" and loses its grants).
+
+## D-044 — Findings from the real-browser journey (Clerk sign-in, local API/worker, simulated GitHub and providers)
+
+**Defects found only by driving the UI, each fixed with a regression that fails without the fix:**
+1. *Reconnect after "remove memories" imported nothing.* The same-revision short-circuit compared content only,
+   so a NEW connector seeing content the old connector had handed off (its memories since removed) skipped
+   every item and advanced its cursor. "Same revision" now means "handed off by this connector".
+2. *The connector card kept showing the old state after Disconnect* until the page was reloaded (the card
+   caches its own status read and preferred it over the list's). It re-reads when the list's status changes.
+3. The page header counted disconnected connectors as "connected sources".
+**Harness issues (not product defects):** the simulated GitHub edit carried the fake's own clock and was
+correctly ignored by incremental discovery (now stamped with real time); the first edit made the API
+contact the model provider's embeddings endpoint once with the placeholder key (rejected, no cost; the
+memory text of a simulated issue left the machine). All embedding paths are now simulated and the provider
+base URLs point at a closed local port.
+**Behaviour confirmed in the browser:** connect callback strips code/state from the URL; only the
+selected-from-list repo is offered; Connect needs both the repo and the consent box; a duplicate name shows
+a clear error; sync, status table, source link (https, new tab, noopener), "Unresolved author" (never the
+signed-in user), human edit credited to the editor, revised source -> new revision memory and the edited
+memory kept with a "source changed since" notice, rate-limit message, remove vs keep disconnect, and the
+deletion-not-detected note.

@@ -509,7 +509,7 @@ async def _receive_connector_revision(
         previous = (
             await session.execute(
                 text(
-                    "SELECT document_id, source_revision FROM artifact_links "
+                    "SELECT document_id, source_revision, connector_id FROM artifact_links "
                     "WHERE workspace_id = CAST(:ws AS uuid) AND source_tool = :tool "
                     "AND source_type = :kind AND source_id = :sid "
                     "AND revision_seq = :seq ORDER BY created_at LIMIT 1"
@@ -519,7 +519,16 @@ async def _receive_connector_revision(
         ).first()
         if previous is not None:
             previous_document_id = previous.document_id
-            if revision is not None and previous.source_revision == revision:
+            # "Same revision" is a statement about what THIS connector already handed off. A new
+            # connector (a reconnect after a disconnect, possibly with "remove memories") that sees
+            # identical content is a new revision: the earlier one's memories may have been removed
+            # with the old connector, and treating the content as already imported would leave the
+            # source silently absent forever (found by the browser journey).
+            if (
+                revision is not None
+                and previous.source_revision == revision
+                and previous.connector_id == connector_id
+            ):
                 if pre_commit is not None:
                     await pre_commit(session)
                 await session.commit()

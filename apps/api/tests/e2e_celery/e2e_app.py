@@ -140,8 +140,9 @@ def _install_github() -> None:
         edits = json.loads(edit_file.read_text(encoding="utf-8"))
         edit_file.unlink()
         for e in edits:
-            fake.tick(5)
-            fake.edit_item(REPO, int(e["number"]), body=e["body"])
+            # Stamped with REAL time: discovery's windows are built from the real clock, while the
+            # fake's own clock starts 30 minutes in the past.
+            fake.edit_item(REPO, int(e["number"]), body=e["body"], at=datetime.now(UTC))
 
     async def handler(request: httpx.Request) -> httpx.Response:
         apply_pending_edits()

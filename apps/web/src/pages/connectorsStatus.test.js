@@ -36,6 +36,7 @@ jest.mock("../lib/api", () => ({
 }));
 
 import Connectors from "./Connectors";
+import ConnectorCard from "../components/connectors/ConnectorCard";
 import { POLL_INTERVAL_MS } from "../components/connectors/ConnectorCard";
 
 const ONE = { ...LIST, items: [LIST.items[0]], connectors: [LIST.items[0]], total: 1 };
@@ -276,5 +277,33 @@ describe("deletion detection is off and the UI says so", () => {
         // Never claims a deletion reconciliation anywhere on the card.
         const card = screen.getByTestId(`connector-${ID}`).textContent;
         expect(card).not.toMatch(/reconciled|deletions? (checked|verified|reconciled)|full inventory/i);
+    });
+});
+
+
+describe("lifecycle changes made elsewhere", () => {
+    test("the card re-reads its status when the list says the connector was disconnected", async () => {
+        const { rerender } = render(
+            <MemoryRouter>
+                <ConnectorCard connector={ONE.items[0]} onLogs={() => {}} onDisconnect={() => {}} />
+            </MemoryRouter>
+        );
+        await flush();
+        expect(mockStatus).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId(`connector-state-${ID}`).textContent).toMatch(/^idle$/i);
+
+        mockStatus.mockResolvedValue({ ...VARIANTS.idle, state: "disconnected", status: "disconnected" });
+        rerender(
+            <MemoryRouter>
+                <ConnectorCard
+                    connector={{ ...ONE.items[0], status: "disconnected" }}
+                    onLogs={() => {}}
+                    onDisconnect={() => {}}
+                />
+            </MemoryRouter>
+        );
+        await flush();
+        expect(mockStatus).toHaveBeenCalledTimes(2);
+        expect(screen.getByTestId(`connector-state-${ID}`).textContent).toMatch(/disconnected/i);
     });
 });

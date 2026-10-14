@@ -91,7 +91,27 @@ async def _real_connector_config(
 ) -> SimpleNamespace:
     """A real, active connector row. The ingestion worker fails closed for a document whose
     connector it cannot find, so a stand-in config with a random id no longer works."""
+    from sqlalchemy import select
+
     from sourcemind.models.connector import ConnectorConfig
+
+    # A resync comes from the SAME connector. (Content handed off by a different connector is a new
+    # revision, so a fresh row per call would stop re-syncs from being recognised as such.)
+    existing = (
+        await session.execute(
+            select(ConnectorConfig).where(
+                ConnectorConfig.workspace_id == data.target_workspace_id,
+                ConnectorConfig.display_name.like("author-links-%"),
+                ConnectorConfig.created_by == creator,
+                ConnectorConfig.status == "active",
+            ).limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        await session.commit()
+        return SimpleNamespace(
+            id=existing.id, config={}, last_sync_at=None, generation=0, created_by=creator
+        )
 
     row = ConnectorConfig(
         workspace_id=data.target_workspace_id,
