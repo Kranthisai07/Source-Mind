@@ -10,7 +10,7 @@ PATCH  /v1/connectors/:id                             — rename / narrow repos 
 DELETE /v1/connectors/:id                             — soft disconnect (?remove_memories=)
 POST   /v1/connectors/:id/sync                        — trigger a manual sync
 POST   /v1/connectors/:id/retry-failed                — re-arm retryable failed documents
-POST   /v1/connectors/:id/rescan                      — re-read the import window (does not detect deletions)
+POST   /v1/connectors/:id/rescan                      — re-read the import window
 GET    /v1/connectors/:id/status                      — state, scopes, counters
 GET    /v1/connectors/:id/sync-logs                   — paginated sync history
 """
