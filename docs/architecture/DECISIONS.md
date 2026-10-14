@@ -3479,12 +3479,11 @@ sync worker killed holding the lease blocks takeover until expiry, then a new wo
 database, not a 10-minute wait); a disconnect with queued documents makes the later ingestion worker fail
 them as `connector_disconnected` with zero provider calls and zero memories.
 
-**Observed, not fixed (operations):** with `visibility_timeout=5` the killed task's message still took
-~95 s to return (hypothesis: the Kombu Redis unacked-restore cadence and mutex, not tested). The
-production default visibility timeout is one hour, so a task killed mid-flight (OOM, node loss) can sit
-unprocessed for up to an hour, and nothing sweeps stale `processing` documents. Recommend setting
-`broker_transport_options.visibility_timeout` deliberately (longer than the longest task) and treating
-stale `processing` documents in the recovery sweep.
+**Redelivery delay (measured later, see CELERY_REDELIVERY_RUNBOOK.md):** a killed worker's message returns
+only at a live worker's restore tick (acting about every 100 s from that worker's start) and only once older than
+the visibility timeout: ~101 s for timeouts of 5 s and 30 s, ~201 s for 120 s, 1.4 s when the replacement started
+after the message was already old. Not measured at the 3600 s default, so no upper bound is claimed. Nothing sweeps
+stale `processing` documents; the runbook gives the safe manual procedure.
 
 ## D-042 — Revert publishes a new revision; admin re-arm; paused is not disconnected
 
