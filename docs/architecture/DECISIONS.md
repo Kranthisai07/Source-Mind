@@ -3233,3 +3233,45 @@ new column; the stale marker is a column because search and the edit path filter
 Acceptance exact selection: 97 -> 101, zero skips) runs as the restricted runtime role under RLS and
 checks the three authorship states, current/stale with the newer link, non-member and cross-workspace
 denial, and REST/service equality. Full unit suite 744 passed locally on CPython 3.12.3.
+
+
+---
+
+## D-032 — Automatic ingestion: fenced leases, per-scope discovery state, revision heads, schedule via SECURITY DEFINER
+
+**What:** Migration `20261015_0013` adds the schema for scheduled GitHub ingestion. `connector_configs`
+gains `installation_id`, `authorized_github_user_id`, `created_by`, `sync_interval_minutes`,
+`sync_lease_owner/expires_at`, `fence`, `generation` and new statuses; `connector_sync_logs` gains
+trigger/updated/failed/filtered counters and an error code; new tables `connector_sync_cursors` (per
+connector, repo and artifact type), `connector_work_items` (handoff attempts and quarantine) and
+`artifact_heads` (latest and published revision per artifact); `documents` gains a supersession link and
+the connector generation; the pending-anchor unique index now includes the revision. The normative rules
+are in `docs/architecture/AUTOMATIC_INGESTION_CONTRACT.md`.
+
+**Why this approach:** a sync that can be redelivered, restarted or overtaken must not publish stale work,
+skip an artifact or resurrect a disconnected connector. A monotonically increasing `fence` checked inside
+every write transaction rejects a superseded worker; `generation` lets the ingestion worker refuse queued
+documents after a disconnect; a head row per artifact serializes revision publication; discovery position
+is kept per scope and advances only after a durable handoff or a recorded quarantine, while downstream
+failures stay recoverable from document state.
+
+**Scheduling without weakening isolation:** the tick must list due connectors across workspaces but has no
+user to impersonate. A first design added a policy conditioned on a session setting; the existing
+"every protected-table policy requires active membership" test correctly failed it. The final design
+follows the project's existing pattern for privileged reads: an internal table `sm_connector_schedule` (ids,
+status and due times only; no RLS, no runtime privileges) kept in step by a SECURITY DEFINER trigger, read
+only through `sm_list_due_connectors(limit)`, to which the runtime role has EXECUTE. No policy on a
+protected table changed.
+
+**Alternatives rejected:** webhooks as the first trigger (new public endpoint, HMAC and delivery dedup;
+polling reuses the incremental path and tolerates missed events); a single `last_sync_at` checkpoint (cannot
+express per-scope progress or partial failure); mapping a changed artifact onto `parent_memory_id` versions
+(extraction yields a different fact set, so a one-to-one mapping would be false).
+
+**Verification:** `tests/integration/test_ingest_schema_real_db.py` (6 nodes, in the Security Acceptance
+exact selection, 101 -> 107): exact runtime ACL and no PUBLIC access on each new table, workspace isolation
+under FORCE RLS, cross-tenant due listing through the function only, CHECK constraints, per-revision
+pending-anchor uniqueness, head sequence constraint. Local acceptance run: 107 collected, 107 executed,
+107 passed, 0 skipped. Migration downgrade/upgrade round trip passed on a clean database; the downgrade
+guards count rows with FORCE RLS lifted inside the transaction so they are not blind when run by a role
+without BYPASSRLS (the 0011 guard has the same blind spot and is not changed here).
