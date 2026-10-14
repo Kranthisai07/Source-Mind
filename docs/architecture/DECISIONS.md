@@ -3263,15 +3263,21 @@ status and due times only; no RLS, no runtime privileges) kept in step by a SECU
 only through `sm_list_due_connectors(limit)`, to which the runtime role has EXECUTE. No policy on a
 protected table changed.
 
+**Scheduler identity.** The due list also returns the connector's creator, whether that creator is still
+an active owner/admin, and one active owner/admin to act as. A SECURITY DEFINER write was tried and
+rejected: the definer role is itself subject to FORCE RLS and cannot update a protected table without
+a member context. So when the creator has left, the scheduled run uses the acting admin's ordinary RLS
+context and the orchestrator records `owner_inactive` through its normal, fenced path.
+
 **Alternatives rejected:** webhooks as the first trigger (new public endpoint, HMAC and delivery dedup;
 polling reuses the incremental path and tolerates missed events); a single `last_sync_at` checkpoint (cannot
 express per-scope progress or partial failure); mapping a changed artifact onto `parent_memory_id` versions
 (extraction yields a different fact set, so a one-to-one mapping would be false).
 
 **Verification:** `tests/integration/test_ingest_schema_real_db.py` (6 nodes, in the Security Acceptance
-exact selection, 101 -> 107): exact runtime ACL and no PUBLIC access on each new table, workspace isolation
+exact selection, 101 -> 108): exact runtime ACL and no PUBLIC access on each new table, workspace isolation
 under FORCE RLS, cross-tenant due listing through the function only, CHECK constraints, per-revision
-pending-anchor uniqueness, head sequence constraint. Local acceptance run: 107 collected, 107 executed,
-107 passed, 0 skipped. Migration downgrade/upgrade round trip passed on a clean database; the downgrade
+pending-anchor uniqueness, head sequence constraint. Local acceptance run: 108 collected, 108 executed,
+108 passed, 0 skipped. Migration downgrade/upgrade round trip passed on a clean database; the downgrade
 guards count rows with FORCE RLS lifted inside the transaction so they are not blind when run by a role
 without BYPASSRLS (the 0011 guard has the same blind spot and is not changed here).

@@ -162,6 +162,7 @@ def _create_schedule_index(role: str) -> None:
         CREATE TABLE sm_connector_schedule (
             connector_id uuid PRIMARY KEY,
             workspace_id uuid NOT NULL,
+            created_by uuid,
             status text NOT NULL,
             next_sync_at timestamptz,
             sync_lease_expires_at timestamptz
@@ -183,11 +184,13 @@ def _create_schedule_index(role: str) -> None:
                 RETURN OLD;
             END IF;
             INSERT INTO public.sm_connector_schedule AS s
-                (connector_id, workspace_id, status, next_sync_at, sync_lease_expires_at)
-            VALUES (NEW.id, NEW.workspace_id, NEW.status, NEW.next_sync_at,
+                (connector_id, workspace_id, created_by, status, next_sync_at,
+                 sync_lease_expires_at)
+            VALUES (NEW.id, NEW.workspace_id, NEW.created_by, NEW.status, NEW.next_sync_at,
                     NEW.sync_lease_expires_at)
             ON CONFLICT (connector_id) DO UPDATE SET
                 workspace_id = EXCLUDED.workspace_id,
+                created_by = EXCLUDED.created_by,
                 status = EXCLUDED.status,
                 next_sync_at = EXCLUDED.next_sync_at,
                 sync_lease_expires_at = EXCLUDED.sync_lease_expires_at;
@@ -199,20 +202,50 @@ def _create_schedule_index(role: str) -> None:
     op.execute("REVOKE ALL ON FUNCTION sm_sync_connector_schedule() FROM PUBLIC")
     op.execute(
         "CREATE TRIGGER sm_connector_schedule_sync "
-        "AFTER INSERT OR DELETE OR UPDATE OF workspace_id, status, next_sync_at, "
+        "AFTER INSERT OR DELETE OR UPDATE OF workspace_id, created_by, status, next_sync_at, "
         "sync_lease_expires_at ON connector_configs "
         "FOR EACH ROW EXECUTE FUNCTION sm_sync_connector_schedule()"
     )
     op.execute(
         """
         CREATE FUNCTION sm_list_due_connectors(max_rows integer)
-        RETURNS TABLE (connector_id uuid, workspace_id uuid)
+        RETURNS TABLE (
+            connector_id uuid, workspace_id uuid, created_by uuid, creator_active boolean,
+            acting_admin uuid
+        )
         LANGUAGE sql
         STABLE
         SECURITY DEFINER
         SET search_path = pg_catalog, public
         AS $$
-            SELECT s.connector_id, s.workspace_id
+            SELECT s.connector_id, s.workspace_id, s.created_by,
+                   EXISTS (
+                       SELECT 1
+                       FROM public.sm_workspace_access_grants AS m
+                       JOIN public.sm_workspace_bootstraps AS w
+                         ON w.workspace_id = m.workspace_id
+                       WHERE m.workspace_id = s.workspace_id
+                         AND m.user_id = s.created_by
+                         AND m.status = 'active'
+                         AND m.departed_at IS NULL
+                         AND m.role IN ('owner', 'admin')
+                         AND w.deleted_at IS NULL
+                   ) AS creator_active,
+                   -- An active owner/admin whose context may be used to RECORD (not perform)
+                   -- an owner_inactive outcome when the creator has left; NULL = nobody left.
+                   (
+                       SELECT g.user_id
+                       FROM public.sm_workspace_access_grants AS g
+                       JOIN public.sm_workspace_bootstraps AS b
+                         ON b.workspace_id = g.workspace_id
+                       WHERE g.workspace_id = s.workspace_id
+                         AND g.status = 'active'
+                         AND g.departed_at IS NULL
+                         AND g.role IN ('owner', 'admin')
+                         AND b.deleted_at IS NULL
+                       ORDER BY (g.role = 'owner') DESC, g.user_id
+                       LIMIT 1
+                   ) AS acting_admin
             FROM public.sm_connector_schedule AS s
             WHERE s.status = 'active'
               AND (s.next_sync_at IS NULL OR s.next_sync_at <= now())
@@ -229,8 +262,8 @@ def _create_schedule_index(role: str) -> None:
     op.execute("ALTER TABLE connector_configs NO FORCE ROW LEVEL SECURITY")
     op.execute(
         "INSERT INTO sm_connector_schedule "
-        "(connector_id, workspace_id, status, next_sync_at, sync_lease_expires_at) "
-        "SELECT id, workspace_id, status, next_sync_at, sync_lease_expires_at "
+        "(connector_id, workspace_id, created_by, status, next_sync_at, sync_lease_expires_at) "
+        "SELECT id, workspace_id, created_by, status, next_sync_at, sync_lease_expires_at "
         "FROM connector_configs"
     )
     op.execute("ALTER TABLE connector_configs FORCE ROW LEVEL SECURITY")
