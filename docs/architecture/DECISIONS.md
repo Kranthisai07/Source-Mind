@@ -3417,5 +3417,7 @@ connectors. This edits the unmerged 0013 in place (no database has applied it ou
 
 **Reviewed, not changed:** other-grantee sweeps for default-privilege platforms (the repo's deployment
 roles are explicit; recorded as an operator check), backfill of `artifact_heads` for pre-existing
-connector links (none exist: connectors with `created_by` did not exist before this release), and the
+connector links (UNVERIFIED whether any production connector rows exist; connectors from before this release have
+`created_by` NULL and are reported as owner-inactive by the tick, so they need a reconnect; check the count
+before release), and the
 viewer-role write scope on the three new tables (application layer is the control, as stated in the docstring).
