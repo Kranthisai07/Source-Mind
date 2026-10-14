@@ -314,8 +314,8 @@ async def rearm_quarantined(
     quarantined items are therefore restarted from the import-window start (as a re-scan does) and a
     run is scheduled. Everything stays in the database (state, cursors, schedule), so a crash or a
     redeploy between this call and the next sync loses nothing. Publication cannot duplicate:
-    an item whose revision is already the artifact's latest hands off as ``same_revision`` and only the
-    item that really failed produces a new revision. Locked like every lifecycle change.
+    an item whose revision is already the artifact's latest hands off as ``same_revision`` and
+    only the item that really failed produces a new revision. Locked like every lifecycle change.
     """
     row = await _lock(session, connector_id)
     if row["status"] in ("disconnected", "paused"):
