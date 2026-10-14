@@ -569,6 +569,26 @@ async def test_p6_concurrent_finalize_is_serialized_by_the_head_lock(world) -> N
     assert (head.published_seq, head.published_document_id) == (2, d2)
 
 
+async def test_p6_unsynchronised_concurrent_finalize_stress(world) -> None:
+    """Two workers finalising revisions 1 and 2 of one artifact at the same instant, in both
+    start orders, many times. Nothing may hang or deadlock, and whichever interleaving
+    happens the final state is the same: revision 2 live, revision 1 retired, head (2, d2)."""
+    w = world
+    _install_retire(w.mp, _local_retire)
+    _facts(w.harness, [_fact("rev")])
+    for i in range(12):
+        sid, d1, d2 = await _two_revisions(w)
+        order = (d1, d2) if i % 2 == 0 else (d2, d1)
+        outs = await asyncio.wait_for(
+            asyncio.gather(*(_run(w.data, d) for d in order)), timeout=90
+        )
+        assert [o["status"] for o in outs] == ["completed", "completed"], (i, outs)
+        assert await _live(w.engine, w.data, d1) == 0, i
+        assert await _live(w.engine, w.data, d2) == 1, i
+        head = await _head(w.engine, w.data, sid)
+        assert (head.published_seq, head.published_document_id) == (2, d2), i
+
+
 async def test_p6_publication_waits_for_the_head_lock(world) -> None:
     w = world
     _install_retire(w.mp, _local_retire)

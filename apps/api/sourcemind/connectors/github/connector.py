@@ -318,12 +318,18 @@ class GitHubConnector:
                     minutes=int(getattr(self._live, "sync_interval_minutes", None) or 15)
                 )
             )
-            if self._log is not None and self._log.id is not None:
-                self._log.status = "failed"
-                self._log.error_code = code
-                self._log.error_message = "Connector sync failed."
-                self._log.completed_at = now
-                self._session.add(self._log)
+            if outcome.log_id is not None:
+                # By id and SQL: the rollback above expired the ORM object, and reading an
+                # expired attribute in async code raises (which used to leave the run
+                # "running" forever). Fenced together with finish_run below.
+                await self._session.execute(
+                    text(
+                        "UPDATE connector_sync_logs SET status = 'failed', error_code = :c, "
+                        "error_message = 'Connector sync failed.', completed_at = :n "
+                        "WHERE id = :i AND status = 'running'"
+                    ),
+                    {"c": code, "n": now, "i": outcome.log_id},
+                )
             assert self._token is not None
             await ss.finish_run(
                 self._session,

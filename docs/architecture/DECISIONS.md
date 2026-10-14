@@ -3282,7 +3282,7 @@ pending-anchor uniqueness, head sequence constraint. Local acceptance run: 108 c
 guards count rows with FORCE RLS lifted inside the transaction so they are not blind when run by a role
 without BYPASSRLS (the 0011 guard has the same blind spot and is not changed here).
 
-## D-033 — Web: real GitHub connect flow, honest connector status, source provenance on memories
+## D-034 — Web: real GitHub connect flow, honest connector status, source provenance on memories
 
 **What:** `apps/web` Connectors page now speaks the backend's real contract. Add flow = authorize
 (browser to GitHub) -> `/connectors/github/callback` -> repository picker -> mandatory workspace-readable
@@ -3326,3 +3326,35 @@ backend pydantic schemas (`model_dump(mode="json")`), values invented, not captu
 
 **Not verified:** no real browser run, no real GitHub App redirect, no live backend; everything above is
 covered by jest tests with faked fetch/api only.
+
+---
+
+## D-035 — Automatic ingestion: how the packages fit, and where they are deliberately narrower
+
+**What:** the GitHub client (typed errors instead of "sleep and loop on any 403"), per-segment mapper,
+scope discovery, access verifier, fenced sync orchestrator, revision-aware receiver and fenced
+publication, machine-only retirement with human-edit preservation, the connectors API and the web UI
+were implemented against `docs/architecture/AUTOMATIC_INGESTION_CONTRACT.md` and integrated on one
+branch. Behaviour that is narrower than the contract is listed in that document's last section.
+
+**Choices worth keeping:**
+* The orchestrator always uses the revision-aware receiver; the earlier "existing link means skip"
+  pre-check was removed together with its tests, because the receiver now owns revision identity.
+  A cached idempotent replay of a connector revision is reported as `already_exists`, otherwise a
+  re-scan would be counted as a new import.
+* Retirement locks memory rows `FOR NO KEY UPDATE` in ascending id order and re-reads the set until
+  stable; the edit path locks one row `FOR UPDATE`, which still conflicts, and the weaker mode avoids
+  a lock cycle with the foreign-key checks an edit takes on `memory_relations`.
+* A document is stamped with the connector generation; the worker re-checks it before any provider
+  call and inside the publication transaction, so a disconnect stops queued work.
+* The deletion rule needs a true full inventory (`ScopeResult.full_inventory`); windowed discovery
+  never provides one, so automatic deletion detection is off rather than unsafe.
+* `_fail_run` updates the log by id with SQL. Reading an ORM attribute after the rollback raised in
+  async code inside a swallowed `except`, which left failed runs "running" forever; found by the
+  journey test.
+
+**Verification:** `tests/integration/test_ingestion_journey_real_db.py` (connect, import, source edit,
+automatic sync, natural-language search with citation, mid-sync failure, other-workspace isolation,
+disconnect), plus the package suites, all in the Security Acceptance exact selection. GitHub, model
+providers and embeddings are simulated; none of this is evidence about live GitHub, extraction quality
+or retrieval quality.
