@@ -39,6 +39,21 @@ DELETED_REASONS = (
 )
 
 
+def _visible_count(table: str, where: str = "true") -> int:
+    """Row count independent of FORCE RLS (the migration role owns the table).
+
+    Under FORCE ROW LEVEL SECURITY even the owner is filtered, so a guard that
+    counts rows without this would silently see zero when run by a role without
+    BYPASSRLS. The toggle is transactional and restored before returning.
+    """
+    conn = op.get_bind()
+    conn.exec_driver_sql(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY")
+    try:
+        return int(conn.exec_driver_sql(f"SELECT count(*) FROM {table} WHERE {where}").scalar() or 0)
+    finally:
+        conn.exec_driver_sql(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
+
+
 def upgrade() -> None:
     op.execute(
         """
@@ -85,17 +100,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    conn = op.get_bind()
-    used = conn.exec_driver_sql(
-        """
-        SELECT
-            (SELECT count(*) FROM memories
-              WHERE source_stale_at IS NOT NULL OR deleted_reason IS NOT NULL)
-          + (SELECT count(*) FROM artifact_links
-              WHERE source_revision IS NOT NULL OR connector_id IS NOT NULL
-                 OR revision_seq <> 1)
-        """
-    ).scalar()
+    used = _visible_count(
+        "memories", "source_stale_at IS NOT NULL OR deleted_reason IS NOT NULL"
+    ) + _visible_count(
+        "artifact_links",
+        "source_revision IS NOT NULL OR connector_id IS NOT NULL OR revision_seq <> 1",
+    )
     if used:
         raise RuntimeError(
             "Refusing to downgrade 20261014_0012: provenance columns are in use."
