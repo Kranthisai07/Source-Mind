@@ -319,14 +319,14 @@ async def get_memory(
         # The selector can only NARROW the lookup, never widen it.
         if ws_selector is not None and memory.workspace_id != ws_selector:
             raise MemoryNotFoundError("selector mismatch")
-        chain = await get_version_chain(session, mid)
+        chain = await get_version_chain(session, mid, memory.workspace_id)
     except (MemoryNotFoundError, WorkspaceNotFoundError, WorkspaceAccessDeniedError):
         raise McpToolError("not_found", "No such memory.") from None
     history = [
         VersionRef(
             memory_id=str(v["id"]),
             version=int(v["version"]),
-            is_current=bool(v.get("current_version")),
+            is_current=bool(v.get("is_current")),
             created_at=v["created_at"],
         )
         for v in chain
