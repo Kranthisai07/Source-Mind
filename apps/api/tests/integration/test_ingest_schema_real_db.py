@@ -189,7 +189,12 @@ async def test_due_connector_listing_is_cross_tenant_but_ids_only(
         listed = {r.connector_id for r in rows}
         assert due_a in listed and due_b in listed
         assert not ({paused, leased, future} & listed)
-        assert set(rows[0]._fields) == {"connector_id", "workspace_id"}  # ids only
+        # ids and the creator only; no connector content, config or tokens
+        assert set(rows[0]._fields) == {
+            "connector_id", "workspace_id", "created_by", "creator_active", "acting_admin",
+        }
+        by_id = {r.connector_id: r for r in rows}
+        assert by_id[due_a].created_by == data.owner_id and by_id[due_a].creator_active is True
 
         # ...but nothing else opens up: the schedule table is closed to the runtime
         # role and connector_configs itself is still invisible without membership.
@@ -305,3 +310,49 @@ async def test_artifact_head_refuses_published_ahead_of_latest(
         )
         with pytest.raises(IntegrityError):
             await db.flush()
+
+
+async def test_inactive_creator_is_reported_with_an_active_admin_to_act_as(
+    supabase_engine: AsyncEngine,
+) -> None:
+    """When a connector's creator has left, a scheduled run cannot read the connector under
+    RLS as the creator. The due list reports it and names an active owner/admin whose normal
+    context can record the outcome; no privileged write exists."""
+    data = await _seed_security_tenants(supabase_engine)
+    gone = await _connector(supabase_engine, data, data.target_workspace_id, "gone-owner")
+    kept = await _connector(supabase_engine, data, data.target_workspace_id, "kept-owner")
+    async with await _session(supabase_engine, data.owner_id, data.target_workspace_id) as db:
+        await db.execute(
+            text("UPDATE connector_configs SET created_by = :u WHERE id = :i"),
+            {"u": data.member_id, "i": gone},
+        )
+        await db.commit()
+
+    async with AsyncSession(supabase_engine) as db:
+        rows = {
+            r.connector_id: r
+            for r in (await db.execute(text("SELECT * FROM sm_list_due_connectors(500)"))).all()
+        }
+    assert rows[kept].creator_active is True
+    # created_by is a plain member: not an admin, so not an active creator-admin either.
+    assert rows[gone].creator_active is False
+    admins = {data.owner_id, data.admin_id, data.backup_owner_id}
+    assert rows[gone].acting_admin in admins  # an owner or admin, never the member
+
+    # The acting admin's ordinary RLS context can record the outcome.
+    async with await _session(supabase_engine, rows[gone].acting_admin, None) as db:
+        result = await db.execute(
+            text(
+                "UPDATE connector_configs SET status='error', last_error_code='owner_inactive' "
+                "WHERE id = :i"
+            ),
+            {"i": gone},
+        )
+        assert result.rowcount == 1
+        await db.commit()
+    # ...and the member (the departed creator's stand-in) cannot, since the row is hidden.
+    async with await _session(supabase_engine, data.zero_membership_id, None) as db:
+        result = await db.execute(
+            text("UPDATE connector_configs SET status='active' WHERE id = :i"), {"i": gone}
+        )
+        assert result.rowcount == 0
