@@ -74,7 +74,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info("application.started")
 
-    yield  # ← Application serves requests here
+    from sourcemind.mcp.server import mcp_lifespan
+
+    async with mcp_lifespan(app):
+        yield  # ← Application serves requests here
 
     # ── Shutdown ─────────────────────────────────────────────────
     logger.info("application.shutting_down")
@@ -178,6 +181,11 @@ def create_app() -> FastAPI:
     # ── Routes ────────────────────────────────────────────────────
     from sourcemind.api.router import api_router
     app.include_router(api_router)
+
+    # Read-only MCP interface (off unless MCP_ENABLED=true). Mounted LAST: the sub-application
+    # sits at "/" and must not shadow any route registered above.
+    from sourcemind.mcp.server import mount_mcp
+    mount_mcp(app)
 
     return app
 

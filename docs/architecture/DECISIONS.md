@@ -3421,3 +3421,42 @@ connector links (UNVERIFIED whether any production connector rows exist; connect
 `created_by` NULL and are reported as owner-inactive by the tick, so they need a reconnect; check the count
 before release), and the
 viewer-role write scope on the three new tables (application layer is the control, as stated in the docstring).
+
+## D-033 — A read-only MCP interface, OAuth resource server only, off by default
+
+**What:** `sourcemind/mcp` mounts a Streamable HTTP MCP endpoint (`/mcp`) with two read-only tools,
+`search_memories` and `get_memory`, built on the official `mcp==2.3.0` SDK and the shared read service
+from D-031. Documented in `docs/architecture/MCP_INTERFACE.md`.
+
+**Why this shape:** AI clients need to retrieve authorized project context; they must not get a second,
+weaker authorization path. Every call resolves the token subject to an existing user, sets the RLS user
+context and asserts workspace membership through the same functions the REST routes use; a supplied
+workspace id only selects. The server accepts a token only if its audience is exactly this MCP resource,
+which the MCP specification requires and which a Clerk session token can never satisfy.
+
+**Not built, deliberately:** a personal-access-token or any other bearer scheme (a different design with
+its own storage, revocation and exposure; to be decided by the owner if the OAuth path proves
+unavailable), writes, resources, prompts, GitHub-through-MCP ingestion.
+
+**Open verification (owner actions, nothing assumed):** whether Clerk access tokens can carry an `aud`
+equal to the MCP resource URL (the spike found only a third-party claim of an instance setting), how
+grants are revoked, development-instance support for client registration, and a real Claude Code run.
+The memo is `D:\SourceMind-Operationsuto-ingest0-spike\B0_MEMO.md` (not in the repository).
+
+**Verification done:** `tests/integration/test_mcp_real_db.py`, 11 nodes in the Security Acceptance exact
+selection (101 -> 112, zero skips locally), official client in both protocol eras against the real
+server and database; the identity provider and embeddings are simulated.
+
+## D-037 — MCP review hardening: fixed internal errors, all-fields-untrusted notice, bounded strings
+
+**What:** (1) any exception that is not a mapped `McpToolError` is logged server-side and returned as
+the fixed text `internal_error`, because the SDK would otherwise render exception text (SQL, parameters,
+tenant data) to the client; (2) the notice and tool output now say that every string field (tags,
+category, contributor names, source fields), not only `content`, is untrusted; (3) tags, contributors and
+category are length- and count-bounded so one hostile source field cannot flood an agent's context.
+
+**Reviewed and deliberately not changed here:** no rate limit on `get_memory` (needs a new limiter
+operation; recorded as a gap), the shared `rate-limit:search` budget with the REST search, and the
+unfiltered version chain (identical in the REST endpoint; a shared-code change belongs with that
+endpoint). A required scope / client allowlist depends on what the identity provider can issue and is
+part of the pending Clerk verification.
