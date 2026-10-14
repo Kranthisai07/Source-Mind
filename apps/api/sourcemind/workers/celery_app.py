@@ -53,3 +53,20 @@ app.conf.update(
     },
     task_default_queue="default",
 )
+
+
+def connector_beat_schedule(cfg) -> dict:
+    """Beat entries for connectors; empty unless the scheduler is explicitly enabled."""
+    if not cfg.connector_scheduler_enabled:
+        return {}
+    return {
+        "connector-sync-tick": {
+            "task": "sourcemind.workers.connector_tasks.dispatch_due_syncs",
+            "schedule": float(cfg.connector_sync_tick_seconds),
+            "options": {"queue": "connectors"},
+        }
+    }
+
+
+# Embedded beat (worker started with -B): the tick runs only when explicitly enabled.
+app.conf.beat_schedule = connector_beat_schedule(settings)

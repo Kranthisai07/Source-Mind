@@ -45,39 +45,59 @@ def mock_auth():
 
 @pytest.mark.unit
 @pytest.mark.anyio
-async def test_sync_creates_sync_log(mock_session, mock_auth):
-    """sync() should create a ConnectorSyncLog and flush it."""
+async def test_run_exits_skipped_locked_when_the_lease_is_held(mock_session, mock_auth):
+    """T-L5 (unit half): a trigger that cannot take the lease does nothing at all."""
     from sourcemind.connectors.github.connector import GitHubConnector
 
-    config = _make_config(repos=["acme/repo"])
-    workspace_id = uuid.uuid4()
-    user_id = uuid.uuid4()
+    connector = GitHubConnector(
+        config=_make_config(),
+        auth=mock_auth,
+        session=mock_session,
+        workspace_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        client=AsyncMock(),
+    )
+    with patch(
+        "sourcemind.services.connectors.sync_state.acquire_lease",
+        new=AsyncMock(return_value=None),
+    ):
+        outcome = await connector.sync(sync_type="full")
 
+    assert outcome.status == "skipped_locked"
+    mock_session.add.assert_not_called()  # no sync log, no write
+    connector._client.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.anyio
+async def test_lease_loss_mid_run_stops_with_lease_lost_status(mock_session, mock_auth):
+    from sourcemind.connectors.github.connector import GitHubConnector
+    from sourcemind.services.connectors.sync_state import LeaseLostError, LeaseToken
+
+    config = _make_config()
     connector = GitHubConnector(
         config=config,
         auth=mock_auth,
         session=mock_session,
-        workspace_id=workspace_id,
-        user_id=user_id,
+        workspace_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        client=AsyncMock(),
     )
+    token = LeaseToken(config.id, 1, "t")
+    with (
+        patch(
+            "sourcemind.services.connectors.sync_state.acquire_lease",
+            new=AsyncMock(return_value=token),
+        ),
+        patch(
+            "sourcemind.services.connectors.sync_state.renew_lease",
+            new=AsyncMock(side_effect=LeaseLostError("fenced")),
+        ),
+    ):
+        outcome = await connector.sync()
 
-    # Mock the client so no HTTP calls are made
-    connector._client = AsyncMock()
-    # Return empty iterators for all fetch methods
-    async def _empty_aiter(*args, **kwargs):
-        return
-        yield  # make it an async generator
-
-    connector._client.get_commits = _empty_aiter
-    connector._client.get_pull_requests = _empty_aiter
-    connector._client.get_issues = _empty_aiter
-    connector._client.get_discussions = AsyncMock(return_value=[])
-
-    sync_log = await connector.sync(sync_type="full")
-
-    # A sync log should have been added to the session
-    assert mock_session.add.called
-    assert sync_log.status in ("completed", "failed")
+    assert outcome.status == "lease_lost"
+    mock_session.add.assert_not_called()
 
 
 @pytest.mark.unit
