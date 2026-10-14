@@ -344,22 +344,90 @@ export const KNOWLEDGE_GAPS = [
     { risk_level: "LOW",    gap_type: "no_tags",         description: "7 memories have zero tags. Reduces discoverability.", affected_count: 7, recommended_action: "Run auto-tag job across corpus." },
 ];
 
+// Shapes below equal the real schemas (apps/api/sourcemind/schemas/connector.py):
+// ConnectorResponse, ConnectorStatusResponse and SyncLogResponse.
+const WS_ID = "00000000-0000-4000-8000-0000000000aa";
+const minutesAgo = (m) => new Date(Date.now() - m * 60 * 1000).toISOString();
+const minutesAhead = (m) => new Date(Date.now() + m * 60 * 1000).toISOString();
+
 export const CONNECTORS = [
-    { id: "conn_01", source_tool: "github",  name: "acme/platform",         config: { repo: "acme/platform",   artifact_types: ["commits", "pulls", "issues", "discussions"], frequency: "hourly" }, status: "active",  last_synced_at: new Date(Date.now() - 12 * 60 * 1000).toISOString(), total_artifacts_synced: 12481 },
-    { id: "conn_02", source_tool: "github",  name: "acme/infra",            config: { repo: "acme/infra",      artifact_types: ["commits", "pulls"],                         frequency: "daily"  }, status: "active",  last_synced_at: new Date(Date.now() -  3 * 3600 * 1000).toISOString(), total_artifacts_synced: 3102  },
-    { id: "conn_03", source_tool: "github",  name: "acme/design-system",    config: { repo: "acme/design-system", artifact_types: ["commits", "pulls", "issues"],             frequency: "daily"  }, status: "syncing", last_synced_at: new Date(Date.now() -  1 * 60   * 1000).toISOString(), total_artifacts_synced: 892   },
-    { id: "conn_04", source_tool: "discord", name: "Acme Eng — #architecture", config: { channel: "#architecture", source: "json-export" },                                        status: "active",  last_synced_at: new Date(Date.now() -  4 * 3600 * 1000).toISOString(), total_artifacts_synced: 2341  },
-    { id: "conn_05", source_tool: "discord", name: "Acme Eng — #incidents",    config: { channel: "#incidents",    source: "json-export" },                                        status: "error",   last_synced_at: new Date(Date.now() - 28 * 3600 * 1000).toISOString(), total_artifacts_synced: 402,   error: "Malformed export: missing author.id on 14 messages" },
-    { id: "conn_06", source_tool: "github",  name: "acme/mobile",           config: { repo: "acme/mobile",     artifact_types: ["commits", "pulls"],                         frequency: "hourly" }, status: "active",  last_synced_at: new Date(Date.now() - 30 * 60   * 1000).toISOString(), total_artifacts_synced: 5211  },
+    {
+        id: "00000000-0000-4000-8000-0000000000c1", workspace_id: WS_ID, connector_type: "github",
+        display_name: "acme/platform",
+        config: { repos: ["acme/platform"], consent_workspace_readable: true },
+        status: "active", last_sync_at: minutesAgo(12), next_sync_at: minutesAhead(48),
+        created_at: minutesAgo(60 * 24 * 30), installation_id: 4242, authorized_github_user_id: 1001,
+        created_by: null, generation: 1, last_success_at: minutesAgo(12), last_error_code: null,
+        sync_interval_minutes: 60,
+    },
+    {
+        id: "00000000-0000-4000-8000-0000000000c2", workspace_id: WS_ID, connector_type: "github",
+        display_name: "acme/infra",
+        config: { repos: ["acme/infra", "acme/ops"], artifact_types: ["commits", "pull_requests"], consent_workspace_readable: true },
+        status: "active", last_sync_at: minutesAgo(180), next_sync_at: minutesAhead(30),
+        created_at: minutesAgo(60 * 24 * 20), installation_id: 4242, authorized_github_user_id: 1001,
+        created_by: null, generation: 1, last_success_at: minutesAgo(600), last_error_code: "reauthorization_required",
+        sync_interval_minutes: 60,
+    },
 ];
 
+const doc = (over = {}) => ({ pending: 0, processing: 0, completed: 0, failed: 0, quarantined: 0, zero_facts: 0, ...over });
+const scope = (repo, artifact_type, over = {}) => ({
+    repo, artifact_type, status: "ok", phase: "steady", listing_complete: true, last_error_code: null,
+    last_progress_at: minutesAgo(12), authorization_verified_at: minutesAgo(12),
+    window_low: null, window_high: null, ...over,
+});
+
 export const SYNC_LOGS = [
-    { date: new Date(Date.now() - 12 * 60 * 1000).toISOString(),     status: "success", items_synced: 42, duration_ms: 3820, error: null },
-    { date: new Date(Date.now() - 72 * 60 * 1000).toISOString(),     status: "success", items_synced: 37, duration_ms: 3410, error: null },
-    { date: new Date(Date.now() - 130 * 60 * 1000).toISOString(),    status: "partial", items_synced: 29, duration_ms: 5102, error: "3 items skipped: rate limit" },
-    { date: new Date(Date.now() - 190 * 60 * 1000).toISOString(),    status: "success", items_synced: 51, duration_ms: 4018, error: null },
-    { date: new Date(Date.now() - 250 * 60 * 1000).toISOString(),    status: "failed",  items_synced: 0,  duration_ms: 820,  error: "401 Bad credentials — installation token expired" },
-    { date: new Date(Date.now() - 310 * 60 * 1000).toISOString(),    status: "success", items_synced: 44, duration_ms: 3702, error: null },
+    { id: "00000000-0000-4000-8000-0000000000d1", connector_id: CONNECTORS[0].id, sync_type: "incremental", status: "completed", artifacts_found: 44, artifacts_new: 40, artifacts_skipped: 2, error_message: null, started_at: minutesAgo(13), completed_at: minutesAgo(12), trigger: "scheduled", artifacts_updated: 2, artifacts_failed: 0, artifacts_filtered: { skip_bots: 2 }, error_code: null },
+    { id: "00000000-0000-4000-8000-0000000000d2", connector_id: CONNECTORS[0].id, sync_type: "incremental", status: "failed", artifacts_found: 0, artifacts_new: 0, artifacts_skipped: 0, error_message: "Connector sync failed.", started_at: minutesAgo(75), completed_at: minutesAgo(74), trigger: "manual", artifacts_updated: 0, artifacts_failed: 0, artifacts_filtered: {}, error_code: "rate_limited" },
+];
+
+export const CONNECTOR_STATUSES = {
+    [CONNECTORS[0].id]: {
+        connector_id: CONNECTORS[0].id, workspace_id: WS_ID, connector_type: "github", display_name: "acme/platform",
+        status: "active", state: "idle", generation: 1, last_sync_at: CONNECTORS[0].last_sync_at,
+        next_sync_at: CONNECTORS[0].next_sync_at, last_success_at: CONNECTORS[0].last_success_at,
+        last_error_code: null, current_run: null,
+        scopes: [scope("acme/platform", "commits"), scope("acme/platform", "pull_requests"), scope("acme/platform", "issues")],
+        documents: doc({ completed: 310, failed: 1, zero_facts: 4 }),
+        filtered: { skip_bots: 17, skip_empty_body: 3 },
+        recent_logs: SYNC_LOGS,
+    },
+    [CONNECTORS[1].id]: {
+        connector_id: CONNECTORS[1].id, workspace_id: WS_ID, connector_type: "github", display_name: "acme/infra",
+        status: "active", state: "needs_attention", generation: 1, last_sync_at: CONNECTORS[1].last_sync_at,
+        next_sync_at: CONNECTORS[1].next_sync_at, last_success_at: CONNECTORS[1].last_success_at,
+        last_error_code: "reauthorization_required", current_run: null,
+        scopes: [
+            scope("acme/infra", "commits", { status: "reauthorization_required", last_error_code: "reauthorization_required" }),
+            scope("acme/ops", "commits", { status: "authorization_unverified", last_error_code: "verifier_unavailable" }),
+            scope("acme/ops", "pull_requests", { status: "access_lost", last_error_code: "access_lost" }),
+        ],
+        documents: doc({ completed: 80, quarantined: 2 }),
+        filtered: {},
+        recent_logs: [],
+    },
+};
+
+// Source provenance for the first demo memories (MemoryResponse.source /
+// authorship / source_state).
+export const MEMORY_SOURCES = [
+    {
+        source: { tool: "github", type: "pull_request", id: "acme/platform/pulls/412", url: "https://github.com/acme/platform/pull/412", revision: "9f2c1d", revision_seq: 1, observed_at: minutesAgo(60 * 24 * 3) },
+        authorship: { status: "resolved", source_author: "priya", source_authors: null },
+        source_state: { status: "current", since: null, reason: null, newer_source_url: null },
+    },
+    {
+        source: { tool: "github", type: "commit", id: "acme/platform/commits/ab12cd3", url: "https://github.com/acme/platform/commit/ab12cd3", revision: "ab12cd3", revision_seq: 2, observed_at: minutesAgo(60 * 24 * 5) },
+        authorship: { status: "shared", source_author: null, source_authors: ["marcus", "sara"] },
+        source_state: { status: "stale", since: minutesAgo(60 * 5), reason: "source_revised", newer_source_url: "https://github.com/acme/platform/commit/ab12cd4" },
+    },
+    {
+        source: { tool: "github", type: "issue_comment", id: "acme/platform/issues/88/comments/5", url: "https://github.com/acme/platform/issues/88#issuecomment-5", revision: "55aa", revision_seq: 1, observed_at: minutesAgo(60 * 24) },
+        authorship: { status: "unresolved", source_author: "external-dev", source_authors: null },
+        source_state: { status: "current", since: null, reason: null, newer_source_url: null },
+    },
 ];
 
 export const HANDOFFS = [

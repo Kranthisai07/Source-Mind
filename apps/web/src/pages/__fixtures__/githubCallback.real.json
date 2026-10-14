@@ -1,0 +1,21 @@
+{
+  "ticket_id": "tttttttttttttttttttttttttttttttt",
+  "expires_in_seconds": 900,
+  "workspace_id": "00000000-0000-4000-8000-0000000000aa",
+  "installation_id": 4242,
+  "github_user_id": 1001,
+  "github_login": "acme-admin",
+  "repositories": [
+    {
+      "full_name": "acme/platform",
+      "private": true,
+      "default_branch": "main"
+    },
+    {
+      "full_name": "acme/docs",
+      "private": false,
+      "default_branch": "main"
+    }
+  ],
+  "truncated": false
+}
