@@ -663,12 +663,22 @@ async def test_T_R3_poison_artifact_is_quarantined_after_three_attempts_and_late
     assert log.artifacts_failed == 1
 
     # re-arm (admin): the item is attempted again from a fresh count
-    await _exec(engine, data, "UPDATE connector_work_items SET state='pending', attempts=0 WHERE connector_id=:c", c=cid)
+    from datetime import UTC, datetime
+
+    from sourcemind.services.connectors import lifecycle
+
+    session = await _open(engine, data.admin_id, data.target_workspace_id)
+    async with session:
+        result = await lifecycle.rearm_quarantined(session, cid, now=datetime.now(UTC))
+        await session.commit()
+    assert result.rearmed == 1 and result.scopes_marked == 1
     h.receiver.fail_ids = set()
-    h.discovery.ignore_state = True
-    rearmed = await h.run()
+    rearmed = await h.run()  # the cursor was reset by the re-arm itself: no test-side shortcut
     assert rearmed.status == "completed"
-    assert ents[1].id in h.receiver.created
+    assert h.receiver.created.count(ents[1].id) == 1  # imported now
+    assert h.receiver.created.count(ents[0].id) == 1 and h.receiver.created.count(ents[2].id) == 1
+    done = (await _rows(engine, data, "SELECT state FROM connector_work_items WHERE connector_id=:c", c=cid))[0]
+    assert done.state == "done"
 
 
 # ── T-X: deletion rule ───────────────────────────────────────────────────────

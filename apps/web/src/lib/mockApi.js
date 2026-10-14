@@ -340,6 +340,14 @@ export const mockApi = {
         message: "Scopes restarted from the start of the import window; the next sync re-reads it. Sources deleted on GitHub are not detected automatically.",
     })),
 
+    // POST /v1/connectors/:id/rearm-quarantined -> 202 RearmQuarantinedResponse
+    rearmQuarantined: (connId) => request(() => ({
+        connector_id: connId,
+        rearmed: CONNECTOR_STATUSES[connId]?.documents?.quarantined || 0,
+        scopes_marked: 1,
+        message: "Items re-armed; the next sync re-reads their scopes and retries them.",
+    })),
+
     // PATCH /v1/connectors/:id -> ConnectorResponse
     updateConnector: (id, payload = {}) => request(() => {
         const c = mockConnectors.find((x) => x.id === id);

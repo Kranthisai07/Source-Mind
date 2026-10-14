@@ -384,6 +384,81 @@ async def test_rescan_marks_all_scopes_and_schedules(supabase_engine, world, fak
     assert nxt is not None
 
 
+# ── re-arm quarantined items ─────────────────────────────────────────────────
+
+async def _quarantine(engine, world, n: int = 2) -> None:
+    async with await _session(engine, world.data.owner_id, world.data.target_workspace_id) as s:
+        for i in range(n):
+            await s.execute(text(
+                "INSERT INTO connector_work_items (connector_id, workspace_id, repo, artifact_type,"
+                " source_id, attempts, state, last_error_code) VALUES (:c, :w, 'o/a', 'issues',"
+                " :sid, 3, 'quarantined', 'handoff_failed')"),
+                {"c": world.connector_id, "w": world.data.target_workspace_id, "sid": f"o/a/i/{i}"})
+        await s.commit()
+
+
+async def test_rearm_is_admin_only_and_tenant_scoped(supabase_engine, world, fake_redis):
+    await _quarantine(supabase_engine, world)
+    member = _user(world.data.member_id)  # a plain member: may read, may not administer
+    outsider = _user(world.data.other_workspace_member_id)
+    with patch.object(api, "enforce_rate_limit", AsyncMock()):
+        async with AsyncSession(supabase_engine, expire_on_commit=False) as db:
+            await set_rls_user_context(db, member.user_id)
+            with pytest.raises(Exception) as denied:
+                await api.rearm_quarantined(world.connector_id, db, member)
+            assert getattr(denied.value, "http_status", None) in (403, 404)
+        async with AsyncSession(supabase_engine, expire_on_commit=False) as db:
+            await set_rls_user_context(db, outsider.user_id)
+            with pytest.raises(ConnectorNotFoundError):
+                await api.rearm_quarantined(world.connector_id, db, outsider)
+    async with await _session(supabase_engine, world.data.owner_id,
+                              world.data.target_workspace_id) as s:
+        states = {r[0] for r in (await s.execute(text(
+            "SELECT state FROM connector_work_items WHERE connector_id=:i"),
+            {"i": world.connector_id})).all()}
+    assert states == {"quarantined"}  # neither refused call changed anything
+
+
+async def test_rearm_resets_items_and_scopes_durably(supabase_engine, world, fake_redis):
+    await _quarantine(supabase_engine, world)
+    async with await _session(supabase_engine, world.data.owner_id,
+                              world.data.target_workspace_id) as s:
+        expected = (await s.execute(text(
+            "SELECT count(*) FROM connector_work_items WHERE connector_id=:i AND "
+            "state='quarantined'"), {"i": world.connector_id})).scalar_one()
+    assert expected >= 2  # the fixture may already hold some
+    admin = _user(world.data.admin_id)
+    async with await _session(supabase_engine, world.data.owner_id,
+                              world.data.target_workspace_id) as s:
+        await s.execute(text(
+            "UPDATE connector_sync_cursors SET phase='incremental', listing_complete=true, "
+            "resume_id='x', consumed=9 WHERE connector_id=:i"), {"i": world.connector_id})
+        await s.commit()
+    with patch.object(api, "enforce_rate_limit", AsyncMock()):
+        async with AsyncSession(supabase_engine, expire_on_commit=False) as db:
+            await set_rls_user_context(db, admin.user_id)
+            out = await api.rearm_quarantined(world.connector_id, db, admin)
+        async with AsyncSession(supabase_engine, expire_on_commit=False) as db:
+            await set_rls_user_context(db, admin.user_id)
+            again = await api.rearm_quarantined(world.connector_id, db, admin)
+    assert out.rearmed == expected and out.scopes_marked >= 1
+    assert again.rearmed == 0  # idempotent: nothing left to re-arm
+    async with await _session(supabase_engine, world.data.owner_id,
+                              world.data.target_workspace_id) as s:
+        items = (await s.execute(text(
+            "SELECT state, attempts, last_error_code FROM connector_work_items "
+            "WHERE connector_id=:i"), {"i": world.connector_id})).all()
+        cursor = (await s.execute(text(
+            "SELECT phase, listing_complete, resume_id, consumed FROM connector_sync_cursors "
+            "WHERE connector_id=:i AND repo='o/a' AND artifact_type='issues'"),
+            {"i": world.connector_id})).one()
+        nxt = (await s.execute(text("SELECT next_sync_at FROM connector_configs WHERE id=:i"),
+                               {"i": world.connector_id})).scalar_one()
+    assert all(r == ("pending", 0, None) for r in items)
+    assert tuple(cursor) == ("backfill", False, None, 0)  # the affected scope restarted
+    assert nxt is not None  # a run is scheduled in the database itself
+
+
 # ── create with a ticket, real insert ────────────────────────────────────────
 
 async def test_create_stores_server_set_binding_and_rejects_unticketed_repo(

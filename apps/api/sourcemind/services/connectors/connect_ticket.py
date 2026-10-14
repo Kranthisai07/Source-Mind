@@ -45,6 +45,7 @@ CONNECT_RATE_LIMITS: dict[str, tuple[int, int]] = {
     "connector-create": (20, 3600),
     "connector-retry": (10, 3600),
     "connector-rescan": (5, 3600),
+    "connector-rearm": (10, 3600),
 }
 
 

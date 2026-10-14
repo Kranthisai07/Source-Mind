@@ -10,6 +10,7 @@ PATCH  /v1/connectors/:id                             — rename / narrow repos 
 DELETE /v1/connectors/:id                             — soft disconnect (?remove_memories=)
 POST   /v1/connectors/:id/sync                        — trigger a manual sync
 POST   /v1/connectors/:id/retry-failed                — re-arm retryable failed documents
+POST   /v1/connectors/:id/rearm-quarantined          — admin: retry quarantined items
 POST   /v1/connectors/:id/rescan                      — re-read the import window
 GET    /v1/connectors/:id/status                      — state, scopes, counters
 GET    /v1/connectors/:id/sync-logs                   — paginated sync history
@@ -58,6 +59,7 @@ from sourcemind.schemas.connector import (
     GitHubCallbackRequest,
     GitHubCallbackResponse,
     GitHubRepoOption,
+    RearmQuarantinedResponse,
     RescanResponse,
     RetryFailedResponse,
     ScopeStatusItem,
@@ -534,6 +536,44 @@ async def rescan_connector(
         message=(
             "Scopes restarted from the start of the import window; the next sync re-reads it. "
             "Sources deleted on GitHub are not detected automatically."
+        ),
+    )
+
+
+@router.post(
+    "/connectors/{connector_id}/rearm-quarantined",
+    response_model=RearmQuarantinedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Re-arm quarantined items",
+)
+async def rearm_quarantined(
+    connector_id: uuid.UUID,
+    db: DBSession,
+    current_user: CurrentUser,
+) -> RearmQuarantinedResponse:
+    """Admin action: give quarantined items a fresh attempt budget and re-read their scopes.
+
+    Requires ADMINISTER on the connector's workspace (same as every connector action), is
+    rate limited, and only changes database state; the next scheduled or manual sync does the work.
+    """
+    workspace_id = await require_connector_access(db, current_user.user_id, connector_id)
+    await connect_ticket.enforce_connector_rate_limit(
+        "connector-rearm", current_user.user_id, workspace_id
+    )
+    await _load_connector(db, connector_id)
+    try:
+        result = await lifecycle.rearm_quarantined(db, connector_id, now=datetime.now(UTC))
+    except lifecycle.LifecycleConflictError as exc:
+        raise _conflict(exc.code, "The connector is not accepting work.") from None
+    await db.commit()
+    return RearmQuarantinedResponse(
+        connector_id=connector_id,
+        rearmed=result.rearmed,
+        scopes_marked=result.scopes_marked,
+        message=(
+            "Nothing is quarantined."
+            if result.rearmed == 0
+            else "Items re-armed; the next sync re-reads their scopes and retries them."
         ),
     )
 

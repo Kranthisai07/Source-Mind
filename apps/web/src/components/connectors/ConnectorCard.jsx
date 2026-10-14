@@ -109,6 +109,12 @@ export default function ConnectorCard({ connector, onLogs, onDisconnect, onChang
         toast.success("Re-scan scheduled", { description: "The next sync re-reads the import window. Sources deleted on GitHub are not detected automatically." });
         refresh();
     });
+    const rearm = () => run("rearm", () => api.rearmQuarantined(c.id), (r) => {
+        toast.success(`Re-armed ${r?.rearmed ?? 0} quarantined item(s)`, {
+            description: "The next sync re-reads their scopes and retries them.",
+        });
+        refresh();
+    });
     const paused = (status?.status ?? c.status) === "paused";
     const togglePause = () => run("pause", () => api.updateConnector(c.id, { status: paused ? "active" : "paused" }), () => {
         refresh();
@@ -263,6 +269,11 @@ export default function ConnectorCard({ connector, onLogs, onDisconnect, onChang
                 {canAct && docs?.failed > 0 && (
                     <Button data-testid={`retry-failed-${c.id}`} onClick={retryFailed} disabled={busy !== null} size="sm" variant="outline" className="h-8 border-sm-border text-sm-text">
                         <RotateCw className="w-3.5 h-3.5" /> Retry failed
+                    </Button>
+                )}
+                {canAct && docs?.quarantined > 0 && (
+                    <Button data-testid={`rearm-${c.id}`} onClick={rearm} disabled={busy !== null} size="sm" variant="outline" className="h-8 border-sm-border text-sm-text">
+                        <RotateCw className="w-3.5 h-3.5" /> Re-arm quarantined
                     </Button>
                 )}
                 {canAct && (

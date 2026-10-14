@@ -147,6 +147,7 @@ async def _handoff(
     generation: int = 0,
     pre_commit: Any = None,
     source_type: str = "issue",
+    idem: str | None = None,
 ) -> dict[str, Any]:
     from sourcemind.services.ingestion.receiver import receive
 
@@ -160,7 +161,7 @@ async def _handoff(
             content=content,
             title="t",
             ingestion_mode=mode,
-            idempotency_key=uuid.uuid4().hex,
+            idempotency_key=idem or uuid.uuid4().hex,
             artifact_link={
                 "source_tool": "github",
                 "source_type": source_type,
@@ -339,6 +340,45 @@ async def test_handoff_returning_to_earlier_text_is_a_new_revision(world) -> Non
     await _handoff(w.engine, w.data, w.connector, sid, b)
     back = await _handoff(w.engine, w.data, w.connector, sid, a)
     assert back["already_exists"] is False and back["revision_seq"] == 3
+
+
+async def test_revert_a_b_a_publishes_the_final_a_with_the_connectors_real_key(world) -> None:
+    """The connector derives a deterministic idempotency key from (artifact, content). A cache keyed
+    on that swallowed A -> B -> A for 24 h (B's memories stayed live while the source said A). The
+    head, not the cache, now decides: the final A is a NEW revision, its replay is not."""
+    import hashlib
+
+    w = world
+    _install_retire(w.mp, _local_retire)
+    sid = _sid()
+    a, b = _text("a"), _text("b")
+
+    def key(content: str) -> str:  # what GitHubConnector._handoff builds
+        return hashlib.sha256(
+            f"base:{hashlib.sha256(content.encode()).hexdigest()}".encode()
+        ).hexdigest()
+
+    docs = []
+    for content, expect_seq in ((a, 1), (b, 2), (a, 3)):
+        _facts(w.harness, [_fact(content[-6:])])
+        r = await _handoff(w.engine, w.data, w.connector, sid, content, idem=key(content))
+        assert r["already_exists"] is False and r["revision_seq"] == expect_seq, r
+        docs.append(uuid.UUID(r["document_id"]))
+        await _run(w.data, docs[-1])
+
+    head = await _head(w.engine, w.data, sid)
+    assert (head.latest_seq, head.published_seq, head.published_document_id) == (3, 3, docs[2])
+    assert [await _live(w.engine, w.data, d) for d in docs] == [0, 0, 1]  # history kept, A live
+
+    # A replay of the (now latest) A, same key: no seq 4 and no new document.
+    again = await _handoff(w.engine, w.data, w.connector, sid, a, idem=key(a))
+    assert again["already_exists"] is True and again["reason"] == "same_revision"
+    assert again["document_id"] == str(docs[2])
+    assert (await _head(w.engine, w.data, sid)).latest_seq == 3
+    rows = await _rows(
+        w.engine, w.data, "SELECT revision_seq FROM artifact_links WHERE source_id = :s", s=sid
+    )
+    assert sorted(r.revision_seq for r in rows) == [1, 2, 3]  # the history is preserved
 
 
 async def test_handoff_pre_commit_runs_and_raising_rolls_everything_back(world) -> None:
@@ -742,6 +782,40 @@ async def test_dc1_disconnect_with_documents_queued_makes_no_provider_call(world
     assert embeds == []
     assert (await _head(w.engine, w.data, sid)).published_seq == 0
     assert retire.calls == []
+
+
+async def _set_status(engine, data, connector_id, status: str) -> None:
+    session = await _session(engine, data.owner_id, data.target_workspace_id)
+    async with session:
+        await session.execute(
+            text("UPDATE connector_configs SET status = :s WHERE id = CAST(:c AS uuid)"),
+            {"s": status, "c": str(connector_id)},
+        )
+        await session.commit()
+
+
+@pytest.mark.parametrize("paused_status", ["paused", "paused_budget", "error"])
+async def test_paused_connector_is_reported_as_paused_not_disconnected_and_is_recoverable(
+    world, paused_status
+) -> None:
+    w = world
+    _install_retire(w.mp, _local_retire)
+    _facts(w.harness, [_fact()])
+    r = await _handoff(w.engine, w.data, w.connector, _sid(), _text())
+    doc = uuid.UUID(r["document_id"])
+    await _set_status(w.engine, w.data, w.connector, paused_status)
+
+    out = await _run(w.data, doc)
+    assert out["status"] == "failed" and out["error_code"] == "connector_paused", out
+    assert (await _doc(w.engine, w.data, doc))["meta"]["error_code"] == "connector_paused"
+    assert w.harness.fact_extraction_calls == 0  # a pause costs nothing
+
+    assert await _requeue(w, doc) is False  # still paused: refused
+    await _set_status(w.engine, w.data, w.connector, "active")
+    assert await _requeue(w, doc) is True  # resumed: the same document is recoverable
+    done = await _run(w.data, doc)
+    assert done["status"] == "completed", done
+    assert await _live(w.engine, w.data, doc) == 1
 
 
 async def test_connector_the_submitter_cannot_see_counts_as_not_active(world) -> None:
