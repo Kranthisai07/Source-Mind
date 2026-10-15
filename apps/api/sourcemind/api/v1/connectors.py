@@ -5,6 +5,7 @@ GET    /v1/workspaces/:id/connectors/github/authorize — GitHub App authorizati
 POST   /v1/connectors/github/callback                 — exchange code, return repo picker + ticket
 POST   /v1/workspaces/:id/connectors                  — create a connector (needs a ticket)
 GET    /v1/workspaces/:id/connectors                  — list connectors
+GET    /v1/workspaces/:id/connectors/github/insights  — stored contributor activity
 GET    /v1/connectors/:id                             — get connector detail
 PATCH  /v1/connectors/:id                             — rename / narrow repos / pause / resume
 DELETE /v1/connectors/:id                             — soft disconnect (?remove_memories=)
@@ -58,6 +59,7 @@ from sourcemind.schemas.connector import (
     GitHubAuthorizeResponse,
     GitHubCallbackRequest,
     GitHubCallbackResponse,
+    GitHubInsightsResponse,
     GitHubRepoOption,
     RearmQuarantinedResponse,
     RescanResponse,
@@ -70,6 +72,7 @@ from sourcemind.schemas.connector import (
     parse_github_config,
 )
 from sourcemind.services.connectors import connect_ticket, lifecycle
+from sourcemind.services.connectors.insights import github_insights
 from sourcemind.services.ingestion import receiver
 from sourcemind.services.memory.retire import retire_document_memories
 
@@ -326,6 +329,42 @@ async def list_connectors(
         items=[ConnectorResponse.model_validate(c) for c in connectors],
         total=len(connectors),
     )
+
+
+# ── GitHub insights ──────────────────────────────────────────────────────────
+
+@router.get(
+    "/workspaces/{workspace_id}/connectors/github/insights",
+    response_model=GitHubInsightsResponse,
+    summary="GitHub contributor insights",
+)
+async def get_github_insights(
+    workspace_id: uuid.UUID,
+    db: DBSession,
+    current_user: CurrentUser,
+    connector_id: uuid.UUID | None = Query(default=None),
+    repo: str | None = Query(default=None, min_length=3, max_length=200),
+    since: datetime | None = Query(default=None),
+    until: datetime | None = Query(default=None),
+    include_disconnected: bool = Query(default=False),
+) -> GitHubInsightsResponse:
+    """Return contributor activity computed only from stored GitHub imports."""
+    await require_workspace_permission(
+        db, current_user.user_id, workspace_id, WorkspacePermission.READ
+    )
+    await enforce_rate_limit(
+        RateLimitedOperation.ANALYTICS, current_user.user_id, workspace_id
+    )
+    result = await github_insights(
+        db,
+        workspace_id=workspace_id,
+        connector_id=connector_id,
+        repo=repo,
+        since=since,
+        until=until,
+        include_disconnected=include_disconnected,
+    )
+    return GitHubInsightsResponse.model_validate(result)
 
 
 # ── Get connector ─────────────────────────────────────────────────────────────

@@ -169,7 +169,7 @@ jobs:
       # pyproject so the collected count is the raw test count. Asserting the
       # exact node IDs means a rename cannot silently shrink the gate, which a
       # bare count would not catch.
-      - name: Verify exact test selection (233 nodes)
+      - name: Verify exact test selection (240 nodes)
         working-directory: apps/api
         # SECURITY_TEST_ALLOW_DISPOSABLE / TEST_DATABASE_URL / TEST_REDIS_URL
         # are already in the environment via GITHUB_ENV.
@@ -283,6 +283,13 @@ jobs:
           tests/integration/test_github_author_links_real_db.py::test_runtime_grant_is_explicit_exact_and_not_from_default_privileges
           tests/integration/test_github_author_links_real_db.py::test_sync_credits_linked_author_not_initiator_and_finalizes_all_links
           tests/integration/test_github_author_links_real_db.py::test_unresolved_author_stays_reported_and_missing_after_an_edit
+          tests/integration/test_github_insights_real_db.py::test_admin_link_coverage_and_disconnected_connector_filter
+          tests/integration/test_github_insights_real_db.py::test_counts_each_published_artifact_once_and_reports_all_types
+          tests/integration/test_github_insights_real_db.py::test_non_member_gets_404_and_viewer_can_read
+          tests/integration/test_github_insights_real_db.py::test_revision_three_unpublished_and_anchor_clone_do_not_inflate_counts
+          tests/integration/test_github_insights_real_db.py::test_shared_and_git_name_authors_are_unresolved_and_never_linked
+          tests/integration/test_github_insights_real_db.py::test_window_repo_validation_and_order_are_deterministic
+          tests/integration/test_github_insights_real_db.py::test_workspace_scope_holds_with_and_without_explicit_rls_workspace_context
           tests/integration/test_handoff_assignment_real_db.py::test_handoff_assignment_is_atomic_and_limited_to_seeded_memories
           tests/integration/test_ingest_authz_real_db.py::test_an_admin_of_one_workspace_cannot_read_or_write_the_other[artifact_heads]
           tests/integration/test_ingest_authz_real_db.py::test_an_admin_of_one_workspace_cannot_read_or_write_the_other[connector_sync_cursors]
@@ -421,6 +428,7 @@ jobs:
             tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres \
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
+            tests/integration/test_github_insights_real_db.py \
             tests/unit/test_netguard_check.py \
             tests/unit/test_netguard.py \
             tests/integration/test_ingest_authz_real_db.py \
@@ -439,7 +447,7 @@ jobs:
             | grep '::' | sort > "$actual"
           echo "collected $(wc -l < "$actual") node(s)"
           diff -u "$expected" "$actual" || {
-            echo "::error::collected node IDs differ from the expected 233"
+            echo "::error::collected node IDs differ from the expected 240"
             exit 1
           }
 
@@ -449,7 +457,7 @@ jobs:
       # never reported as an acceptance timeout.
       #
       # A JUnit report is emitted so the next step can prove the tests RAN.
-      # `pytest` exits 0 on "233 skipped", and every one of these is guarded by
+      # `pytest` exits 0 on "240 skipped", and every one of these is guarded by
       # the disposable-DB check — so a silent skip is the realistic failure and
       # exit status alone cannot detect it.
       - name: Security acceptance tests
@@ -473,6 +481,7 @@ jobs:
             tests/integration/test_pilot_export_real_db.py::test_pilot_export_excludes_other_workspace_rows_real_postgres \
             tests/integration/test_backend_review_real_services.py \
             tests/integration/test_github_author_links_real_db.py \
+            tests/integration/test_github_insights_real_db.py \
             tests/unit/test_netguard_check.py \
             tests/unit/test_netguard.py \
             tests/integration/test_ingest_authz_real_db.py \
@@ -489,7 +498,7 @@ jobs:
             tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable \
             tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs
 
-      - name: Assert all 233 tests executed and passed
+      - name: Assert all 240 tests executed and passed
         if: always() && steps.acceptance.outcome != 'skipped'
         working-directory: apps/api
         run: |
@@ -517,11 +526,11 @@ jobs:
               else:
                   bad.append(f"{node} -> {state}")
           print(f"executed {total}, passed {passed}")
-          if total != 233:
-              print(f"::error::expected 233 test cases, report contains {total}")
+          if total != 240:
+              print(f"::error::expected 240 test cases, report contains {total}")
           for b in bad:
               print(f"::error::{b}")
-          sys.exit(0 if (total == 233 and passed == 233) else 1)
+          sys.exit(0 if (total == 240 and passed == 240) else 1)
           PY
 
       - name: Upload acceptance report

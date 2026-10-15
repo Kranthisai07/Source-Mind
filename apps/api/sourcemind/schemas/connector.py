@@ -245,6 +245,75 @@ class ConnectorListResponse(ItemList[ConnectorResponse]):
     """List of connectors for a workspace."""
 
 
+class GitHubLinkedUser(BaseModel):
+    """Workspace member linked to a numeric GitHub account by an administrator."""
+
+    user_id: UUID
+    display_name: str | None
+
+
+class GitHubContributor(BaseModel):
+    """One GitHub account or unresolved author label in the activity window."""
+
+    name: str
+    login: str | None
+    github_user_id: int | None
+    linked_user: GitHubLinkedUser | None
+    unresolved: bool
+    commits: int = 0
+    pull_requests: int = 0
+    reviews: int = 0
+    review_comments: int = 0
+    issues: int = 0
+    comments: int = 0
+    discussions: int = 0
+    shared: int = 0
+    total: int = 0
+    first_activity: datetime
+    last_activity: datetime
+    live_memories: int = 0
+
+
+class GitHubInsightsCoverage(BaseModel):
+    """Configured connectors, repositories, and discovery scope completeness."""
+
+    connectors: int
+    repos: int
+    scopes_total: int
+    scopes_incomplete: int
+
+
+class GitHubInsightsWindow(BaseModel):
+    """Half-open activity window: ``since <= timestamp < until``."""
+
+    since: datetime
+    until: datetime
+
+
+class GitHubInsightsTotals(BaseModel):
+    """Contributor counts summed across the response."""
+
+    commits: int = 0
+    pull_requests: int = 0
+    reviews: int = 0
+    review_comments: int = 0
+    issues: int = 0
+    comments: int = 0
+    discussions: int = 0
+    shared: int = 0
+    total: int = 0
+
+
+class GitHubInsightsResponse(BaseModel):
+    """Stored GitHub contributor activity for a workspace and time window."""
+
+    window: GitHubInsightsWindow
+    coverage: GitHubInsightsCoverage
+    contributors: list[GitHubContributor]
+    totals: GitHubInsightsTotals
+    notes: list[str]
+
+
 class SyncLogResponse(BaseModel):
     """Single sync log entry."""
 
