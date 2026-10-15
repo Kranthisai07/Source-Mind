@@ -826,6 +826,12 @@ export const realApi = {
     // ConnectorStatusResponse (state, scopes, documents, filtered, current_run, recent_logs)
     getConnectorStatus: (connId) =>
         request(`/v1/connectors/${encodeURIComponent(connId)}/status`),
+    // GitHubInsightsResponse: stored activity only; no live provider request.
+    getGithubInsights: async (wsId, params = {}) =>
+        request(
+            `/v1/workspaces/${await resolveWorkspaceId(wsId)}/connectors/github/insights`,
+            { params }
+        ),
     retryFailedConnector: (connId) =>
         request(`/v1/connectors/${encodeURIComponent(connId)}/retry-failed`, { method: "POST" }),
     rescanConnector: (connId) =>

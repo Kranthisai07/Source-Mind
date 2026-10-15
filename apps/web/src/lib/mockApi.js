@@ -8,6 +8,7 @@ import {
     MEMORIES_OVER_TIME, SEARCH_ACTIVITY, TEAM_MEMBERS,
     CONNECTOR_STATUSES, MEMORY_SOURCES,
 } from "./mockData";
+import GITHUB_INSIGHTS from "../pages/__fixtures__/githubInsights.variants.json";
 
 // ----- helpers -----
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -319,6 +320,10 @@ export const mockApi = {
         }
         return status;
     }, { min: 60, max: 140 }),
+
+    // GET /v1/workspaces/:id/connectors/github/insights -> GitHubInsightsResponse
+    getGithubInsights: (_wsId, _params = {}) =>
+        request(() => GITHUB_INSIGHTS.populated, { min: 60, max: 140 }),
 
     // POST /v1/connectors/:id/sync -> 202 SyncTriggerResponse
     triggerSync: (connId, { sync_type = "incremental" } = {}) => request(() => ({

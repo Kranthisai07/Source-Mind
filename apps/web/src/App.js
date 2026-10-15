@@ -14,6 +14,7 @@ import Conflicts     from "@/pages/Conflicts";
 import ConflictDetail from "@/pages/ConflictDetail";
 import Handoff       from "@/pages/Handoff";
 import Connectors    from "@/pages/Connectors";
+import Contributors  from "@/pages/Contributors";
 import GithubCallbackRoute from "@/components/connectors/GithubCallbackRoute";
 import Settings      from "@/pages/Settings";
 import PilotTools    from "@/pages/PilotTools";
@@ -42,6 +43,7 @@ export default function App() {
                         <Route path="/conflicts/:id"      element={pilotRestricted(<ConflictDetail />)} />
                         <Route path="/handoff"            element={pilotRestricted(<Handoff />)} />
                         <Route path="/connectors"         element={pilotRestricted(<Connectors />)} />
+                        <Route path="/connectors/:id/contributors" element={pilotRestricted(<Contributors />)} />
                         <Route path="/connectors/github/callback" element={pilotRestricted(<GithubCallbackRoute />)} />
                         <Route path="/settings"           element={<Settings />} />
                         <Route path="/pilot"              element={pilotMode ? <PilotTools /> : <Navigate to="/memories" replace />} />
