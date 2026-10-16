@@ -30,6 +30,7 @@ from sourcemind.core.exceptions import (
 )
 from sourcemind.core.rate_limit import RateLimitedOperation, enforce_rate_limit
 from sourcemind.mcp.auth import resolve_user
+from sourcemind.mcp.keyauth import KeyPrincipal
 from sourcemind.mcp.settings import McpSettings
 from sourcemind.models.workspace import Workspace, WorkspaceMember
 from sourcemind.schemas.memory import MemoryResponse
@@ -229,6 +230,27 @@ async def _resolve_workspace(
     )
 
 
+def _key_workspace(key: KeyPrincipal, workspace_id: str | None) -> uuid.UUID:
+    """A key is bound to exactly one workspace; a selector can only name that workspace."""
+    if workspace_id:
+        try:
+            requested = uuid.UUID(workspace_id)
+        except ValueError as exc:
+            raise McpToolError("invalid_argument", "workspace_id must be a UUID.") from exc
+        if requested != key.workspace_id:
+            # Same answer as an inaccessible workspace: nothing reveals other workspaces.
+            raise McpToolError("not_found", "No such workspace.")
+    return key.workspace_id
+
+
+async def _enforce_key_budget(key: KeyPrincipal, what: str) -> None:
+    """The key has its own read budget so an agent loop cannot drain the member's browser one."""
+    try:
+        await enforce_rate_limit(RateLimitedOperation.MCP_KEY_READ, key.key_id, key.workspace_id)
+    except RateLimitExceededError:
+        raise McpToolError("rate_limited", f"Too many {what}; retry shortly.") from None
+
+
 def _parse_memory_id(raw: str) -> uuid.UUID:
     try:
         return uuid.UUID(raw)
@@ -249,6 +271,7 @@ async def search_memories(
     mode: str,
     limit: int | None,
     openai_client: object | None = None,
+    key: KeyPrincipal | None = None,
 ) -> SearchOutput:
     query = (query or "").strip()
     if not 1 <= len(query) <= 500:
@@ -260,8 +283,13 @@ async def search_memories(
         raise McpToolError(
             "invalid_argument", f"limit must be 1 to {settings.max_search_results}."
         )
-    user_id = await _user_id(session, subject)
-    ws = await _resolve_workspace(session, user_id, workspace_id)
+    if key is not None:
+        user_id = key.user_id
+        ws = _key_workspace(key, workspace_id)
+        await _enforce_key_budget(key, "searches")
+    else:
+        user_id = await _user_id(session, subject)
+        ws = await _resolve_workspace(session, user_id, workspace_id)
     try:
         outcome = await search_memories_for_user(
             session,
@@ -291,6 +319,7 @@ async def search_memories(
         "mcp.search_memories",
         user_id=str(user_id),
         workspace_id=str(ws),
+        key_id=str(key.key_id) if key else None,
         query_length=len(query),
         returned=len(items),
     )
@@ -304,19 +333,27 @@ async def get_memory(
     subject: str | None,
     memory_id: str,
     workspace_id: str | None,
+    key: KeyPrincipal | None = None,
 ) -> GetMemoryOutput:
     mid = _parse_memory_id(memory_id)
     ws_selector: uuid.UUID | None = None
-    if workspace_id:
-        try:
-            ws_selector = uuid.UUID(workspace_id)
-        except ValueError as exc:
-            raise McpToolError("invalid_argument", "workspace_id must be a UUID.") from exc
-    user_id = await _user_id(session, subject)
+    if key is not None:
+        # A key can read only its own workspace: the selector is forced, never merely optional.
+        ws_selector = _key_workspace(key, workspace_id)
+        user_id = key.user_id
+        await _enforce_key_budget(key, "reads")
+    else:
+        if workspace_id:
+            try:
+                ws_selector = uuid.UUID(workspace_id)
+            except ValueError as exc:
+                raise McpToolError("invalid_argument", "workspace_id must be a UUID.") from exc
+        user_id = await _user_id(session, subject)
     try:
         # Per user (the workspace is not known before the memory is resolved). Its own budget:
         # an agent looping over ids must not exhaust the interactive search allowance.
-        await enforce_rate_limit(RateLimitedOperation.MCP_READ, user_id, None)
+        if key is None:
+            await enforce_rate_limit(RateLimitedOperation.MCP_READ, user_id, None)
         memory = await get_memory_for_user(
             session, user_id=user_id, memory_id=mid, include_attribution=True
         )
@@ -337,7 +374,12 @@ async def get_memory(
         )
         for v in chain
     ]
-    log.info("mcp.get_memory", user_id=str(user_id), workspace_id=str(memory.workspace_id))
+    log.info(
+        "mcp.get_memory",
+        user_id=str(user_id),
+        workspace_id=str(memory.workspace_id),
+        key_id=str(key.key_id) if key else None,
+    )
     return GetMemoryOutput(
         memory=_item(memory, limit_chars=settings.get_content_chars),
         is_current=memory.is_current,

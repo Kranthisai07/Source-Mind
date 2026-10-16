@@ -3656,3 +3656,18 @@ the append-only `mcp_key_events` row keeps the actor). First revocation and `las
 unchanged. No HTTP path was shown to exploit this (the routes only ever set `revoked_at = now()`); the finding
 and fix are database-layer defence in depth. Rewriting the policies alone was rejected because ORed policies
 cannot express "this row is frozen" across contexts.
+
+**D-048 addendum 1 (MCP authentication, `MCP_AUTH_MODE=api_key`).** Key mode is a small pure-ASGI middleware
+(`sourcemind/mcp/keyauth.py`), not the MCP SDK's OAuth plumbing, because that plumbing advertises an OAuth
+authorization server in the protected-resource metadata and there is none. It authenticates
+`Authorization: Bearer smk_...` on every request to the MCP path with a fresh PostgreSQL lookup (no cache), so
+revocation, expiry and key replacement apply on the very next call. Missing, malformed, oversized, duplicated,
+unknown, revoked and expired credentials are the same 401 with no OAuth discovery hints; a database failure is a
+503 with `Retry-After` (a temporary fault must not look like an invalid credential). The key identity (key,
+workspace, creating member) travels in a context variable; the tools then run the existing per-call membership,
+role and workspace checks as the creating member. A key is forced to its own workspace: another `workspace_id`
+or a memory in another workspace is `not_found` even if the creator belongs to both. Keys have their own read
+budget (`MCP_KEY_READ`, keyed by key id) so an agent loop cannot drain the member's browser budget; the shared
+search path still applies the per-user SEARCH limiter on top. `MCP_AUTH_MODE` defaults to `oauth` and `MCP_ENABLED`
+to false; the OAuth path and its 13 real-client tests are unchanged. Not verified here: real Claude Code, Cursor or
+Codex clients (live step), and behaviour behind a reverse proxy that rewrites the `Authorization` header.

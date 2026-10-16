@@ -8,6 +8,7 @@ deployment enables it by setting ``MCP_ENABLED=true`` and the canonical resource
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import Field, model_validator
@@ -18,6 +19,10 @@ class McpSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="MCP_", extra="ignore")
 
     enabled: bool = False
+    #: How callers authenticate. ``oauth``: Clerk-issued, audience-bound JWTs (see D-033).
+    #: ``api_key``: workspace MCP keys (``smk_...``) resolved against PostgreSQL on every request,
+    #: so revocation applies on the next call (see D-048). The two are mutually exclusive.
+    auth_mode: Literal["oauth", "api_key"] = "oauth"
     #: Canonical URI of the MCP endpoint. Tokens must be issued for exactly this audience.
     resource_url: str = ""
     #: OAuth issuer (the Clerk Frontend API URL). Empty = derive from CLERK_PUBLISHABLE_KEY.
