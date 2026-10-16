@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { KeyRound, Trash2, UserPlus } from "lucide-react";
+import { Trash2, UserPlus } from "lucide-react";
 import TopBar from "../components/layout/TopBar";
 import ContributorAvatar from "../components/widgets/ContributorAvatar";
 import { PageLoadError, PageLoading } from "../components/widgets/PageLoadState";
@@ -12,6 +12,7 @@ import { formatDate } from "../lib/format";
 // Owner/admin is the same capability check the pilot tools use.
 import { isPilotOperatorRole } from "../lib/pilotMode";
 import AddMemberDialog from "../components/workspace/AddMemberDialog";
+import McpKeysSection from "../components/settings/McpKeysSection";
 
 const ACCESS_BY_ROLE = {
     owner: "Full",
@@ -154,13 +155,7 @@ export default function Settings() {
                     </TabsContent>
 
                     <TabsContent value="api" className="mt-0">
-                        <section className="sm-card p-8 max-w-2xl text-center" data-testid="api-keys-empty">
-                            <KeyRound className="w-9 h-9 text-sm-text-muted mx-auto mb-3" />
-                            <h3 className="text-[15px] font-semibold text-sm-text">API keys aren't available yet</h3>
-                            <p className="mt-1 text-[12.5px] text-sm-text-secondary">
-                                The backend exposes no API-key endpoints. Browser requests use a Clerk session token.
-                            </p>
-                        </section>
+                        <McpKeysSection />
                     </TabsContent>
 
                     <TabsContent value="danger" className="mt-0">

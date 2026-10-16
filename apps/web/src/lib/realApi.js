@@ -832,6 +832,20 @@ export const realApi = {
             `/v1/workspaces/${await resolveWorkspaceId(wsId)}/connectors/github/insights`,
             { params }
         ),
+    // MCP keys (K1). create returns the secret ONCE in `key`; list never contains it.
+    listMcpKeys: async (wsId) =>
+        request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/mcp-keys`),
+    createMcpKey: async (wsId, { name, expires_in_days = 90 }) =>
+        request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/mcp-keys`, {
+            method: "POST",
+            body: { name, expires_in_days },
+        }),
+    // 204 No Content (unknown or not-yours -> 404).
+    revokeMcpKey: async (wsId, keyId) =>
+        request(
+            `/v1/workspaces/${await resolveWorkspaceId(wsId)}/mcp-keys/${encodeURIComponent(keyId)}`,
+            { method: "DELETE" }
+        ),
     retryFailedConnector: (connId) =>
         request(`/v1/connectors/${encodeURIComponent(connId)}/retry-failed`, { method: "POST" }),
     rescanConnector: (connId) =>

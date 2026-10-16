@@ -9,6 +9,7 @@ import {
     CONNECTOR_STATUSES, MEMORY_SOURCES,
 } from "./mockData";
 import GITHUB_INSIGHTS from "../pages/__fixtures__/githubInsights.variants.json";
+import MCP_KEYS from "../pages/__fixtures__/mcpKeys.variants.json";
 
 // ----- helpers -----
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -65,6 +66,8 @@ function withSource(memory) {
 
 // Connector state lives for the page session.
 const mockConnectors = CONNECTORS.map((c) => ({ ...c }));
+// Page-session state for the MCP keys section (never persisted).
+let mockMcpKeys = MCP_KEYS.populated.keys.map((k) => ({ ...k }));
 
 // The demo has one workspace; ones created in the UI live for the page session.
 const mockWorkspaces = [WORKSPACE];
@@ -324,6 +327,45 @@ export const mockApi = {
     // GET /v1/workspaces/:id/connectors/github/insights -> GitHubInsightsResponse
     getGithubInsights: (_wsId, _params = {}) =>
         request(() => GITHUB_INSIGHTS.populated, { min: 60, max: 140 }),
+
+    // GET /v1/workspaces/:id/mcp-keys -> McpKeyList {keys, mcp_enabled}
+    listMcpKeys: (_wsId) => request(() => ({
+        mcp_enabled: MCP_KEYS.populated.mcp_enabled,
+        keys: mockMcpKeys.map((k) => ({ ...k })),
+    }), { min: 60, max: 140 }),
+
+    // POST /v1/workspaces/:id/mcp-keys -> 201 McpKeyCreated (the secret is in `key`, once)
+    createMcpKey: (_wsId, { name, expires_in_days = 90 }) => request(() => {
+        const now = new Date();
+        const secret = "smk_" + Array.from({ length: 43 }, () =>
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"[Math.floor(Math.random() * 64)]
+        ).join("");
+        const id = `mock-key-${mockMcpKeys.length + 1}-${now.getTime()}`;
+        const expires = new Date(now.getTime() + expires_in_days * 24 * 60 * 60 * 1000);
+        mockMcpKeys = [{
+            id, name, key_prefix: secret.slice(0, 8), user_id: "mock-user",
+            creator_display_name: "You", created_at: now.toISOString(),
+            expires_at: expires.toISOString(), last_used_at: null, revoked_at: null, status: "active",
+        }, ...mockMcpKeys];
+        return {
+            id, name, key: secret, key_prefix: secret.slice(0, 8),
+            expires_at: expires.toISOString(), created_at: now.toISOString(),
+        };
+    }, { min: 100, max: 220 }),
+
+    // DELETE /v1/workspaces/:id/mcp-keys/:key_id -> 204
+    revokeMcpKey: (_wsId, keyId) => request(() => {
+        const found = mockMcpKeys.find((k) => k.id === keyId);
+        if (!found) {
+            const err = new Error("404 Not Found");
+            err.status = 404;
+            err.body = { error: { code: "SM027", message: "MCP API key not found." } };
+            throw err;
+        }
+        mockMcpKeys = mockMcpKeys.map((k) => k.id === keyId && !k.revoked_at
+            ? { ...k, revoked_at: new Date().toISOString(), status: "revoked" } : k);
+        return {};
+    }, { min: 60, max: 140 }),
 
     // POST /v1/connectors/:id/sync -> 202 SyncTriggerResponse
     triggerSync: (connId, { sync_type = "incremental" } = {}) => request(() => ({
