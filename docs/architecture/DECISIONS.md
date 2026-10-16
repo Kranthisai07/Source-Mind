@@ -3711,3 +3711,35 @@ by accident, and revoking needs an in-page confirmation (the app shows no native
 plainly that a key acts as the member, read-only, in one workspace, and does not claim any client is verified.
 A failed list shows the shared error state, never an empty table. Rejected: re-showing a key later (would need
 the secret stored), and copy-to-clipboard without a failure path.
+
+## D-050 — Staging on a separate empty Railway environment; deployment material only
+
+Workspace MCP keys (D-048) are first deployed to a brand-new, empty Railway environment built from the branch
+`staging/mcp-keys`, with its own Postgres (pgvector), Redis and API; production services, variables, database and
+pinned deploy commit are not touched and never point at this branch. The branch adds deployment material only
+(runbook `docs/deploy/STAGING.md`, `infra/postgres/staging-roles.sql`, `apps/api/railway.staging.json`, a generated
+`apps/api/Dockerfile.staging`, a staging-only seeder); no product logic changes.
+
+Why these choices. (1) Railway hands out a superuser, which bypasses every row-level-security policy, and the app
+does not check this at startup, so the bootstrap script creates a NOSUPERUSER/NOBYPASSRLS owner and runtime role
+and prints `rolsuper`/`rolbypassrls` as proof; the API connects as the runtime role. (2) The app requires TLS for
+every database host except `*.railway.internal` and the pgvector image has none, so migrations cannot run from a
+laptop over the public proxy; they run as a staging-only pre-deploy command inside the private network (not copied
+to production, where migrations stay an owner-run reviewed step). (3) The production Dockerfile hard-codes the
+production service's BuildKit cache-mount ids, which Railway rejects in any other service, so
+`Dockerfile.staging` is generated from it (cache mounts removed, seeder copied in) by a script with a `--check`
+mode rather than hand-copied. (4) Staging has no AI provider keys: no model calls, keyword search only, and fake
+memories seeded without embeddings by `seed_staging.py`, which refuses to run unless `ENVIRONMENT=staging`, runs as
+the restricted runtime role under RLS, and is idempotent. (5) The web page for creating keys runs locally against
+the staging API: the existing publish flow targets production's `gh-pages` and must not be used. Alternatives
+rejected: cloning the production environment (would copy secrets and variables), a separate Railway project
+(extra billing and setup), running staging as the Railway superuser (RLS silently off).
+
+Verified before pushing: a rehearsal on a fresh disposable PostgreSQL ran the bootstrap script unmodified (twice),
+all 14 migrations as the owner (head `20261016_0014`), booted the app as the runtime role with
+`ENVIRONMENT=staging MCP_ENABLED=true MCP_AUTH_MODE=api_key` (health 200, `/mcp` 401, OAuth metadata 404), showed
+both roles non-superuser and non-bypass with RLS forced on `workspaces`, `memories` and `mcp_api_keys`, and
+exercised the seeder (5 memories, idempotent, slug lookup, unknown slug, refusal outside staging; all findable by
+keyword search). Not verified: the Docker image build (Docker Desktop's engine was not running; Railway's first
+build is the first test), the Railway steps themselves, the pre-deploy command on Railway, and TLS/proxy behaviour
+in front of `Authorization` (that is what staging is for).
