@@ -3671,3 +3671,14 @@ budget (`MCP_KEY_READ`, keyed by key id) so an agent loop cannot drain the membe
 search path still applies the per-user SEARCH limiter on top. `MCP_AUTH_MODE` defaults to `oauth` and `MCP_ENABLED`
 to false; the OAuth path and its 13 real-client tests are unchanged. Not verified here: real Claude Code, Cursor or
 Codex clients (live step), and behaviour behind a reverse proxy that rewrites the `Authorization` header.
+
+## D-049 — MCP keys UI: the secret lives only in the show-once dialog
+
+The Settings API tab lists, creates and revokes workspace MCP keys (D-048). The full key exists only in the
+state of the show-once dialog and is gone from state and DOM when it closes: it is never written to
+localStorage/sessionStorage, a URL, a log or an error message, and the list endpoint never returns it. A
+failed clipboard write says so and tells the user to copy manually, outside clicks cannot dismiss the dialog
+by accident, and revoking needs an in-page confirmation (the app shows no native dialogs). The page states
+plainly that a key acts as the member, read-only, in one workspace, and does not claim any client is verified.
+A failed list shows the shared error state, never an empty table. Rejected: re-showing a key later (would need
+the secret stored), and copy-to-clipboard without a failure path.
