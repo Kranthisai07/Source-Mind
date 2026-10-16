@@ -2,6 +2,7 @@ import React from "react";
 import { useNavigate } from "react-router-dom";
 import ContributorAvatar from "./ContributorAvatar";
 import AttributionBar from "./AttributionBar";
+import SourceInfo from "./SourceInfo";
 import { relativeTime, stripMarkdown } from "../../lib/format";
 import { isPilotMode } from "../../lib/pilotMode";
 
@@ -27,7 +28,8 @@ export default function MemoryCard({ memory, score, rank, matchType, pilotMode =
     const tags = Array.isArray(memory.tags) ? memory.tags : [];
     const attribution = Array.isArray(memory.attribution) ? memory.attribution : [];
     const primary = attribution.find((item) => item.is_primary) || attribution[0] || null;
-    const unresolved = memory.unresolved_author?.source_author ? memory.unresolved_author : null;
+    // The source/authorship line already names an unresolved author; do not say it twice.
+    const unresolved = !memory.authorship && memory.unresolved_author?.source_author ? memory.unresolved_author : null;
     const primaryPct = primary && typeof primary.percentage === "number" ? Math.round(primary.percentage) : null;
     const contributor = primary ? {
         name: primary.name || primary.author,
@@ -67,6 +69,8 @@ export default function MemoryCard({ memory, score, rank, matchType, pilotMode =
                 })}
                 {memory.category && <span className="text-[10.5px] font-mono px-2 py-0.5 rounded-md border border-sm-border text-sm-text-secondary ml-auto">{memory.category}</span>}
             </div>
+
+            {!pilotMode && <SourceInfo memory={memory} testPrefix="card-source" />}
 
             {!pilotMode && attribution.length > 0 && <AttributionBar attribution={attribution} />}
 

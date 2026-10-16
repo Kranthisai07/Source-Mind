@@ -1,39 +1,439 @@
-"""GitHub REST + GraphQL API client with pagination and rate-limit handling."""
+"""GitHub REST + GraphQL API client with typed errors and bounded pagination.
+
+Every non-2xx response is classified into a :mod:`contracts` exception
+(``RateLimitedError`` / ``PermissionDeniedError`` / ``NotFoundError`` /
+``GoneError`` / ``TransientError``); nothing is ever returned as an empty
+result for an error, and a persistent 403 can never loop to the page cap.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 import structlog
 
 from sourcemind.connectors.github.app_auth import GitHubAppAuth
+from sourcemind.connectors.github.contracts import (
+    GitHubFetchError,
+    GoneError,
+    NotFoundError,
+    PermissionDeniedError,
+    RateLimitedError,
+    TransientError,
+)
 
 log = structlog.get_logger(__name__)
 
 _API_BASE = "https://api.github.com"
 _GRAPHQL_ENDPOINT = "https://api.github.com/graphql"
 _DEFAULT_PER_PAGE = 100
-_RATE_LIMIT_BACKOFF = 60  # seconds to wait when secondary rate limit hit
+DEFAULT_MAX_PAGES = 50
+#: A single in-request sleep is allowed only for an explicit ``Retry-After`` at or
+#: below this many seconds. Anything longer raises ``RateLimitedError``.
+MAX_INLINE_SLEEP_S = 30.0
+_TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
+
+
+class NotModified:
+    """Sentinel: a conditional GET (``If-None-Match``) answered 304."""
+
+    def __repr__(self) -> str:  # pragma: no cover - cosmetic
+        return "NOT_MODIFIED"
+
+
+NOT_MODIFIED = NotModified()
+
+
+@dataclass(frozen=True)
+class RawResponse:
+    """Status plus parsed JSON body, uninterpreted (``body`` is None if not JSON)."""
+
+    status: int
+    body: Any
+    etag: str | None = None
+
+
+@dataclass
+class CompareResult:
+    """``compare base...head`` with all (page-capped) commits, oldest first."""
+
+    status: str  # 'ahead' | 'behind' | 'identical' | 'diverged'
+    ahead_by: int = 0
+    behind_by: int = 0
+    commits: list[dict[str, Any]] = field(default_factory=list)
+    exhausted: bool = True  # False when the page cap stopped the commit listing
+
+
+def _json(response: httpx.Response) -> Any:
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise TransientError("malformed GitHub response (not JSON)") from exc
+
+
+def _message(response: httpx.Response) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    return str(body.get("message", "")) if isinstance(body, dict) else ""
+
+
+class Paginator:
+    """Async-iterable over the items of a ``Link``-paginated endpoint.
+
+    After iteration ends, ``exhausted`` is ``True`` only if the listing ran to its
+    last page. ``False`` means the page cap stopped it (the inventory is incomplete).
+    ``None`` means iteration has not finished (e.g. the consumer broke out early).
+    ``etag`` is the first page's ETag, set only when the whole listing fits in one
+    page (a first-page ETag cannot vouch for later pages). ``not_modified`` is set
+    when a conditional first request answered 304.
+    """
+
+    def __init__(
+        self,
+        client: GitHubClient,
+        url: str,
+        params: dict[str, Any] | None,
+        *,
+        max_pages: int,
+        items_key: str | None = None,
+        etag: str | None = None,
+    ) -> None:
+        self._client = client
+        self._url = url
+        self._params = params
+        self._max_pages = max_pages
+        self._items_key = items_key
+        self._if_none_match = etag
+        self.exhausted: bool | None = None
+        self.not_modified = False
+        self.etag: str | None = None
+        self.pages_fetched = 0
+
+    def __aiter__(self) -> AsyncIterator[dict[str, Any]]:
+        return self._iterate()
+
+    async def _iterate(self) -> AsyncIterator[dict[str, Any]]:
+        next_url: str | None = self._url
+        params = self._params
+        while next_url:
+            if self.pages_fetched >= self._max_pages:
+                self.exhausted = False
+                return
+            first = self.pages_fetched == 0
+            response = await self._client._send(
+                next_url, params, etag=self._if_none_match if first else None
+            )
+            self.pages_fetched += 1
+            params = None  # only the first request carries params; Link URLs embed them
+            if response.status_code == 304:
+                self.not_modified = True
+                self.exhausted = True
+                return
+            data = _json(response)
+            if self._items_key is not None:
+                items = data.get(self._items_key) if isinstance(data, dict) else None
+                if not isinstance(items, list):
+                    raise TransientError("malformed GitHub response (no item list)")
+            else:
+                items = data if isinstance(data, list) else [data]
+            next_url = GitHubClient._extract_next_link(response.headers.get("Link", ""))
+            if first and next_url is None:
+                self.etag = response.headers.get("ETag")
+            for item in items:
+                yield item
+        self.exhausted = True
 
 
 class GitHubClient:
     """Async GitHub client authenticated via a GitHub App installation token.
 
-    All REST list calls are automatically paginated via the ``Link`` header.
-    GraphQL calls are used for Discussions (not available in REST v3).
+    REST list calls return a :class:`Paginator` (``Link`` header, configurable page
+    cap, ``exhausted`` flag). GraphQL Discussions remain for legacy callers only; the
+    automatic-ingestion path never calls them.
 
     Args:
-        auth: Configured :class:`GitHubAppAuth` instance.
+        auth: Configured :class:`GitHubAppAuth` (anything with ``get_token`` and
+            ``invalidate_cache``).
+        transport: Optional httpx transport (tests inject ``httpx.MockTransport``).
+        max_pages: Default page cap for paginated listings.
+        sleep: Awaitable sleep (injectable in tests).
+        base_url: REST API base URL.
     """
 
-    def __init__(self, auth: GitHubAppAuth) -> None:
+    def __init__(
+        self,
+        auth: GitHubAppAuth,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+        max_pages: int = DEFAULT_MAX_PAGES,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+        base_url: str = _API_BASE,
+    ) -> None:
         self._auth = auth
+        self._transport = transport
+        self._max_pages = max_pages
+        self._sleep = sleep or asyncio.sleep
+        self._base = base_url.rstrip("/")
 
-    # ── Commits ───────────────────────────────────────────────────────────────
+    # ── Typed, bounded discovery methods ─────────────────────────────────────
+
+    def _paginator(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        *,
+        max_pages: int | None = None,
+        items_key: str | None = None,
+        etag: str | None = None,
+    ) -> Paginator:
+        return Paginator(
+            self,
+            f"{self._base}{path}",
+            params,
+            max_pages=max_pages or self._max_pages,
+            items_key=items_key,
+            etag=etag,
+        )
+
+    async def get_repo(self, owner: str, repo: str) -> dict[str, Any]:
+        """``GET /repos/{owner}/{repo}`` (``private``, ``default_branch``)."""
+        response = await self._send(f"{self._base}/repos/{owner}/{repo}", None)
+        data = _json(response)
+        if not isinstance(data, dict):
+            raise TransientError("malformed GitHub response (repo)")
+        return data
+
+    async def get_head_sha(self, owner: str, repo: str, branch: str | None = None) -> str:
+        """Head commit SHA of *branch* (the default branch when omitted)."""
+        if branch is None:
+            branch = (await self.get_repo(owner, repo)).get("default_branch") or "main"
+        response = await self._send(
+            f"{self._base}/repos/{owner}/{repo}/branches/{branch}", None
+        )
+        data = _json(response)
+        sha = ((data or {}).get("commit") or {}).get("sha") if isinstance(data, dict) else None
+        if not isinstance(sha, str) or not sha:
+            raise TransientError("malformed GitHub response (branch head)")
+        return sha
+
+    def list_commits(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        sha: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        per_page: int = _DEFAULT_PER_PAGE,
+        max_pages: int | None = None,
+    ) -> Paginator:
+        params: dict[str, Any] = {"per_page": per_page}
+        for key, value in (("sha", sha), ("since", since), ("until", until)):
+            if value:
+                params[key] = value
+        return self._paginator(f"/repos/{owner}/{repo}/commits", params, max_pages=max_pages)
+
+    async def compare(
+        self,
+        owner: str,
+        repo: str,
+        base: str,
+        head: str,
+        *,
+        per_page: int = _DEFAULT_PER_PAGE,
+        max_pages: int | None = None,
+    ) -> CompareResult:
+        """``compare/{base}...{head}`` with the commit list paginated and merged."""
+        url: str | None = f"{self._base}/repos/{owner}/{repo}/compare/{base}...{head}"
+        params: dict[str, Any] | None = {"per_page": per_page}
+        cap = max_pages or self._max_pages
+        result: CompareResult | None = None
+        pages = 0
+        while url:
+            if pages >= cap:
+                assert result is not None
+                result.exhausted = False
+                return result
+            response = await self._send(url, params)
+            pages += 1
+            params = None
+            data = _json(response)
+            if not isinstance(data, dict) or not isinstance(data.get("commits", []), list):
+                raise TransientError("malformed GitHub response (compare)")
+            if result is None:
+                result = CompareResult(
+                    status=str(data.get("status", "")),
+                    ahead_by=int(data.get("ahead_by", 0) or 0),
+                    behind_by=int(data.get("behind_by", 0) or 0),
+                )
+            result.commits.extend(data.get("commits", []))
+            url = self._extract_next_link(response.headers.get("Link", ""))
+        assert result is not None
+        return result
+
+    def list_issues(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        state: str = "all",
+        since: str | None = None,
+        sort: str = "updated",
+        direction: str = "asc",
+        per_page: int = _DEFAULT_PER_PAGE,
+        max_pages: int | None = None,
+    ) -> Paginator:
+        """Issues endpoint. Pull requests appear too (``pull_request`` key); the
+        caller filters them out."""
+        params: dict[str, Any] = {
+            "state": state,
+            "sort": sort,
+            "direction": direction,
+            "per_page": per_page,
+        }
+        if since:
+            params["since"] = since
+        return self._paginator(f"/repos/{owner}/{repo}/issues", params, max_pages=max_pages)
+
+    def list_issue_comments(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        since: str | None = None,
+        sort: str = "updated",
+        direction: str = "asc",
+        per_page: int = _DEFAULT_PER_PAGE,
+        max_pages: int | None = None,
+    ) -> Paginator:
+        """Repo-wide issue + PR conversation comments feed."""
+        params: dict[str, Any] = {"sort": sort, "direction": direction, "per_page": per_page}
+        if since:
+            params["since"] = since
+        return self._paginator(
+            f"/repos/{owner}/{repo}/issues/comments", params, max_pages=max_pages
+        )
+
+    def list_review_comments(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        since: str | None = None,
+        sort: str = "updated",
+        direction: str = "asc",
+        per_page: int = _DEFAULT_PER_PAGE,
+        max_pages: int | None = None,
+    ) -> Paginator:
+        """Repo-wide pull request review (inline) comments feed."""
+        params: dict[str, Any] = {"sort": sort, "direction": direction, "per_page": per_page}
+        if since:
+            params["since"] = since
+        return self._paginator(
+            f"/repos/{owner}/{repo}/pulls/comments", params, max_pages=max_pages
+        )
+
+    def list_pulls(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        state: str = "all",
+        sort: str = "updated",
+        direction: str = "desc",
+        per_page: int = _DEFAULT_PER_PAGE,
+        max_pages: int | None = None,
+    ) -> Paginator:
+        params = {"state": state, "sort": sort, "direction": direction, "per_page": per_page}
+        return self._paginator(f"/repos/{owner}/{repo}/pulls", params, max_pages=max_pages)
+
+    def list_pull_reviews(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        *,
+        etag: str | None = None,
+        per_page: int = _DEFAULT_PER_PAGE,
+        max_pages: int | None = None,
+    ) -> Paginator:
+        return self._paginator(
+            f"/repos/{owner}/{repo}/pulls/{number}/reviews",
+            {"per_page": per_page},
+            max_pages=max_pages,
+            etag=etag,
+        )
+
+    def list_pull_issue_comments(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        *,
+        etag: str | None = None,
+        per_page: int = _DEFAULT_PER_PAGE,
+        max_pages: int | None = None,
+    ) -> Paginator:
+        return self._paginator(
+            f"/repos/{owner}/{repo}/issues/{number}/comments",
+            {"per_page": per_page},
+            max_pages=max_pages,
+            etag=etag,
+        )
+
+    def list_installation_repositories(
+        self, *, per_page: int = _DEFAULT_PER_PAGE, max_pages: int | None = None
+    ) -> Paginator:
+        """``GET /installation/repositories`` (items are the ``repositories`` list)."""
+        return self._paginator(
+            "/installation/repositories",
+            {"per_page": per_page},
+            max_pages=max_pages,
+            items_key="repositories",
+        )
+
+    async def get_user_by_id(self, user_id: int) -> dict[str, Any]:
+        """``GET /user/{id}``: resolves a numeric account id to its current login."""
+        response = await self._send(f"{self._base}/user/{int(user_id)}", None)
+        data = _json(response)
+        if not isinstance(data, dict):
+            raise TransientError("malformed GitHub response (user)")
+        return data
+
+    async def collaborator_permission(self, owner: str, repo: str, username: str) -> RawResponse:
+        """``GET /repos/{o}/{r}/collaborators/{user}/permission``.
+
+        Returns the HTTP status and parsed body with NO interpretation and no
+        status-based exception (the verifier decides what each status means). Only a
+        transport failure raises (``TransientError``).
+        """
+        response = await self._send(
+            f"{self._base}/repos/{owner}/{repo}/collaborators/{username}/permission",
+            None,
+            raw=True,
+        )
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        return RawResponse(status=response.status_code, body=body)
+
+    async def conditional_get(self, path: str, etag: str | None) -> RawResponse | NotModified:
+        """GET *path* with ``If-None-Match``; ``NOT_MODIFIED`` on 304, else the parsed 2xx."""
+        response = await self._send(f"{self._base}{path}", None, etag=etag)
+        if response.status_code == 304:
+            return NOT_MODIFIED
+        return RawResponse(response.status_code, _json(response), response.headers.get("ETag"))
+
+    # ── Legacy generators (kept for the pre-existing connector path) ─────────
 
     async def get_commits(
         self,
@@ -42,23 +442,9 @@ class GitHubClient:
         since: str | None = None,
         per_page: int = _DEFAULT_PER_PAGE,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Yield all commits for *owner/repo*, optionally filtered by *since* (ISO 8601).
-
-        Args:
-            owner: Repository owner login.
-            repo: Repository name.
-            since: If given, only commits after this timestamp are returned.
-            per_page: Page size (max 100).
-        """
-        params: dict[str, Any] = {"per_page": per_page}
-        if since:
-            params["since"] = since
-        async for item in self._paginate(
-            f"{_API_BASE}/repos/{owner}/{repo}/commits", params
-        ):
+        """Yield all commits for *owner/repo*, optionally filtered by *since*."""
+        async for item in self.list_commits(owner, repo, since=since, per_page=per_page):
             yield item
-
-    # ── Pull Requests ─────────────────────────────────────────────────────────
 
     async def get_pull_requests(
         self,
@@ -68,30 +454,15 @@ class GitHubClient:
         since: str | None = None,
         per_page: int = _DEFAULT_PER_PAGE,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Yield pull requests for *owner/repo*.
-
-        Args:
-            owner: Repository owner login.
-            repo: Repository name.
-            state: ``"open"``, ``"closed"``, or ``"all"``.
-            since: If given, filter PRs updated after this timestamp.
-            per_page: Page size (max 100).
-        """
+        """Yield pull requests (client-side ``since``: the REST endpoint has none)."""
         params: dict[str, Any] = {"state": state, "per_page": per_page}
         if since:
-            # Sort by updated desc only when filtering — avoids expensive full-sort
-            # on large repos (e.g. django/django with 14k+ PRs) when no filter needed.
             params["sort"] = "updated"
             params["direction"] = "desc"
-        async for item in self._paginate(
-            f"{_API_BASE}/repos/{owner}/{repo}/pulls", params
-        ):
-            # Apply since filter client-side (REST /pulls has no `since` param)
+        async for item in self._paginator(f"/repos/{owner}/{repo}/pulls", params):
             if since and item.get("updated_at", "") < since:
                 return
             yield item
-
-    # ── Issues ────────────────────────────────────────────────────────────────
 
     async def get_issues(
         self,
@@ -102,101 +473,43 @@ class GitHubClient:
         per_page: int = _DEFAULT_PER_PAGE,
         max_pages: int = 10,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Yield issues for *owner/repo* (excludes pull requests).
-
-        Args:
-            owner: Repository owner login.
-            repo: Repository name.
-            state: ``"open"``, ``"closed"`` (default), or ``"all"``.
-                   Defaulting to ``"closed"`` avoids paging through thousands
-                   of open PRs on repos like django/django.
-            since: ISO 8601 timestamp; only issues updated after this date.
-            per_page: Page size (max 100).
-            max_pages: Hard cap on pages to fetch (default 10).
-        """
-        params: dict[str, Any] = {"state": state, "per_page": per_page}
-        if since:
-            params["since"] = since
-        async for item in self._paginate(
-            f"{_API_BASE}/repos/{owner}/{repo}/issues", params, max_pages=max_pages
+        """Yield issues (pull requests excluded)."""
+        async for item in self.list_issues(
+            owner,
+            repo,
+            state=state,
+            since=since,
+            sort="created",
+            direction="desc",
+            per_page=per_page,
+            max_pages=max_pages,
         ):
-            # Skip pull requests (GitHub issues endpoint includes both)
             if "pull_request" not in item:
                 yield item
 
-    # ── PR enrichment endpoints ───────────────────────────────────────────────
-
     async def get_pr_comments(
-        self,
-        owner: str,
-        repo: str,
-        pr_number: int,
-        per_page: int = _DEFAULT_PER_PAGE,
+        self, owner: str, repo: str, pr_number: int, per_page: int = _DEFAULT_PER_PAGE
     ) -> AsyncIterator[dict[str, Any]]:
-        """Yield issue-thread comments on a pull request.
-
-        Uses the Issues comments endpoint (``/issues/{number}/comments``), which
-        returns the top-level conversation comments — distinct from inline review
-        comments returned by :meth:`get_pr_review_comments`.
-
-        Args:
-            owner: Repository owner login.
-            repo: Repository name.
-            pr_number: Pull request number.
-            per_page: Page size (max 100).
-        """
-        async for item in self._paginate(
-            f"{_API_BASE}/repos/{owner}/{repo}/issues/{pr_number}/comments",
-            {"per_page": per_page},
+        async for item in self.list_pull_issue_comments(
+            owner, repo, pr_number, per_page=per_page
         ):
             yield item
 
     async def get_pr_reviews(
-        self,
-        owner: str,
-        repo: str,
-        pr_number: int,
-        per_page: int = _DEFAULT_PER_PAGE,
+        self, owner: str, repo: str, pr_number: int, per_page: int = _DEFAULT_PER_PAGE
     ) -> AsyncIterator[dict[str, Any]]:
-        """Yield review objects (APPROVED, CHANGES_REQUESTED, COMMENTED, etc.).
-
-        Args:
-            owner: Repository owner login.
-            repo: Repository name.
-            pr_number: Pull request number.
-            per_page: Page size (max 100).
-        """
-        async for item in self._paginate(
-            f"{_API_BASE}/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
-            {"per_page": per_page},
-        ):
+        async for item in self.list_pull_reviews(owner, repo, pr_number, per_page=per_page):
             yield item
 
     async def get_pr_review_comments(
-        self,
-        owner: str,
-        repo: str,
-        pr_number: int,
-        per_page: int = _DEFAULT_PER_PAGE,
+        self, owner: str, repo: str, pr_number: int, per_page: int = _DEFAULT_PER_PAGE
     ) -> AsyncIterator[dict[str, Any]]:
-        """Yield inline diff/review comments on a pull request.
-
-        These are the line-level comments attached to specific code hunks,
-        distinct from top-level issue comments returned by :meth:`get_pr_comments`.
-
-        Args:
-            owner: Repository owner login.
-            repo: Repository name.
-            pr_number: Pull request number.
-            per_page: Page size (max 100).
-        """
-        async for item in self._paginate(
-            f"{_API_BASE}/repos/{owner}/{repo}/pulls/{pr_number}/comments",
-            {"per_page": per_page},
+        async for item in self._paginator(
+            f"/repos/{owner}/{repo}/pulls/{pr_number}/comments", {"per_page": per_page}
         ):
             yield item
 
-    # ── Discussions (GraphQL) ─────────────────────────────────────────────────
+    # ── Discussions (GraphQL) - legacy; NOT used by the automatic path ───────
 
     async def get_discussions(
         self,
@@ -204,15 +517,7 @@ class GitHubClient:
         repo: str,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        """Return up to *limit* discussions for *owner/repo* via GraphQL.
-
-        Discussions are not available in the GitHub REST API v3.
-
-        Args:
-            owner: Repository owner login.
-            repo: Repository name.
-            limit: Maximum number of discussions to retrieve (max 100 per call).
-        """
+        """Return up to *limit* discussions via GraphQL (legacy, out of scope)."""
         query = """
         query($owner: String!, $repo: String!, $first: Int!, $after: String) {
           repository(owner: $owner, name: $repo) {
@@ -253,9 +558,7 @@ class GitHubClient:
 
             data = await self._graphql(query, variables)
             discussions_data = (
-                data.get("data", {})
-                .get("repository", {})
-                .get("discussions", {})
+                data.get("data", {}).get("repository", {}).get("discussions", {})
             )
             nodes = discussions_data.get("nodes", [])
             results.extend(nodes)
@@ -268,7 +571,7 @@ class GitHubClient:
 
         return results[:limit]
 
-    # ── Rate-limit aware request helpers ──────────────────────────────────────
+    # ── Request core ──────────────────────────────────────────────────────────
 
     async def _get_headers(self) -> dict[str, str]:
         """Build authorization headers using a fresh (or cached) token."""
@@ -279,92 +582,123 @@ class GitHubClient:
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
+    async def _send(
+        self,
+        url: str,
+        params: dict[str, Any] | None,
+        *,
+        etag: str | None = None,
+        raw: bool = False,
+    ) -> httpx.Response:
+        """One logical GET: classify the response, never loop on failure.
+
+        * 401: invalidate the token and retry once; the retry response is classified.
+        * Rate limit with an explicit ``Retry-After`` <= 30 s: sleep once and retry
+          once; any further (or longer) rate limit raises ``RateLimitedError``.
+        * ``raw=True`` returns any HTTP response unclassified (transport errors still
+          raise ``TransientError``).
+        * 304 is returned to the caller only when *etag* was sent.
+        """
+        reauthed = False
+        slept = False
+        while True:
+            headers = await self._get_headers()
+            if etag:
+                headers["If-None-Match"] = etag
+            try:
+                async with httpx.AsyncClient(
+                    timeout=_TIMEOUT, transport=self._transport
+                ) as http:
+                    response = await http.get(url, headers=headers, params=params)
+            except httpx.HTTPError as exc:
+                raise TransientError(f"network error: {type(exc).__name__}") from exc
+
+            if raw:
+                return response
+            status = response.status_code
+            if status == 401 and not reauthed:
+                reauthed = True
+                await self._auth.invalidate_cache()
+                continue
+            error = self._error_for(response, conditional=bool(etag))
+            if error is None:
+                return response
+            if (
+                isinstance(error, RateLimitedError)
+                and not slept
+                and error.retry_after_s is not None
+                and "retry-after" in response.headers
+                and error.retry_after_s <= MAX_INLINE_SLEEP_S
+            ):
+                slept = True
+                log.warning("github_rate_limit_inline_sleep", retry_after=error.retry_after_s)
+                await self._sleep(error.retry_after_s)
+                continue
+            raise error
+
+    @staticmethod
+    def _error_for(response: httpx.Response, *, conditional: bool) -> GitHubFetchError | None:
+        """Map a response to a typed error, or ``None`` when it is usable."""
+        status = response.status_code
+        if 200 <= status < 300:
+            return None
+        if status == 304:
+            return None if conditional else TransientError("unexpected 304")
+        message = _message(response).lower()
+        headers = response.headers
+        if status == 429 or (
+            status == 403
+            and (
+                headers.get("x-ratelimit-remaining") == "0"
+                or "retry-after" in headers
+                or "rate limit" in message
+            )
+        ):
+            retry_after: float | None = None
+            raw_retry = headers.get("retry-after")
+            if raw_retry is not None:
+                try:
+                    retry_after = max(0.0, float(raw_retry))
+                except ValueError:
+                    retry_after = None
+            reset_at: datetime | None = None
+            raw_reset = headers.get("x-ratelimit-reset")
+            if raw_reset is not None:
+                try:
+                    reset_at = datetime.fromtimestamp(int(raw_reset), tz=UTC)
+                except (ValueError, OverflowError, OSError):
+                    reset_at = None
+            if retry_after is None and reset_at is not None:
+                retry_after = max(0.0, (reset_at - datetime.now(UTC)).total_seconds())
+            return RateLimitedError(retry_after_s=retry_after, reset_at=reset_at)
+        if status in (401, 403):
+            return PermissionDeniedError(f"HTTP {status}")
+        if status == 404:
+            return NotFoundError("HTTP 404")
+        if status == 410:
+            return GoneError("HTTP 410")
+        if status >= 500:
+            return TransientError(f"HTTP {status}")
+        return GitHubFetchError(f"HTTP {status}")
+
     async def _paginate(
         self,
         url: str,
         params: dict[str, Any],
-        max_pages: int = 50,
+        max_pages: int = DEFAULT_MAX_PAGES,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Yield individual items from a paginated REST endpoint.
-
-        Follows the ``Link: <url>; rel="next"`` header automatically.
-        Backs off and retries on 403/429 secondary rate limit responses.
-
-        Args:
-            url: Initial REST URL to fetch.
-            params: Query parameters for the first request.
-            max_pages: Hard cap on pages fetched (default 50) to prevent
-                       runaway pagination on repos with no matching items.
-        """
-        next_url: str | None = url
-        current_params: dict[str, Any] | None = params
-        pages_fetched = 0
-        # Use a short connect timeout + generous read timeout.
-        # A fresh client per page avoids keeping a long-lived connection open
-        # across generator yields, which prevents asyncio cleanup hangs when
-        # the caller breaks early (GeneratorExit can't interrupt an in-flight await).
-        _timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
-
-        while next_url and pages_fetched < max_pages:
-            pages_fetched += 1
-            headers = await self._get_headers()
-            async with httpx.AsyncClient(timeout=_timeout) as client:
-                response = await client.get(
-                    next_url,
-                    headers=headers,
-                    params=current_params,
-                )
-            current_params = None  # params only on first request
-
-            if response.status_code in (403, 429):
-                retry_after = int(response.headers.get("Retry-After", _RATE_LIMIT_BACKOFF))
-                log.warning(
-                    "github_rate_limit_hit",
-                    status=response.status_code,
-                    retry_after=retry_after,
-                    url=next_url,
-                )
-                await asyncio.sleep(retry_after)
-                continue
-
-            if response.status_code == 401:
-                # Token might have expired mid-session — invalidate and retry once
-                await self._auth.invalidate_cache()
-                headers = await self._get_headers()
-                async with httpx.AsyncClient(timeout=_timeout) as client:
-                    response = await client.get(next_url, headers=headers)
-
-            response.raise_for_status()
-
-            items = response.json()
-            if isinstance(items, list):
-                for item in items:
-                    yield item
-            else:
-                yield items
-
-            next_url = self._extract_next_link(response.headers.get("Link", ""))
+        """Yield items from a paginated absolute URL (compat helper)."""
+        async for item in Paginator(self, url, params, max_pages=max_pages):
+            yield item
 
     async def _graphql(
         self,
         query: str,
         variables: dict[str, Any],
     ) -> dict[str, Any]:
-        """Execute a GraphQL query against the GitHub API.
-
-        Args:
-            query: GraphQL query string.
-            variables: Variables dict for the query.
-
-        Returns:
-            Parsed JSON response dict.
-
-        Raises:
-            httpx.HTTPStatusError: On non-2xx HTTP response.
-            ValueError: If the GraphQL response contains errors.
-        """
+        """Execute a GraphQL query (legacy Discussions only)."""
         headers = await self._get_headers()
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, transport=self._transport) as client:
             response = await client.post(
                 _GRAPHQL_ENDPOINT,
                 headers=headers,
@@ -382,14 +716,7 @@ class GitHubClient:
 
     @staticmethod
     def _extract_next_link(link_header: str) -> str | None:
-        """Parse the ``Link`` header and return the ``next`` URL if present.
-
-        Args:
-            link_header: Raw ``Link`` header value from the response.
-
-        Returns:
-            The URL for the next page, or ``None`` if there is no next page.
-        """
+        """Return the ``rel="next"`` URL from a ``Link`` header, or ``None``."""
         if not link_header:
             return None
         match = re.search(r'<([^>]+)>;\s*rel="next"', link_header)

@@ -139,6 +139,39 @@ class MemoryUpdate(BaseModel):
     model_config = {"str_strip_whitespace": True}
 
 
+class MemoryReapply(BaseModel):
+    """
+    Input for POST /v1/memories/:id/reapply.
+
+    ``memory_id`` (path) is a memory retired by a source refresh. ``target_memory_id``
+    must be one of the candidate replacements the server derives for it; the server
+    never chooses one. ``base_version`` optionally pins the target version the draft
+    was written against.
+    """
+
+    target_memory_id: UUID
+    content: str = Field(min_length=1, max_length=500_000)
+    base_version: int | None = Field(default=None, ge=1)
+    tags: list[str] | None = None
+
+    model_config = {"str_strip_whitespace": True}
+
+
+class SourceRetiredCandidate(BaseModel):
+    """One candidate replacement memory from the newer revision of the same source segment."""
+
+    memory_id: UUID
+    preview: str
+
+
+class SourceRetiredPayload(BaseModel):
+    """Shape of ``error.details`` for a ``source_retired`` 409 (contract C10)."""
+
+    reason: str
+    newer_source_url: str | None = None
+    candidates: list[SourceRetiredCandidate] = Field(default_factory=list)
+
+
 # ─── Response schemas ─────────────────────────────────────────────────────────
 
 class IngestionJobResponse(BaseModel):
@@ -188,6 +221,53 @@ class UnresolvedAuthor(BaseModel):
     source_tool: str
 
 
+SourceStaleReasonLiteral = Literal["source_revised", "source_deleted", "connector_removed"]
+
+
+class MemorySource(BaseModel):
+    """Where a memory came from: the external artifact revision that produced it.
+
+    Contextual identity only. It says nothing about who authored the memory's
+    text; that is ``Authorship`` and the attribution breakdown.
+    """
+
+    tool: str = Field(description="Source system, e.g. 'github'.")
+    type: str = Field(description="Artifact kind, e.g. 'pull_request', 'issue_comment'.")
+    id: str = Field(description="Stable artifact identity within the tool.")
+    url: str | None = Field(default=None, description="Link back to the artifact.")
+    revision: str | None = Field(
+        default=None, description="Digest of the source content this memory was derived from."
+    )
+    revision_seq: int | None = Field(
+        default=None, description="Per-artifact revision counter (1 = first import)."
+    )
+    observed_at: datetime | None = Field(
+        default=None, description="Source-side timestamp of the artifact."
+    )
+
+
+class Authorship(BaseModel):
+    """Who authored the source text. Never a contribution percentage.
+
+    resolved   - the source author is linked to a workspace member.
+    shared     - several authors (e.g. co-authored commit); credited to none.
+    unresolved - the source author is not linked to a workspace member.
+    """
+
+    status: Literal["resolved", "shared", "unresolved"]
+    source_author: str | None = None
+    source_authors: list[str] | None = None
+
+
+class SourceState(BaseModel):
+    """Whether the memory still reflects its source (both REST and MCP expose it)."""
+
+    status: Literal["current", "stale"] = "current"
+    since: datetime | None = None
+    reason: SourceStaleReasonLiteral | None = None
+    newer_source_url: str | None = None
+
+
 class MemoryResponse(BaseModel):
     """
     Full memory representation.
@@ -220,6 +300,11 @@ class MemoryResponse(BaseModel):
             "member. Null unless include_attribution=true and unresolved."
         ),
     )
+    # Source provenance. Populated by GET /memories/:id always, and by search
+    # only when include_source=true; None for memories with no external source.
+    source: MemorySource | None = Field(default=None)
+    authorship: Authorship | None = Field(default=None)
+    source_state: SourceState | None = Field(default=None)
     # Relationship summary
     relation_count: int = Field(default=0, description="Number of related memories")
 
@@ -302,6 +387,10 @@ class SearchRequest(BaseModel):
     include_attribution: bool = Field(
         default=False,
         description="Include contributor attribution in results (adds latency)",
+    )
+    include_source: bool = Field(
+        default=False,
+        description="Include source link, authorship and source state (one extra query)",
     )
     filters: SearchFilters | None = Field(default=None)
 

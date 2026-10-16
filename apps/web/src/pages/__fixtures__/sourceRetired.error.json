@@ -1,0 +1,20 @@
+{
+  "error": {
+    "code": "source_retired",
+    "message": "retired",
+    "details": {
+      "reason": "source_superseded",
+      "newer_source_url": "https://github.com/acme/platform/pull/412",
+      "candidates": [
+        {
+          "memory_id": "00000000-0000-4000-8000-0000000000a1",
+          "preview": "First replacement text"
+        },
+        {
+          "memory_id": "00000000-0000-4000-8000-0000000000a2",
+          "preview": "Second replacement text"
+        }
+      ]
+    }
+  }
+}

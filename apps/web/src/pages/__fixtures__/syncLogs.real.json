@@ -1,0 +1,43 @@
+{
+  "items": [
+    {
+      "id": "00000000-0000-4000-8000-0000000000d1",
+      "connector_id": "00000000-0000-4000-8000-0000000000b1",
+      "sync_type": "incremental",
+      "status": "completed",
+      "artifacts_found": 44,
+      "artifacts_new": 40,
+      "artifacts_skipped": 2,
+      "error_message": null,
+      "started_at": "2026-10-04T08:58:00Z",
+      "completed_at": "2026-10-04T08:59:00Z",
+      "trigger": "scheduled",
+      "artifacts_updated": 2,
+      "artifacts_failed": 0,
+      "artifacts_filtered": {
+        "skip_bots": 2
+      },
+      "error_code": null
+    },
+    {
+      "id": "00000000-0000-4000-8000-0000000000d2",
+      "connector_id": "00000000-0000-4000-8000-0000000000b1",
+      "sync_type": "incremental",
+      "status": "failed",
+      "artifacts_found": 44,
+      "artifacts_new": 40,
+      "artifacts_skipped": 2,
+      "error_message": "Connector sync failed.",
+      "started_at": "2026-10-04T07:58:00Z",
+      "completed_at": "2026-10-04T07:59:00Z",
+      "trigger": "manual",
+      "artifacts_updated": 2,
+      "artifacts_failed": 0,
+      "artifacts_filtered": {
+        "skip_bots": 2
+      },
+      "error_code": "rate_limited"
+    }
+  ],
+  "total": 2
+}

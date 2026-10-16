@@ -5,17 +5,20 @@ POST   /v1/memories              → ingest content (async, 202 Accepted)
 GET    /v1/memories/jobs/:id     → poll ingestion job status
 GET    /v1/memories/:id          → retrieve with attribution
 PATCH  /v1/memories/:id          → update (triggers attribution recompute)
+POST   /v1/memories/:id/reapply  → re-apply an edit to a replacement of a source-retired memory
 DELETE /v1/memories/:id          → soft delete
 GET    /v1/memories/:id/versions → full version history
 """
 
 import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from uuid import UUID
 
 import structlog
 from fastapi import APIRouter, Query, status
 from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from sourcemind.core.dependencies import (
     CurrentUser,
@@ -30,6 +33,9 @@ from sourcemind.core.dependencies import (
 from sourcemind.core.exceptions import (
     JobNotFoundError,
     MemoryNotFoundError,
+    MemoryVersionStaleError,
+    NoReplacementError,
+    ValidationError,
     WorkspaceNotFoundError,
 )
 from sourcemind.core.rate_limit import RateLimitedOperation, enforce_rate_limit
@@ -40,10 +46,11 @@ from sourcemind.schemas.conflict import MemoryVersionEntry, MemoryVersionsRespon
 from sourcemind.schemas.memory import (
     IngestionJobResponse,
     MemoryCreate,
+    MemoryReapply,
     MemoryResponse,
     MemoryUpdate,
 )
-from sourcemind.services.attribution.versioning import find_latest_version
+from sourcemind.services.memory.read import build_memory_response
 
 logger = structlog.get_logger(__name__)
 
@@ -214,62 +221,12 @@ async def get_memory(
     if not memory:
         raise MemoryNotFoundError(f"Memory {memory_id} not found.")
 
-    rel_count_result = await db.execute(
-        text(
-            "SELECT COUNT(*) FROM memory_relations "
-            "WHERE source_memory_id = CAST(:id AS uuid) OR target_memory_id = CAST(:id AS uuid)"
-        ),
-        {"id": str(memory_id)},
-    )
-    relation_count = rel_count_result.scalar() or 0
-
-    # include_attribution was declared, documented ("Null unless
-    # include_attribution=true") and advertised in this route's own summary
-    # ("Retrieve a memory with attribution"), but never read — so `attribution`
-    # was unconditionally None no matter what the caller asked for.
-    #
-    # Reuses hybrid.py's _fetch_attributions rather than reimplementing the
-    # query. It is module-private, but duplicating it would mean duplicating
-    # the DISTINCT ON that keeps an append-only attributions table from
-    # returning one row per recomputation and inflating the percentages past
-    # 100. One implementation of that subtlety is safer than two.
-    attribution = None
-    unresolved_author = None
-    if include_attribution:
-        from sourcemind.services.search.hybrid import (
-            _fetch_attributions,
-            _fetch_unresolved_authors,
-        )
-
-        by_memory = await _fetch_attributions(db, [str(memory_id)])
-        attribution = by_memory.get(str(memory_id)) or []
-        unresolved_author = (
-            await _fetch_unresolved_authors(db, [str(memory_id)])
-        ).get(str(memory_id))
-
-    # Superseded content stays readable (200); these fields tell the client it
-    # is no longer the editable version and, when unambiguous, where it went.
-    latest = await find_latest_version(
-        db, memory_id, memory.workspace_id, user_id=current_user.user_id
-    )
-
-    mem_resp = MemoryResponse(
-        id=memory.id,
-        workspace_id=memory.workspace_id,
-        document_id=memory.document_id,
-        content=memory.content,
-        version=memory.version,
-        tags=memory.tags,
-        category=memory.category,
-        confidence_score=memory.confidence_score,
-        created_at=memory.created_at,
-        updated_at=memory.updated_at,
-        relation_count=relation_count,
-        attribution=attribution,
-        unresolved_author=unresolved_author,
-        is_current=latest.reason is None,
-        latest_memory_id=latest.latest_memory_id,
-        supersession_reason=latest.reason.value if latest.reason else None,
+    mem_resp = await build_memory_response(
+        db,
+        memory,
+        user_id=current_user.user_id,
+        include_attribution=include_attribution,
+        include_source=True,
     )
 
     return APIResponse(data=mem_resp, meta=_make_meta(request_id, start))
@@ -300,7 +257,36 @@ async def update_memory(
     await require_memory_access(
         db, current_user.user_id, memory_id, WorkspacePermission.CONTRIBUTE
     )
+    mem_resp = await _apply_edit(
+        db,
+        current_user.user_id,
+        memory_id,
+        content=body.content,
+        tags=body.tags,
+        idempotency_key=idempotency_key,
+        openai_client=openai_client,
+    )
+    return APIResponse(data=mem_resp, meta=_make_meta(request_id, start))
 
+
+async def _apply_edit(
+    db: AsyncSession,
+    user_id: UUID,
+    memory_id: UUID,
+    *,
+    content: str,
+    tags: list[str] | None,
+    idempotency_key: str,
+    openai_client: object | None,
+    base_version: int | None = None,
+    revalidate: Callable[[Memory], Awaitable[None]] | None = None,
+) -> MemoryResponse:
+    """The one edit path shared by PATCH and re-apply: lock, revalidate, version, attribute.
+
+    CONTRIBUTE access to ``memory_id`` must already have passed. ``revalidate`` runs
+    after the head row lock and before any write (re-apply uses it to re-derive the
+    candidate set under the target's lock).
+    """
     from sourcemind.services.attribution.engine import (
         assert_edit_preserves_inherited_contributors,
         carry_forward_attribution,
@@ -309,51 +295,47 @@ async def update_memory(
     )
     from sourcemind.services.attribution.versioning import (
         create_new_version,
-        unavailable_version_error,
+        lock_editable_head,
     )
     from sourcemind.services.memory.importance import recompute_importance
 
     # Exact string equality defines "unchanged"; no normalisation. The row is
-    # locked so the checks below and the version insert see one stable state.
-    current_result = await db.execute(
-        select(Memory)
-        .where(
-            Memory.id == memory_id,
-            Memory.current_version.is_(True),
-            Memory.deleted_at.is_(None),
+    # locked and revalidated so the checks below and the version insert see one
+    # stable state. A memory retired by a source refresh answers 409
+    # source_retired (with candidate replacements) instead of a bare 404; a user
+    # delete, a missing row and a superseded version keep their existing answers
+    # (404 / 409 SM035). No version is created and the edit is never applied to
+    # the latest version; idempotent replay success is not implemented (D-025).
+    current = await lock_editable_head(db, memory_id, user_id=user_id)
+    if revalidate is not None:
+        await revalidate(current)
+    if base_version is not None and base_version != current.version:
+        raise MemoryVersionStaleError(
+            f"Memory {memory_id} is at version {current.version}, not {base_version}.",
+            details={
+                "memory_id": str(memory_id),
+                "latest_memory_id": str(memory_id),
+                "reason": "base_version_mismatch",
+                "current_version": current.version,
+            },
         )
-        .with_for_update()
-    )
-    current = current_result.scalar_one_or_none()
-    if current is None:
-        # CONTRIBUTE access already passed, so it is safe to say "superseded"
-        # (409 SM035 with the unique latest id when there is one). Missing or
-        # deleted rows stay 404. No version is created and the edit is never
-        # applied to the latest version; idempotent replay success is not
-        # implemented (D-025).
-        raise await unavailable_version_error(
-            db, memory_id, user_id=current_user.user_id
-        )
-    content_changed = current.content != body.content
-    tags_changed = body.tags is not None and list(body.tags) != list(current.tags or [])
+    content_changed = current.content != content
+    tags_changed = tags is not None and list(tags) != list(current.tags or [])
 
     if not content_changed and not tags_changed:
         # Nothing to record: no new version and no contribution event.
-        return APIResponse(
-            data=MemoryResponse(
-                id=current.id,
-                workspace_id=current.workspace_id,
-                document_id=current.document_id,
-                content=current.content,
-                version=current.version,
-                tags=current.tags,
-                category=current.category,
-                confidence_score=current.confidence_score,
-                created_at=current.created_at or datetime.now(UTC),
-                updated_at=current.updated_at,
-                relation_count=0,
-            ),
-            meta=_make_meta(request_id, start),
+        return MemoryResponse(
+            id=current.id,
+            workspace_id=current.workspace_id,
+            document_id=current.document_id,
+            content=current.content,
+            version=current.version,
+            tags=current.tags,
+            category=current.category,
+            confidence_score=current.confidence_score,
+            created_at=current.created_at or datetime.now(UTC),
+            updated_at=current.updated_at,
+            relation_count=0,
         )
 
     # Read-only refusals, evaluated BEFORE any write so a refusal leaves no new
@@ -363,29 +345,25 @@ async def update_memory(
     else:
         await plan_carry_forward(db, memory_id)
 
+    content_before = current.content
     version_result = await create_new_version(
         session=db,
         memory_id=memory_id,
-        new_content=body.content,
-        new_tags=body.tags,
+        new_content=content,
+        new_tags=tags,
         openai_client=openai_client,
-        user_id=current_user.user_id,
+        user_id=user_id,
     )
 
     new_mem = version_result.new_memory
-    old_content_result = await db.execute(
-        select(Memory).where(Memory.id == version_result.previous_version_id)
-    )
-    old_mem = old_content_result.scalar_one_or_none()
-    content_before = old_mem.content if old_mem else ""
 
     if content_changed:
         await recompute_attribution(
             session=db,
             memory_id=new_mem.id,
-            editor_id=current_user.user_id,
+            editor_id=user_id,
             content_before=content_before,
-            content_after=body.content,
+            content_after=content,
             action_type="edit",
             idempotency_key=idempotency_key,
         )
@@ -408,7 +386,7 @@ async def update_memory(
 
     await db.commit()
 
-    mem_resp = MemoryResponse(
+    return MemoryResponse(
         id=new_mem.id,
         workspace_id=new_mem.workspace_id,
         document_id=new_mem.document_id,
@@ -420,6 +398,93 @@ async def update_memory(
         created_at=new_mem.created_at or datetime.now(UTC),
         updated_at=new_mem.updated_at,
         relation_count=0,
+    )
+
+
+@router.post(
+    "/{memory_id}/reapply",
+    response_model=APIResponse[MemoryResponse],
+    summary="Re-apply an edit to a replacement of a source-retired memory",
+    description=(
+        "A PATCH answered 409 source_retired with candidate replacements. Re-apply the "
+        "draft to ONE explicitly chosen candidate (target_memory_id). The candidates are "
+        "re-derived server side; the server never chooses. The edit is recorded under the "
+        "acting user on the target, which keeps its own contribution history. "
+        "Requires Idempotency-Key header."
+    ),
+)
+async def reapply_memory_edit(
+    memory_id: UUID,
+    body: MemoryReapply,
+    db: DBSession,
+    current_user: CurrentUser,
+    request_id: RequestID,
+    idempotency_key: IdempotencyKey,
+    openai_client: OpenAIClient,
+) -> APIResponse[MemoryResponse]:
+    """Re-apply a draft to an explicit replacement candidate of a source-retired memory."""
+    from sourcemind.services.attribution.versioning import find_source_retired_candidates
+    from sourcemind.services.memory.retire import SOURCE_RETIRE_REASONS
+
+    start = time.perf_counter()
+    await require_memory_access(
+        db, current_user.user_id, memory_id, WorkspacePermission.CONTRIBUTE
+    )
+
+    retired = (
+        await db.execute(select(Memory).where(Memory.id == memory_id))
+    ).scalar_one_or_none()
+    if retired is None:
+        raise MemoryNotFoundError(f"Memory {memory_id} not found.")
+    if retired.deleted_at is None or retired.deleted_reason not in SOURCE_RETIRE_REASONS:
+        raise ValidationError(
+            "Only a memory retired by a source refresh can be re-applied.",
+            details={"memory_id": str(memory_id), "reason": "not_source_retired"},
+        )
+
+    async def _candidate_ids() -> set[UUID]:
+        _, found = await find_source_retired_candidates(
+            db, workspace_id=retired.workspace_id, document_id=retired.document_id
+        )
+        return {mid for mid, _ in found}
+
+    candidates = await _candidate_ids()
+    if not candidates:
+        raise NoReplacementError(
+            "The source has no replacement memory; nothing was created.",
+            details={"memory_id": str(memory_id)},
+        )
+
+    def _not_a_candidate() -> ValidationError:
+        return ValidationError(
+            "target_memory_id is not a current replacement candidate.",
+            details={"reason": "target_not_a_candidate"},
+        )
+
+    if body.target_memory_id not in candidates:
+        raise _not_a_candidate()
+    # Candidates are workspace-scoped by construction; the target still needs the
+    # caller's own CONTRIBUTE access.
+    await require_memory_access(
+        db, current_user.user_id, body.target_memory_id, WorkspacePermission.CONTRIBUTE
+    )
+
+    async def _target_still_candidate(_locked: Memory) -> None:
+        # Re-derived under the target's row lock so a publication that committed
+        # in between cannot leave a stale candidate list in force.
+        if body.target_memory_id not in await _candidate_ids():
+            raise _not_a_candidate()
+
+    mem_resp = await _apply_edit(
+        db,
+        current_user.user_id,
+        body.target_memory_id,
+        content=body.content,
+        tags=body.tags,
+        idempotency_key=idempotency_key,
+        openai_client=openai_client,
+        base_version=body.base_version,
+        revalidate=_target_still_candidate,
     )
     return APIResponse(data=mem_resp, meta=_make_meta(request_id, start))
 
@@ -452,7 +517,10 @@ async def delete_memory(
         raise MemoryNotFoundError(f"Memory {memory_id} not found.")
 
     await db.execute(
-        text("UPDATE memories SET deleted_at = NOW() WHERE id = CAST(:id AS uuid)"),
+        text(
+            "UPDATE memories SET deleted_at = NOW(), deleted_reason = 'user_deleted' "
+            "WHERE id = CAST(:id AS uuid)"
+        ),
         {"id": str(memory_id)},
     )
     await db.commit()
@@ -470,11 +538,11 @@ async def get_memory_versions(
     request_id: RequestID,
 ) -> MemoryVersionsResponse:
     """Return the complete version chain via recursive CTE."""
-    await require_memory_access(db, current_user.user_id, memory_id)
+    workspace_id = await require_memory_access(db, current_user.user_id, memory_id)
 
     from sourcemind.services.attribution.versioning import get_version_chain
 
-    chain = await get_version_chain(db, memory_id)
+    chain = await get_version_chain(db, memory_id, workspace_id)
     return MemoryVersionsResponse(
         versions=[MemoryVersionEntry(**v) for v in chain],
         total=len(chain),

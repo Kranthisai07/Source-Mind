@@ -11,6 +11,7 @@ import { getAuthToken, logTokenFingerprintOnce } from "./authToken";
 import { newIdempotencyKey } from "./idempotency";
 import { getCurrentUserId } from "./currentUser";
 import { chooseWorkspaceId, writeSelection } from "./workspaceSelection";
+import { isPilotMode } from "./pilotMode";
 
 const BASE = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
 
@@ -635,13 +636,20 @@ export const realApi = {
         limit = 20,
         workspace_id,
         include_attribution = false,
+        // Source link / authorship / staleness. Asked for in normal mode only:
+        // the pilot search body must stay exactly {query, mode, limit}.
+        include_source = !isPilotMode(),
     } = {}) => {
         const response = await request(`/v1/memories/search`, {
             method: "POST",
             params: { workspace_id: await resolveWorkspaceId(workspace_id) },
             // Only sent when asked for: the pilot search must stay exactly
             // {query, mode, limit}, and attribution adds latency.
-            body: { query, mode, limit, ...(include_attribution ? { include_attribution: true } : {}) },
+            body: {
+                query, mode, limit,
+                ...(include_attribution ? { include_attribution: true } : {}),
+                ...(include_source ? { include_source: true } : {}),
+            },
         });
         if (!include_attribution || !Array.isArray(response?.results)) return response;
         // Same adapter as the detail page. Anything absent stays absent: a
@@ -799,14 +807,63 @@ export const realApi = {
             body: payload,
         }),
     getConnector: (id) => request(`/v1/connectors/${encodeURIComponent(id)}`),
+    // PATCH {status: "paused"|"active"} / {display_name}
     updateConnector: (id, payload) =>
         request(`/v1/connectors/${encodeURIComponent(id)}`, { method: "PATCH", body: payload }),
-    deleteConnector: (id) =>
-        request(`/v1/connectors/${encodeURIComponent(id)}`, { method: "DELETE" }),
-    triggerSync: (connId) =>
-        request(`/v1/connectors/${encodeURIComponent(connId)}/sync`, { method: "POST" }),
-    getSyncLogs: (connId) =>
-        request(`/v1/connectors/${encodeURIComponent(connId)}/sync-logs`),
+    // 200 with a DisconnectResponse body (not 204). remove_memories is sent
+    // explicitly in both cases so the choice is always on the wire.
+    deleteConnector: (id, { remove_memories = false } = {}) =>
+        request(`/v1/connectors/${encodeURIComponent(id)}`, {
+            method: "DELETE",
+            params: { remove_memories: remove_memories ? "true" : "false" },
+        }),
+    // 202. An explicit body: the route declares a required request model.
+    triggerSync: (connId, { sync_type = "incremental" } = {}) =>
+        request(`/v1/connectors/${encodeURIComponent(connId)}/sync`, {
+            method: "POST",
+            body: { sync_type },
+        }),
+    // ConnectorStatusResponse (state, scopes, documents, filtered, current_run, recent_logs)
+    getConnectorStatus: (connId) =>
+        request(`/v1/connectors/${encodeURIComponent(connId)}/status`),
+    // GitHubInsightsResponse: stored activity only; no live provider request.
+    getGithubInsights: async (wsId, params = {}) =>
+        request(
+            `/v1/workspaces/${await resolveWorkspaceId(wsId)}/connectors/github/insights`,
+            { params }
+        ),
+    retryFailedConnector: (connId) =>
+        request(`/v1/connectors/${encodeURIComponent(connId)}/retry-failed`, { method: "POST" }),
+    rescanConnector: (connId) =>
+        request(`/v1/connectors/${encodeURIComponent(connId)}/rescan`, { method: "POST" }),
+    // 202 RearmQuarantinedResponse {connector_id, rearmed, scopes_marked, message}
+    rearmQuarantined: (connId) =>
+        request(`/v1/connectors/${encodeURIComponent(connId)}/rearm-quarantined`, { method: "POST" }),
+    // SyncLogsResponse: {items: SyncLogResponse[], total}
+    getSyncLogs: (connId, { limit = 20, offset = 0 } = {}) =>
+        request(`/v1/connectors/${encodeURIComponent(connId)}/sync-logs`, {
+            params: { limit, offset },
+        }),
+    // GitHub connect flow. The browser navigates to authorize_url; the callback
+    // page then redeems code+state. User-scoped, not workspace-scoped: the
+    // workspace comes from the signed state on the server.
+    authorizeGithub: async (wsId) =>
+        request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}/connectors/github/authorize`),
+    completeGithubCallback: ({ code, state, installation_id } = {}) =>
+        request(`/v1/connectors/github/callback`, {
+            method: "POST",
+            scoped: false,
+            body: { code, state, ...(installation_id ? { installation_id } : {}) },
+        }),
+    // POST /v1/memories/{retired}/reapply -> APIResponse[MemoryResponse]
+    reapplyMemory: async (retiredId, { idempotencyKey, ...payload } = {}) =>
+        unwrapOne(
+            await request(`/v1/memories/${encodeURIComponent(retiredId)}/reapply`, {
+                method: "POST",
+                headers: { "Idempotency-Key": idempotencyKey || newIdempotencyKey() },
+                body: payload,
+            })
+        ),
 
     // ----- handoffs -----
     //

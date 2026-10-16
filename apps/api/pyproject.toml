@@ -86,6 +86,9 @@ dependencies = [
   # Celery worker rather than app startup. cryptography (already declared)
   # supplies the RS256 backend.
   "PyJWT>=2.8",
+  # Official MCP Python SDK (MIT): the read-only MCP interface (sourcemind/mcp).
+  # Pinned exactly: the protocol revision it negotiates is part of the contract.
+  "mcp==2.3.0",
   # aiohttp must be declared here explicitly. api/v1/slack.py imports
   # slack_bolt.async_app, whose first import is `from aiohttp import web`,
   # but slack-bolt 1.28 declares only slack_sdk and offers no extras — so
@@ -246,6 +249,7 @@ markers = [
   "e2e: end-to-end tests",
   "slow: tests that take >5s",
   "costs_api: makes REAL paid LLM API calls; skip with -m 'not costs_api'",
+  "netguard_expected: the test deliberately attempts a blocked outbound connection (tests/netguard.py)",
 ]
 
 # ─── coverage ─────────────────────────────────────────────────

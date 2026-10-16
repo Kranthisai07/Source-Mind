@@ -3205,3 +3205,428 @@ list 96 -> 97.
 
 **Search result duplicates:** a search showing two near-identical hits was checked against `parent_memory_id`, `version` and `current_version`. No superseded version appeared in the 12 closeout searches; the second hit is a separate extracted fact. No defect.
 
+
+---
+
+## D-031 — Memories expose source, authorship and source state through one read service
+
+**What:** `source` (tool, type, id, url, revision), `authorship` (`resolved|shared|unresolved`)
+and `source_state` (`current|stale`, reason, newer source url) are returned by
+`GET /v1/memories/:id` always and by search when `include_source` is set. They are built in
+`services/memory/read.py`, which also provides `get_memory_for_user` and
+`search_memories_for_user` (authorization inside the function: RLS user context, membership
+and READ on every call; a non-member and a missing id give the same not-found). Migration
+`20261014_0012` adds the provenance columns (`artifact_links.source_revision/revision_seq/connector_id`,
+`memories.source_stale_at/source_stale_reason/deleted_reason`); it is additive, creates no table
+and needs no new grant.
+
+**Why:** retrieval had no way to show where a memory came from (`source_url` was stored but never
+returned), and an AI client interface must not re-implement authorization or response shaping. One
+definition keeps REST and the later MCP server identical.
+
+**Alternatives:** a separate provenance endpoint (extra round trip, two shapes to keep aligned);
+computing authorship from the attribution table (it has no row for unresolved authors, which is
+exactly the case that must be visible). `shared` is stored in `artifact_links.metadata` rather than a
+new column; the stale marker is a column because search and the edit path filter on it.
+
+**Verification:** `tests/integration/test_source_provenance_real_db.py` (4 nodes, now in the Security
+Acceptance exact selection: 97 -> 101, zero skips) runs as the restricted runtime role under RLS and
+checks the three authorship states, current/stale with the newer link, non-member and cross-workspace
+denial, and REST/service equality. Full unit suite 744 passed locally on CPython 3.12.3.
+
+
+---
+
+## D-032 — Automatic ingestion: fenced leases, per-scope discovery state, revision heads, schedule via SECURITY DEFINER
+
+**What:** Migration `20261015_0013` adds the schema for scheduled GitHub ingestion. `connector_configs`
+gains `installation_id`, `authorized_github_user_id`, `created_by`, `sync_interval_minutes`,
+`sync_lease_owner/expires_at`, `fence`, `generation` and new statuses; `connector_sync_logs` gains
+trigger/updated/failed/filtered counters and an error code; new tables `connector_sync_cursors` (per
+connector, repo and artifact type), `connector_work_items` (handoff attempts and quarantine) and
+`artifact_heads` (latest and published revision per artifact); `documents` gains a supersession link and
+the connector generation; the pending-anchor unique index now includes the revision. The normative rules
+are in `docs/architecture/AUTOMATIC_INGESTION_CONTRACT.md`.
+
+**Why this approach:** a sync that can be redelivered, restarted or overtaken must not publish stale work,
+skip an artifact or resurrect a disconnected connector. A monotonically increasing `fence` checked inside
+every write transaction rejects a superseded worker; `generation` lets the ingestion worker refuse queued
+documents after a disconnect; a head row per artifact serializes revision publication; discovery position
+is kept per scope and advances only after a durable handoff or a recorded quarantine, while downstream
+failures stay recoverable from document state.
+
+**Scheduling without weakening isolation:** the tick must list due connectors across workspaces but has no
+user to impersonate. A first design added a policy conditioned on a session setting; the existing
+"every protected-table policy requires active membership" test correctly failed it. The final design
+follows the project's existing pattern for privileged reads: an internal table `sm_connector_schedule` (ids,
+status and due times only; no RLS, no runtime privileges) kept in step by a SECURITY DEFINER trigger, read
+only through `sm_list_due_connectors(limit)`, to which the runtime role has EXECUTE. No policy on a
+protected table changed.
+
+**Scheduler identity.** The due list also returns the connector's creator, whether that creator is still
+an active owner/admin, and one active owner/admin to act as. A SECURITY DEFINER write was tried and
+rejected: the definer role is itself subject to FORCE RLS and cannot update a protected table without
+a member context. So when the creator has left, the scheduled run uses the acting admin's ordinary RLS
+context and the orchestrator records `owner_inactive` through its normal, fenced path.
+
+**Alternatives rejected:** webhooks as the first trigger (new public endpoint, HMAC and delivery dedup;
+polling reuses the incremental path and tolerates missed events); a single `last_sync_at` checkpoint (cannot
+express per-scope progress or partial failure); mapping a changed artifact onto `parent_memory_id` versions
+(extraction yields a different fact set, so a one-to-one mapping would be false).
+
+**Verification:** `tests/integration/test_ingest_schema_real_db.py` (6 nodes, in the Security Acceptance
+exact selection, 101 -> 108): exact runtime ACL and no PUBLIC access on each new table, workspace isolation
+under FORCE RLS, cross-tenant due listing through the function only, CHECK constraints, per-revision
+pending-anchor uniqueness, head sequence constraint. Local acceptance run: 108 collected, 108 executed,
+108 passed, 0 skipped. Migration downgrade/upgrade round trip passed on a clean database; the downgrade
+guards count rows with FORCE RLS lifted inside the transaction so they are not blind when run by a role
+without BYPASSRLS (the 0011 guard has the same blind spot and is not changed here).
+
+## D-034 — Web: real GitHub connect flow, honest connector status, source provenance on memories
+
+**What:** `apps/web` Connectors page now speaks the backend's real contract. Add flow = authorize
+(browser to GitHub) -> `/connectors/github/callback` -> repository picker -> mandatory workspace-readable
+consent -> `POST /connectors` with the ticket. The previous `onAdded` path that reported success without a
+create call is gone. Cards read `GET /connectors/{id}/status` (state chip, last/next sync, last success,
+document counters, filtered counts, per-scope table, current-run progress) and offer Sync now, Retry failed,
+Re-scan, Pause/Resume, and a Disconnect dialog that states the keep/remove choice in plain words (nothing
+preselected). The sync-log drawer reads `items` and maps `error_code` to text because the backend's
+`error_message` is deliberately generic. Memory cards and detail show source type and link, revision,
+authorship (resolved name, "Unresolved author: x", "Multiple authors: a, b", never a percentage), and a
+"source changed" notice with the newer link. A 409 `source_retired` shows the server's candidates as an
+explicit choice (never preselected) and re-applies through `POST /memories/{id}/reapply`; with no candidates
+the draft is kept and the page says so.
+
+**Why this approach:**
+- The single-use OAuth `code` is moved from the URL into a module variable by the callback route, and the URL
+  is replaced at once; it is taken once (ref-guarded for Strict Mode), never stored or logged.
+- `authorize_url` is only followed when it is `https` on github.com (or this app's own origin, which is how
+  mock mode stands in for GitHub). A tampered response cannot redirect the admin elsewhere.
+- Status polling is one `setTimeout` re-armed after each completed read, only while `state=syncing` (or for
+  30 s after Sync now, while the worker picks the run up), cleared on unmount. A failed read keeps the last
+  good status, says it may be stale, and does not speed up. No tight loop.
+- Scope statuses use distinct wording: `authorization_unverified` ("could not confirm ... nothing is imported
+  until we can; not a denial") versus `access_lost` and `reauthorization_required`. Unknown error codes fall
+  back to "failed (code: x)" rather than invented text.
+- Only `https:` URLs become links, always `target=_blank rel="noopener noreferrer"`; others render as text.
+- `include_source` is sent by `realApi.searchMemories` by default only when not in pilot mode, so the pilot
+  body stays exactly `{query, mode, limit}` without touching `Memories.jsx`.
+
+**Why no new library:** native radio/checkbox inputs and the existing Dialog/Sheet were enough; no
+dependency was added.
+
+**Alternatives rejected:** keeping the code in router state or sessionStorage (a second place a single-use
+secret could leak); client-side auto-selecting the only retired-memory candidate (the contract says the
+server never chooses and neither does the client); polling forever (an idle page would hammer `/status`).
+
+**Fixtures:** `src/pages/__fixtures__/{connectorList.populated,connectorStatus.variants,githubCallback.real,
+syncLogs.real,disconnect.real,searchResponse.withSource,sourceRetired.error}.json` are generated from the
+backend pydantic schemas (`model_dump(mode="json")`), values invented, not captured live. Mock API
+(`mockApi.js`/`mockData.js`) now returns the same shapes.
+
+**Not verified:** no real browser run, no real GitHub App redirect, no live backend; everything above is
+covered by jest tests with faked fetch/api only.
+
+---
+
+## D-035 — Automatic ingestion: how the packages fit, and where they are deliberately narrower
+
+**What:** the GitHub client (typed errors instead of "sleep and loop on any 403"), per-segment mapper,
+scope discovery, access verifier, fenced sync orchestrator, revision-aware receiver and fenced
+publication, machine-only retirement with human-edit preservation, the connectors API and the web UI
+were implemented against `docs/architecture/AUTOMATIC_INGESTION_CONTRACT.md` and integrated on one
+branch. Behaviour that is narrower than the contract is listed in that document's last section.
+
+**Choices worth keeping:**
+* The orchestrator always uses the revision-aware receiver; the earlier "existing link means skip"
+  pre-check was removed together with its tests, because the receiver now owns revision identity.
+  A cached idempotent replay of a connector revision is reported as `already_exists`, otherwise a
+  re-scan would be counted as a new import.
+* Retirement locks memory rows `FOR NO KEY UPDATE` in ascending id order and re-reads the set until
+  stable; the edit path locks one row `FOR UPDATE`, which still conflicts, and the weaker mode avoids
+  a lock cycle with the foreign-key checks an edit takes on `memory_relations`.
+* A document is stamped with the connector generation; the worker re-checks it before any provider
+  call and inside the publication transaction, so a disconnect stops queued work.
+* The deletion rule needs a true full inventory (`ScopeResult.full_inventory`); windowed discovery
+  never provides one, so automatic deletion detection is off rather than unsafe.
+* `_fail_run` updates the log by id with SQL. Reading an ORM attribute after the rollback raised in
+  async code inside a swallowed `except`, which left failed runs "running" forever; found by the
+  journey test.
+
+**Verification:** `tests/integration/test_ingestion_journey_real_db.py` (connect, import, source edit,
+automatic sync, natural-language search with citation, mid-sync failure, other-workspace isolation,
+disconnect), plus the package suites, all in the Security Acceptance exact selection. GitHub, model
+providers and embeddings are simulated; none of this is evidence about live GitHub, extraction quality
+or retrieval quality.
+
+## D-036 — Review fixes: sync task row snapshot, commit-cap progress, cumulative import bound, claim lock mode
+
+**What and why (each was reproduced before it was fixed):**
+* `workers/connector_tasks.py::_run_sync` read `config.installation_id` and handed the live ORM row to
+  the connector after `session.rollback()`. Rollback expires every instance and an expired attribute
+  cannot be refreshed in async code (`MissingGreenlet`), so every real sync would have failed. Earlier
+  tests passed a `SimpleNamespace`. Now a plain snapshot of the two fields the run uses is taken first;
+  `test_sync_task_orm_real_db.py` drives the real function with a real row and fails without the fix.
+* Commits scope: once the first-import cap (200) truncated the list, the scope never recorded a head and
+  re-read the same window on every later run, so newer commits were never imported. The head now
+  advances when the declared bound is reached (and to the last commit returned when a comparison is
+  truncated), so later syncs are incremental.
+* Import cap: each run restarted its own per-type allowance, so the "initial import" bound grew with the
+  number of runs. `connector_sync_cursors.consumed` (added to the unmerged 0013) carries the cumulative
+  count; feeds and pull requests both stop at the declared per-type bound. Items between the cap and the
+  connect-time window end are skipped by design and counted in `truncated_items_per_type`; new activity
+  after connect is imported incrementally. Pull requests previously had no cap at all.
+* The concurrent-finalize hang was not a test-barrier deadlock and not a lock cycle: the pipeline's row
+  claim (`FOR UPDATE SKIP LOCKED`, held across model calls) conflicted with the `FOR KEY SHARE` that the
+  foreign-key re-check on the newer revision's document (`supersedes_document_id`) takes on the older
+  one. Found with `log_lock_waits` and backend PIDs tagged by `application_name`. The claim is now
+  `FOR NO KEY UPDATE SKIP LOCKED`, which still excludes a second claimer. Regression:
+  `test_publication_concurrency_diagnostics_real_db.py` (fails on the old mode, passes on the new).
+
+**Alternatives:** a per-scope count derived from `artifact_links` (no schema change) was rejected because
+filtered items are not stored there; relaxing the foreign key was rejected as a schema change to fix a
+lock mode.
+
+## D-038 — Extraction budget counts retries; deletion-detection wording
+
+**What:** the daily extraction-call budget reserved one call per chunk although the extractor makes up
+to two (a retry on an empty or failed answer), so retries were never charged. The pipeline now reserves
+the worst case (2 per chunk) on the shared atomic Redis counter and refunds the unused part once the
+real `usage.calls` is known; when usage is unknown the worst case stands (fails safe). Tests use real
+Redis: a retried extraction ends at 2, a clean one at 1, and 40 parallel reservations against a limit of
+10 admit exactly 10.
+
+Because automatic deletion detection is off, the connector card now always says that deleted sources are
+not detected, the re-scan message says it only re-reads the import window, the "up to date" label became
+"idle" (it does not claim every scope finished), and the contract's deviations section records both.
+
+**Not changed:** a merely paused/budget-paused connector still fails queued documents as
+`connector_disconnected` (misleading code, no data effect; recorded as a gap), and nothing resumes
+`paused_budget` automatically at the next UTC midnight (an admin resumes it; the per-reservation budget
+check still holds, so the cap is not bypassed by resuming).
+
+## D-039 — Migration 0013 review fixes: single-role revoke, due-list starvation
+
+**What:** (1) `sm_connector_schedule` revoked all privileges from the runtime role even when that role
+owns the table (single-role local setups, which migration 0010 and `grant_runtime_privileges` already
+support); the revoke is now skipped for the owner. Verified by running the full chain with
+`SOURCEMIND_RUNTIME_ROLE` equal to the migrating role (`migrate_single_role.sh`). (2) `sm_list_due_connectors`
+now lists only connectors some active owner/admin of a non-deleted workspace can act for; others can never
+be rescheduled by the tick and would otherwise stay at the front of the 500-row window and starve healthy
+connectors. This edits the unmerged 0013 in place (no database has applied it outside tests).
+
+**Reviewed, not changed:** other-grantee sweeps for default-privilege platforms (the repo's deployment
+roles are explicit; recorded as an operator check), backfill of `artifact_heads` for pre-existing
+connector links (UNVERIFIED whether any production connector rows exist; connectors from before this release have
+`created_by` NULL and are reported as owner-inactive by the tick, so they need a reconnect; check the count
+before release), and the
+viewer-role write scope on the three new tables (application layer is the control, as stated in the docstring).
+
+## D-033 — A read-only MCP interface, OAuth resource server only, off by default
+
+**What:** `sourcemind/mcp` mounts a Streamable HTTP MCP endpoint (`/mcp`) with two read-only tools,
+`search_memories` and `get_memory`, built on the official `mcp==2.3.0` SDK and the shared read service
+from D-031. Documented in `docs/architecture/MCP_INTERFACE.md`.
+
+**Why this shape:** AI clients need to retrieve authorized project context; they must not get a second,
+weaker authorization path. Every call resolves the token subject to an existing user, sets the RLS user
+context and asserts workspace membership through the same functions the REST routes use; a supplied
+workspace id only selects. The server accepts a token only if its audience is exactly this MCP resource,
+which the MCP specification requires and which a Clerk session token can never satisfy.
+
+**Not built, deliberately:** a personal-access-token or any other bearer scheme (a different design with
+its own storage, revocation and exposure; to be decided by the owner if the OAuth path proves
+unavailable), writes, resources, prompts, GitHub-through-MCP ingestion.
+
+**Open verification (owner actions, nothing assumed):** whether Clerk access tokens can carry an `aud`
+equal to the MCP resource URL (the spike found only a third-party claim of an instance setting), how
+grants are revoked, development-instance support for client registration, and a real Claude Code run.
+The memo is `D:\SourceMind-Operationsuto-ingest0-spike\B0_MEMO.md` (not in the repository).
+
+**Verification done:** `tests/integration/test_mcp_real_db.py`, 11 nodes in the Security Acceptance exact
+selection (101 -> 112, zero skips locally), official client in both protocol eras against the real
+server and database; the identity provider and embeddings are simulated.
+
+## D-037 — MCP review hardening: fixed internal errors, all-fields-untrusted notice, bounded strings
+
+**What:** (1) any exception that is not a mapped `McpToolError` is logged server-side and returned as
+the fixed text `internal_error`, because the SDK would otherwise render exception text (SQL, parameters,
+tenant data) to the client; (2) the notice and tool output now say that every string field (tags,
+category, contributor names, source fields), not only `content`, is untrusted; (3) tags, contributors and
+category are length- and count-bounded so one hostile source field cannot flood an agent's context.
+
+**Reviewed and deliberately not changed here:** no rate limit on `get_memory` (needs a new limiter
+operation; recorded as a gap), the shared `rate-limit:search` budget with the REST search, and the
+unfiltered version chain (identical in the REST endpoint; a shared-code change belongs with that
+endpoint). A required scope / client allowlist depends on what the identity provider can issue and is
+part of the pending Clerk verification.
+
+## D-040 — Real Celery worker end-to-end run (opt-in, outside the acceptance gate)
+
+**What:** `apps/api/tests/e2e_celery` starts real `celery worker` and `celery beat` processes (prefork,
+`acks_late`, the production task routes) against a real Redis broker and PostgreSQL under FORCE RLS as
+the restricted runtime role. GitHub (in-memory fake behind the real client), the model providers, GitHub
+App auth and the repository verifier are stubbed inside the worker process (`e2e_app.py`); nothing in the
+code under test knows. Run with `CELERY_E2E=1`. It is not in the Security Acceptance list because it
+starts operating-system processes and takes ~3 minutes.
+
+**Covered (5 tests, all passing on 2026-10-14 in WSL, CPython 3.12):** beat tick schedules a sync that a
+connectors-only worker runs while the three resulting `process_document` messages wait in the separate
+`ingestion` queue until an ingestion consumer starts; the same message delivered three times produces one
+memory; a worker SIGKILLed mid-task has its message redelivered and finishes with no duplicate memory; a
+sync worker killed holding the lease blocks takeover until expiry, then a new worker reaps the stale run
+(`interrupted`) and completes with a higher fence (the expiry itself is a labelled time shift in the
+database, not a 10-minute wait); a disconnect with queued documents makes the later ingestion worker fail
+them as `connector_disconnected` with zero provider calls and zero memories.
+
+**Redelivery delay (measured later, see CELERY_REDELIVERY_RUNBOOK.md):** a killed worker's message returns
+only at a live worker's restore tick (acting about every 100 s from that worker's start) and only once older than
+the visibility timeout: ~101 s for timeouts of 5 s and 30 s, ~201 s for 120 s, 1.4 s when the replacement started
+after the message was already old. Not measured at the 3600 s default, so no upper bound is claimed. Nothing sweeps
+stale `processing` documents; the runbook gives the safe manual procedure.
+
+## D-042 — Revert publishes a new revision; admin re-arm; paused is not disconnected
+
+**What:** (1) A connector handoff is no longer deduplicated by the 24 h Redis cache keyed on content: the
+artifact head decides. Same content as the LATEST revision is `same_revision`; content equal to an OLDER
+revision is a new revision, so A -> B -> A publishes the final A (B retired by the normal rules, human-edit
+protections unchanged, history kept). The old behaviour swallowed the revert and left B live for a day.
+(2) `POST /connectors/{id}/rearm-quarantined` (ADMINISTER, rate limited): quarantined items go back to
+`pending` with a fresh budget and the scopes that held them restart from the import-window start, so they
+are actually re-read; all state is in the database, so a crash between the call and the next sync loses
+nothing, and an already-published revision hands off as `same_revision` (no duplicate). It resets the
+scope's cumulative import counter on purpose, like a re-scan. (3) A paused, budget-paused or errored
+connector now fails queued documents as `connector_paused` (recoverable with Retry failed after resume)
+instead of `connector_disconnected`. (4) D-039's migration fixes were moved into #29 (the schema PR) so
+that PR is valid alone at its merge point.
+
+## D-041 — MCP policy: mandatory audience and scope, own read limit, bounded JWKS refresh; version-chain scope
+
+**What:** (1) The MCP verifier already required the resource audience; it now also requires the scope
+(`memories:read` by default, non-empty when enabled), enforced in the verifier itself. A client allowlist
+is optional and off by default: policy does not require it, because audience + scope + per-call membership
+already bound what any client can reach. (2) `get_memory` has its own per-user limit. (3) An unknown key id
+can force a JWKS refetch at most once per 30 s (both the REST and MCP verifiers). (4) Revocation is recorded
+honestly in MCP_INTERFACE.md: offline JWT verification does not give next-call revocation of the token.
+(5) The version-chain query is now explicitly scoped to the authorised workspace and skips soft-deleted
+rows. Evidence it was not "low": a parent link is a plain foreign key (not checked by RLS), and a caller who
+belongs to two workspaces with no workspace context set crossed the boundary in the old query (the test
+shows the unconstrained walk returning the other workspace's row). A one-workspace caller was already
+protected by RLS. (6) MCP `is_current` was always false (wrong key name); fixed.
+
+**Not decided:** the revocation remedy (needs the Clerk probe and your approval, see the doc).
+
+
+**What:** 0013 (a) skipped the schedule table's revoke when the runtime role owns it (single-role setups),
+(b) leaves connectors nobody can act for out of `sm_list_due_connectors` (they could never be
+rescheduled and would starve healthy ones), and (c) carries `connector_sync_cursors.consumed`, the
+cumulative import counter the later sync code uses. These were first made on the ingestion branch; they
+belong to the schema PR that owns 0013, so this PR is valid on its own at every merge point: a database
+migrated by it alone has the schema the later code expects and none of the defects above. Single-role
+chain and round trip were run against this head.
+
+## D-043 — Write access to the ingestion tables is owner/admin only; grants on cross-tenant objects are swept
+
+**Gap 1, viewer-role writes.** `artifact_heads`, `connector_sync_cursors` and `connector_work_items` used the
+member-level tenancy rule for reads and writes. With the restricted runtime role (reproduced; the test failed
+on the old policies) a viewer or plain member could insert, rewrite, delete and row-lock these rows, e.g. forge
+`published_seq` so a revision is never published or delete quarantine records. **Reachable action:** none over
+HTTP (every connector route needs ADMINISTER and the ingestion worker requires CONTRIBUTE and runs as the
+sync's administrator); only a compromised or mistaken runtime path. **Fix:** SELECT stays member-level;
+INSERT/UPDATE/DELETE, and therefore SELECT ... FOR UPDATE (which evaluates UPDATE USING), need owner/admin,
+like `github_author_links` (0010). The code that writes these tables always runs as the connector's
+administrator, so nothing legitimate changes; a submitter demoted mid-run now fails closed with a
+row-level-security error (and the publication lock refuses a connector document whose head row is invisible).
+**Cross-workspace** reads/writes of these tables were already blocked (tests pass before and after, with and
+without a workspace context).
+
+**Gap 2, cross-workspace grants.** `sm_connector_schedule` is intentionally outside RLS and
+`sm_list_due_connectors` is intentionally cross-tenant (the scheduler has no user). Demonstrated: the
+runtime role cannot read the table, can call the function (ids and status only, no content), PUBLIC can do
+neither, the trigger function is not executable by the runtime role. Not covered before: roles other than
+PUBLIC and the runtime role (platforms with default privileges grant new objects to their own roles).
+0013 now sweeps every other grantee on the new tables, the schedule table and both functions (as 0007 does
+for its internal tables); proven by naming a different role as the runtime role inside a rolled-back
+transaction (the real runtime role is then an "other grantee" and loses its grants).
+
+## D-044 — Findings from the real-browser journey (Clerk sign-in, local API/worker, simulated GitHub and providers)
+
+**Defects found only by driving the UI, each fixed with a regression that fails without the fix:**
+1. *Reconnect after "remove memories" imported nothing.* The same-revision short-circuit compared content only,
+   so a NEW connector seeing content the old connector had handed off (its memories since removed) skipped
+   every item and advanced its cursor. "Same revision" now means "handed off by this connector".
+2. *The connector card kept showing the old state after Disconnect* until the page was reloaded (the card
+   caches its own status read and preferred it over the list's). It re-reads when the list's status changes.
+3. The page header counted disconnected connectors as "connected sources".
+**Harness issues (not product defects):** the simulated GitHub edit carried the fake's own clock and was
+correctly ignored by incremental discovery (now stamped with real time); the first edit made the API
+contact the model provider's embeddings endpoint once with the placeholder key (rejected, no cost; the
+memory text of a simulated issue left the machine). All embedding paths are now simulated and the provider
+base URLs point at a closed local port.
+**Behaviour confirmed in the browser:** connect callback strips code/state from the URL; only the
+selected-from-list repo is offered; Connect needs both the repo and the consent box; a duplicate name shows
+a clear error; sync, status table, source link (https, new tab, noopener), "Unresolved author" (never the
+signed-in user), human edit credited to the editor, revised source -> new revision memory and the edited
+memory kept with a "source changed since" notice, rate-limit message, remove vs keep disconnect, and the
+deletion-not-detected note.
+
+## D-045 — Live-verification preparation: network guard, overlapping connectors rejected
+
+**Network restriction (two layers).** (1) `tests/netguard.py`, installed for the whole pytest session:
+non-loopback connects and name lookups are refused and recorded, `NETGUARD_ALLOW` takes exact `host:port`
+only (a wildcard entry matches nothing); a per-test check fails any test during which an attempt was
+recorded, so a client that swallows `OSError` cannot hide it. It already found two unit tests that
+downloaded model weights from huggingface.co; model loading is now explicitly offline in tests. Regressions
+use real-looking OpenAI/Anthropic keys and no mocks. (2) For the live probes, `auto-ingest/airlock`: the
+processes run in a new network namespace (`unshare -rn`) with no route anywhere; the only exits are a
+deny-by-default CONNECT proxy (exact `host:port` allowlist, no wildcards, names resolving to private
+addresses refused, audit log), fixed loopback bridges to the disposable PostgreSQL/Redis, and an ingress
+port. No fallback: if the namespace cannot be created nothing runs. Self-test (18 checks) proves direct
+connections, DNS and proxy attempts to model providers fail, `evil.api.github.com`, `api.github.com:80` and
+`x.openai.com` are denied, a host-loopback decoy is unreachable, and the single exact allowlisted
+destination works. Limit: it protects only processes started under it.
+
+**Overlapping connectors are unsupported and rejected, consistently.** A workspace-scoped advisory lock
+(`lock_workspace_repositories`, always taken before any connector row lock) serialises create (a reconnect is
+a create after a disconnect) and resume (including PATCH status=active); the check refuses a repository
+(case-insensitive) held by any other connector that is not `disconnected`, so paused/errored ones still
+own their sources. 409 `repository_already_connected` lists only the clashing repository names. The receiver
+decides ownership after the artifact-head lock, in the transaction that allocates the revision: a handoff
+for an artifact whose latest revision belongs to another connector that is not disconnected is refused
+(`owned_by_other_connector`, no revision, nothing retired; an invisible owner counts as live). The owner's
+status is read without a lock on purpose: disconnect is permanent, so a stale read can only say "live"
+(refuse), never the reverse, and locking another connector row after the head lock would break the
+documented lock order. Regressions include a concurrent create (four racing creators, exactly one wins;
+fails with the lock removed, using a deliberate pause between check and insert) and a concurrent handoff
+(fails with the ownership check removed).
+
+**D-045 addendum (found by CI, not locally).** The first CI run with the network guard failed in
+`test_chunker.py`: `tiktoken` downloads its `cl100k_base` vocabulary from
+`openaipublic.blob.core.windows.net` on first use. It never showed locally because an earlier, unguarded
+run had cached the file in `/tmp/data-gym-cache`. Tests now use a deterministic offline tokenizer
+(`tests/conftest.py`); production still uses `tiktoken` and downloads once per worker (an outbound
+dependency of the ingestion worker that was not documented before). Verified locally with an empty
+`TIKTOKEN_CACHE_DIR` (unit 902 and acceptance 233 passed).
+
+**D-045 addendum 2 (CI).** With the tokenizer stubbed, CI failed on four tests in
+`test_initial_attribution_scoring.py` that really exercise the sentence-transformer (S2 semantic score):
+they used to download the model during the test run. API CI now fetches and caches the weights in a setup
+step; the test run stays offline (guard + `HF_HUB_OFFLINE`). Skipping the tests was rejected: they assert
+real scoring behaviour.
+
+## D-046 — GitHub insights count stored, published activity by stable source identity
+
+GitHub contributor insights use one workspace-scoped SQL aggregation over published artifact revisions,
+deduplicating anchor/memory link clones by source identity and separating shared and unresolved labels from
+numeric GitHub accounts. This reports auditable import-window activity without implying quality or lines of
+code; numeric accounts are joined to members only through admin-asserted links. Counting link rows would
+inflate multi-memory artifacts, counting every revision would inflate edits, and provider API calls would
+make results depend on live external state rather than the data SourceMind actually imported.
+
+## D-047 — Present GitHub contributor activity as imported counts, not performance
+
+The connector-level Contributors view queries the stored-insights endpoint for a selected 30- or 90-day
+window and keeps co-authored activity separate from individual activity. It displays incomplete import
+coverage and API notes with the counts so partial data cannot look complete. Client-side type filtering
+avoids extra endpoint semantics; percentages, rankings, and quality language were rejected because the
+underlying artifact counts do not measure performance or full individual credit.

@@ -1,0 +1,81 @@
+{
+  "populated": {
+    "window": {"since": "2026-09-14T12:00:00Z", "until": "2026-10-14T12:00:00Z"},
+    "coverage": {"connectors": 1, "repos": ["acme/platform"], "scopes_total": 5, "scopes_incomplete": 0},
+    "contributors": [
+      {
+        "github_user_id": 101, "login": "alice-dev", "unresolved": false,
+        "commits": 8, "pull_requests": 3, "reviews": 2, "review_comments": 1,
+        "issues": 1, "comments": 4, "discussions": 0, "shared": 0, "total": 19,
+        "first_activity": "2026-09-15T10:00:00Z", "last_activity": "2026-10-13T18:30:00Z",
+        "live_memories": 12,
+        "linked_user": {"user_id": "11111111-1111-4111-8111-111111111111", "display_name": "Alice Chen"}
+      },
+      {
+        "github_user_id": 202, "login": "bob-builds", "unresolved": false,
+        "commits": 2, "pull_requests": 1, "reviews": 0, "review_comments": 2,
+        "issues": 4, "comments": 1, "discussions": 0, "shared": 0, "total": 10,
+        "first_activity": "2026-09-18T09:15:00Z", "last_activity": "2026-10-12T14:00:00Z",
+        "live_memories": 8, "linked_user": null
+      },
+      {
+        "github_user_id": 303, "login": "pairing-bot", "unresolved": false,
+        "commits": 0, "pull_requests": 0, "reviews": 0, "review_comments": 0,
+        "issues": 0, "comments": 0, "discussions": 0, "shared": 3, "total": 3,
+        "first_activity": "2026-10-01T11:00:00Z", "last_activity": "2026-10-10T16:45:00Z",
+        "live_memories": 2, "linked_user": null
+      },
+      {
+        "github_user_id": null, "login": "Sam Local", "unresolved": true,
+        "commits": 2, "pull_requests": 0, "reviews": 0, "review_comments": 0,
+        "issues": 0, "comments": 0, "discussions": 0, "shared": 0, "total": 2,
+        "first_activity": "2026-10-03T08:00:00Z", "last_activity": "2026-10-03T08:00:00Z",
+        "live_memories": 1, "linked_user": null
+      },
+      {
+        "github_user_id": 404, "login": "http://unsafe.example", "unresolved": false,
+        "commits": 0, "pull_requests": 0, "reviews": 0, "review_comments": 0,
+        "issues": 1, "comments": 0, "discussions": 0, "shared": 0, "total": 1,
+        "first_activity": "2026-10-08T12:00:00Z", "last_activity": "2026-10-08T12:00:00Z",
+        "live_memories": 1, "linked_user": null
+      }
+    ],
+    "totals": {
+      "commits": 12, "pull_requests": 4, "reviews": 2, "review_comments": 3,
+      "issues": 6, "comments": 5, "discussions": 0, "shared": 3, "total": 35
+    },
+    "notes": [
+      "Activity is derived from GitHub data already imported into SourceMind.",
+      "Counts describe activity, not quality or impact."
+    ]
+  },
+  "empty": {
+    "window": {"since": "2026-09-14T12:00:00Z", "until": "2026-10-14T12:00:00Z"},
+    "coverage": {"connectors": 1, "repos": ["acme/platform"], "scopes_total": 5, "scopes_incomplete": 0},
+    "contributors": [],
+    "totals": {
+      "commits": 0, "pull_requests": 0, "reviews": 0, "review_comments": 0,
+      "issues": 0, "comments": 0, "discussions": 0, "shared": 0, "total": 0
+    },
+    "notes": ["Activity is derived from GitHub data already imported into SourceMind."]
+  },
+  "partial": {
+    "window": {"since": "2026-09-14T12:00:00Z", "until": "2026-10-14T12:00:00Z"},
+    "coverage": {"connectors": 1, "repos": ["acme/platform"], "scopes_total": 5, "scopes_incomplete": 2},
+    "contributors": [
+      {
+        "github_user_id": 101, "login": "alice-dev", "unresolved": false,
+        "commits": 8, "pull_requests": 3, "reviews": 2, "review_comments": 1,
+        "issues": 1, "comments": 4, "discussions": 0, "shared": 0, "total": 19,
+        "first_activity": "2026-09-15T10:00:00Z", "last_activity": "2026-10-13T18:30:00Z",
+        "live_memories": 12,
+        "linked_user": {"user_id": "11111111-1111-4111-8111-111111111111", "display_name": "Alice Chen"}
+      }
+    ],
+    "totals": {
+      "commits": 8, "pull_requests": 3, "reviews": 2, "review_comments": 1,
+      "issues": 1, "comments": 4, "discussions": 0, "shared": 0, "total": 19
+    },
+    "notes": ["Some configured GitHub scopes are still importing."]
+  }
+}

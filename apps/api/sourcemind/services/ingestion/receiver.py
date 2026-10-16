@@ -16,10 +16,12 @@ import hashlib
 import json
 import time
 import uuid
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sourcemind.core.config import get_settings
@@ -57,8 +59,18 @@ _ARTIFACT_LINK_FIELDS = frozenset(
         "source_author",
         "source_timestamp",
         "artifact_metadata",
+        # Revision handoff (contract "Package interfaces"): supplied by the
+        # sync orchestrator, never by an end user.
+        "source_revision",
+        "connector_id",
+        "connector_generation",
     }
 )
+
+# Failure codes eligible for the recovery sweep (contract C4/C6c).
+_REQUEUE_ELIGIBLE_CODES = frozenset({"transient", "incomplete_extraction", "connector_paused"})
+_REQUEUE_BACKOFF_BASE_SECONDS = 60
+_REQUEUE_BACKOFF_MAX_SECONDS = 6 * 60 * 60
 
 _RESERVE_IDEMPOTENCY = """
 local key = KEYS[1]
@@ -130,9 +142,20 @@ async def receive(
     idempotency_key: str,
     artifact_link: dict[str, Any] | None = None,
     attribution: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+    pre_commit: Callable[[AsyncSession], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """
     Stage 1 entry point.
+
+    ``context`` (connectors) holds contextual labels stored in
+    ``pipeline_data["context"]``; they reach extraction as a separate,
+    non-authored field and are never part of the stored text.
+    ``pre_commit`` runs inside the handoff transaction after the Document,
+    ArtifactLink and artifact head are written and before the commit; if it
+    raises, nothing is committed.
+    With ``artifact_link["connector_id"]`` set the handoff is revision-aware:
+    see ``_receive_connector_revision``.
 
     ``artifact_link`` (connectors only) is inserted in the SAME transaction as
     the new Document, so it is durable before the ingestion task is published.
@@ -183,6 +206,31 @@ async def receive(
     if not ws_result.scalar_one_or_none():
         raise WorkspaceNotFoundError(f"Workspace {workspace_id} not found.")
 
+    if artifact_link and artifact_link.get("connector_id") is not None:
+        # A connector handoff is deduplicated by the artifact head, which is authoritative and
+        # revision-aware: the same content as the LATEST revision is a no-op (same_revision), but
+        # content that differs from the latest revision is a new revision even if it equals an
+        # OLDER one. A time-boxed cache keyed on the content alone cannot tell "replay" from
+        # "the source went back to A", so a revert A -> B -> A used to be swallowed for 24 h.
+        # The head row is locked by the handoff itself, so concurrent duplicates serialise there.
+        return await _receive_reserved(
+            session=session,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            content=content,
+            url=url,
+            source_type=source_type,
+            title=title,
+            tags=tags,
+            category=category,
+            ingestion_mode=ingestion_mode,
+            idempotency_key=idempotency_key,
+            artifact_link=artifact_link,
+            attribution=attribution,
+            context=context,
+            pre_commit=pre_commit,
+        )
+
     redis = get_redis()
     idem_key = _idempotency_cache_key(workspace_id, user_id, idempotency_key)
     fingerprint = _request_fingerprint(
@@ -201,6 +249,10 @@ async def receive(
     )
     if cached_response is not None:
         log.debug("receive_idempotent", idempotency_key=idempotency_key)
+        if artifact_link and artifact_link.get("connector_id") is not None:
+            # A connector replaying a revision it already handed off: say so, so it counts
+            # as skipped instead of importing the artifact a second time.
+            return {**cached_response, "already_exists": True, "reason": "idempotent_replay"}
         return cached_response
     assert reservation_token is not None
 
@@ -219,6 +271,8 @@ async def receive(
             idempotency_key=idempotency_key,
             artifact_link=artifact_link,
             attribution=attribution,
+            context=context,
+            pre_commit=pre_commit,
         )
         completed = await redis.eval(
             _COMPLETE_IDEMPOTENCY,
@@ -267,7 +321,32 @@ async def _receive_reserved(
     idempotency_key: str,
     artifact_link: dict[str, Any] | None = None,
     attribution: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+    pre_commit: Callable[[AsyncSession], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
+    if artifact_link is not None and artifact_link.get("connector_id") is not None:
+        try:
+            return await _receive_connector_revision(
+                session=session,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                content=content,
+                url=url,
+                source_type=source_type,
+                title=title,
+                tags=tags,
+                category=category,
+                ingestion_mode=ingestion_mode,
+                idempotency_key=idempotency_key,
+                artifact_link=artifact_link,
+                attribution=attribution,
+                context=context,
+                pre_commit=pre_commit,
+            )
+        except BaseException:
+            await session.rollback()
+            raise
+
     raw_for_hash = url if url else content
     assert raw_for_hash is not None
     hash_input = raw_for_hash if ingestion_mode == "extract" else f"verbatim\0{raw_for_hash}"
@@ -310,6 +389,8 @@ async def _receive_reserved(
     }
     if attribution is not None:
         pipeline_data["attribution"] = dict(attribution)
+    if context is not None:
+        pipeline_data["context"] = dict(context)
     doc = Document(
         workspace_id=workspace_id,
         submitter_id=user_id,
@@ -340,6 +421,13 @@ async def _receive_reserved(
         )
         await session.flush()
 
+    if pre_commit is not None:
+        try:
+            await pre_commit(session)
+        except BaseException:
+            await session.rollback()
+            raise
+
     # The worker is a different process on a different connection, and it
     # picks the task up within milliseconds. Until this transaction commits,
     # the document does not exist as far as that connection is concerned.
@@ -355,6 +443,319 @@ async def _receive_reserved(
         document_id=doc.id,
         workspace_id=workspace_id,
     )
+
+
+async def _receive_connector_revision(
+    *,
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    user_id: uuid.UUID,
+    content: str | None,
+    url: str | None,
+    source_type: str,
+    title: str | None,
+    tags: list[str] | None,
+    category: str | None,
+    ingestion_mode: str,
+    idempotency_key: str,
+    artifact_link: dict[str, Any],
+    attribution: dict[str, Any] | None,
+    context: dict[str, Any] | None,
+    pre_commit: Callable[[AsyncSession], Awaitable[None]] | None,
+) -> dict[str, Any]:
+    """Revision-aware handoff for a connector artifact (contract C6).
+
+    The ``artifact_heads`` row is inserted on first sight and locked
+    (``INSERT .. ON CONFLICT DO UPDATE`` takes the row lock). If the latest
+    link already carries this ``source_revision`` the handoff is a no-op
+    (``already_exists``, ``reason="same_revision"``; ``pre_commit`` still runs
+    so the discovery position can advance atomically). Otherwise the next
+    ``revision_seq`` is allocated under that lock.
+
+    The content hash is salted with the source identity AND the revision
+    number: identical text from two sources keeps both rows, and a revision
+    that returns to earlier text (A -> B -> A) does not collide with the
+    ``uq_documents_workspace_sha256`` constraint.
+    """
+    link = dict(artifact_link)
+    try:
+        tool = str(link["source_tool"])
+        kind = str(link["source_type"])
+        source_id = str(link["source_id"])
+    except KeyError as exc:
+        raise ValidationError(f"artifact_link requires {exc.args[0]}") from None
+    connector_id = uuid.UUID(str(link["connector_id"]))
+    link["connector_id"] = connector_id
+    revision = link.get("source_revision")
+    key = {"ws": str(workspace_id), "tool": tool, "kind": kind, "sid": source_id}
+
+    head = (
+        await session.execute(
+            text(
+                "INSERT INTO artifact_heads AS h "
+                "(workspace_id, source_tool, source_type, source_id, latest_seq, published_seq) "
+                "VALUES (CAST(:ws AS uuid), :tool, :kind, :sid, 0, 0) "
+                "ON CONFLICT (workspace_id, source_tool, source_type, source_id) "
+                "DO UPDATE SET updated_at = now() "
+                "RETURNING latest_seq, published_seq, published_document_id"
+            ),
+            key,
+        )
+    ).one()
+    latest_seq = int(head.latest_seq)
+
+    previous_document_id: uuid.UUID | None = None
+    if latest_seq > 0:
+        previous = (
+            await session.execute(
+                text(
+                    "SELECT document_id, source_revision, connector_id FROM artifact_links "
+                    "WHERE workspace_id = CAST(:ws AS uuid) AND source_tool = :tool "
+                    "AND source_type = :kind AND source_id = :sid "
+                    "AND revision_seq = :seq ORDER BY created_at LIMIT 1"
+                ),
+                {**key, "seq": latest_seq},
+            )
+        ).first()
+        if previous is not None:
+            previous_document_id = previous.document_id
+            # OWNERSHIP, decided under the artifact-head lock taken above and in the same
+            # transaction that would allocate the next revision: a connector may not supersede, and
+            # through publication retire, content whose latest revision belongs to ANOTHER connector
+            # that is still live. (Overlapping connectors are rejected when they are created or
+            # resumed; this is the guard for data that got here some other way, and for the race
+            # window.) Reading the owner's status without a lock is safe: "disconnected" is
+            # permanent: a stale read can only answer "still live", which refuses, never the
+            # reverse.
+            # A connector row this caller cannot see counts as live (fail closed).
+            if previous.connector_id is not None and previous.connector_id != connector_id:
+                owner_status = (
+                    await session.execute(
+                        text("SELECT status FROM connector_configs WHERE id = :c"),
+                        {"c": previous.connector_id},
+                    )
+                ).scalar_one_or_none()
+                if owner_status != "disconnected":
+                    log.warning(
+                        "connector_handoff_refused_owned_elsewhere",
+                        workspace_id=str(workspace_id),
+                        connector_id=str(connector_id),
+                    )
+                    if pre_commit is not None:
+                        await pre_commit(session)
+                    await session.commit()
+                    if previous_document_id is None:
+                        raise RuntimeError("latest revision has no document")
+                    return await _same_revision_response(
+                        session, previous_document_id, workspace_id, latest_seq,
+                        reason="owned_by_other_connector",
+                    )
+            # "Same revision" is a statement about what THIS connector already handed off. A new
+            # connector (a reconnect after a disconnect, possibly with "remove memories") that sees
+            # identical content is a new revision: the earlier one's memories may have been removed
+            # with the old connector, and treating the content as already imported would leave the
+            # source silently absent forever (found by the browser journey).
+            if (
+                revision is not None
+                and previous.source_revision == revision
+                and previous.connector_id == connector_id
+            ):
+                if pre_commit is not None:
+                    await pre_commit(session)
+                await session.commit()
+                if previous_document_id is None:
+                    raise RuntimeError("latest revision has no document")
+                return await _same_revision_response(
+                    session, previous_document_id, workspace_id, latest_seq
+                )
+
+    new_seq = latest_seq + 1
+    await session.execute(
+        text(
+            "UPDATE artifact_heads SET latest_seq = :n, updated_at = now() "
+            "WHERE workspace_id = CAST(:ws AS uuid) AND source_tool = :tool "
+            "AND source_type = :kind AND source_id = :sid"
+        ),
+        {**key, "n": new_seq},
+    )
+    supersedes = head.published_document_id or previous_document_id
+
+    raw = url if url else content
+    assert raw is not None
+    salted = f"connector\0{tool}\0{kind}\0{source_id}\0{new_seq}\0{ingestion_mode}\0{raw}"
+    sha256 = hashlib.sha256(salted.encode()).hexdigest()
+
+    job_id = str(uuid.uuid4())
+    pipeline_data: dict[str, Any] = {
+        "raw_content": content,
+        "idempotency_key": idempotency_key,
+        "current_stage": "queued",
+        "tags": tags or [],
+        "category": category,
+        "ingestion_mode": ingestion_mode,
+        "dispatch_state": "orphaned",
+        "dispatch_attempts": 0,
+    }
+    if attribution is not None:
+        pipeline_data["attribution"] = dict(attribution)
+    if context is not None:
+        pipeline_data["context"] = dict(context)
+    doc = Document(
+        workspace_id=workspace_id,
+        submitter_id=user_id,
+        title=title,
+        source_type=source_type,
+        source_url=url,
+        sha256_hash=sha256,
+        ingestion_status=IngestionStatus.PENDING,
+        pipeline_data=pipeline_data,
+        ingestion_job_id=job_id,
+        supersedes_document_id=supersedes,
+        connector_id=connector_id,
+        connector_generation=link.get("connector_generation"),
+    )
+    session.add(doc)
+    await session.flush()
+    session.add(
+        ArtifactLink(
+            workspace_id=workspace_id,
+            document_id=doc.id,
+            memory_id=None,
+            resolved_user_id=None,
+            revision_seq=new_seq,
+            **link,
+        )
+    )
+    await session.flush()
+
+    if pre_commit is not None:
+        await pre_commit(session)
+    await session.commit()
+
+    response = await _dispatch_or_return_document(
+        session=session, document_id=doc.id, workspace_id=workspace_id
+    )
+    response["revision_seq"] = new_seq
+    return response
+
+
+async def _same_revision_response(
+    session: AsyncSession,
+    document_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+    revision_seq: int,
+    *,
+    reason: str = "same_revision",
+) -> dict[str, Any]:
+    doc = (
+        await session.execute(
+            select(Document).where(
+                Document.id == document_id, Document.workspace_id == workspace_id
+            )
+        )
+    ).scalar_one()
+    await session.commit()
+    return {
+        "job_id": doc.ingestion_job_id or "",
+        "document_id": str(doc.id),
+        "status": doc.ingestion_status,
+        "message": (
+            "Source revision already ingested."
+            if reason == "same_revision"
+            else "This source is imported by another connector."
+        ),
+        "memory_count": doc.memory_count,
+        "already_exists": True,
+        "reason": reason,
+        "revision_seq": revision_seq,
+    }
+
+
+async def requeue_transient_failure(
+    session: AsyncSession,
+    document_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+    *,
+    now: datetime,
+) -> bool:
+    """Reset an eligible failed connector document to pending and re-dispatch it.
+
+    Refuses (returns False, nothing changed) when the document is not a failed
+    connector document, its error code is not ``transient`` /
+    ``incomplete_extraction``, ``attempts`` reached
+    ``connector_max_handoff_attempts``, or the connector is no longer active at
+    the document's generation (checked under ``FOR SHARE``; a connector the
+    caller cannot see counts as not active).
+    On success: status ``pending``, ``attempts`` + 1, ``next_retry_at`` set by
+    exponential backoff, and the document goes back through the receiver outbox.
+    """
+    doc = (
+        await session.execute(
+            select(Document)
+            .where(
+                Document.id == document_id,
+                Document.workspace_id == workspace_id,
+                Document.deleted_at.is_(None),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if doc is None:
+        await session.rollback()
+        return False
+    pipeline_data = dict(doc.pipeline_data or {})
+    attempts = int(pipeline_data.get("attempts", 0))
+    if (
+        doc.ingestion_status != IngestionStatus.FAILED
+        or doc.connector_id is None
+        or pipeline_data.get("error_code") not in _REQUEUE_ELIGIBLE_CODES
+        or attempts >= get_settings().connector_max_handoff_attempts
+    ):
+        await session.rollback()
+        return False
+
+    connector = (
+        await session.execute(
+            text(
+                "SELECT status, generation FROM connector_configs "
+                "WHERE id = CAST(:c AS uuid) AND workspace_id = CAST(:w AS uuid) FOR SHARE"
+            ),
+            {"c": str(doc.connector_id), "w": str(workspace_id)},
+        )
+    ).first()
+    if (
+        connector is None
+        or connector.status != "active"
+        or connector.generation != doc.connector_generation
+    ):
+        await session.rollback()
+        return False
+
+    attempts += 1
+    backoff = min(
+        _REQUEUE_BACKOFF_BASE_SECONDS * (2**attempts), _REQUEUE_BACKOFF_MAX_SECONDS
+    )
+    pipeline_data.pop("error_code", None)
+    pipeline_data.update(
+        {
+            "attempts": attempts,
+            "next_retry_at": (now.astimezone(UTC) + timedelta(seconds=backoff)).isoformat(),
+            "current_stage": "queued",
+            "dispatch_state": "orphaned",
+            "dispatch_attempts": 0,
+        }
+    )
+    doc.pipeline_data = pipeline_data
+    doc.ingestion_status = IngestionStatus.PENDING
+    doc.error_message = None
+    doc.ingestion_job_id = str(uuid.uuid4())
+    await session.commit()
+
+    await _dispatch_or_return_document(
+        session=session, document_id=document_id, workspace_id=workspace_id
+    )
+    return True
 
 
 async def recover_pending_dispatch(
