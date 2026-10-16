@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { RefreshCw, Github, FileText, Pause, Play, ScanSearch, RotateCw, Unplug } from "lucide-react";
+import { RefreshCw, Github, FileText, Pause, Play, ScanSearch, RotateCw, Unplug, Users } from "lucide-react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import StatusBadge from "../widgets/StatusBadge";
 import { Button } from "../ui/button";
@@ -294,6 +295,13 @@ export default function ConnectorCard({ connector, onLogs, onDisconnect, onChang
                 {canAct && (
                     <Button data-testid={`pause-${c.id}`} onClick={togglePause} disabled={busy !== null} size="sm" variant="outline" className="h-8 border-sm-border text-sm-text">
                         {paused ? <><Play className="w-3.5 h-3.5" /> Resume</> : <><Pause className="w-3.5 h-3.5" /> Pause</>}
+                    </Button>
+                )}
+                {canAct && (
+                    <Button asChild size="sm" variant="outline" className="h-8 border-sm-border text-sm-text">
+                        <Link to={`/connectors/${encodeURIComponent(c.id)}/contributors`} data-testid={`contributors-${c.id}`}>
+                            <Users className="w-3.5 h-3.5" /> Contributors
+                        </Link>
                     </Button>
                 )}
                 <Button

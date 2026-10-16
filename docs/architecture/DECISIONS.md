@@ -3622,3 +3622,11 @@ numeric GitHub accounts. This reports auditable import-window activity without i
 code; numeric accounts are joined to members only through admin-asserted links. Counting link rows would
 inflate multi-memory artifacts, counting every revision would inflate edits, and provider API calls would
 make results depend on live external state rather than the data SourceMind actually imported.
+
+## D-047 — Present GitHub contributor activity as imported counts, not performance
+
+The connector-level Contributors view queries the stored-insights endpoint for a selected 30- or 90-day
+window and keeps co-authored activity separate from individual activity. It displays incomplete import
+coverage and API notes with the counts so partial data cannot look complete. Client-side type filtering
+avoids extra endpoint semantics; percentages, rankings, and quality language were rejected because the
+underlying artifact counts do not measure performance or full individual credit.
