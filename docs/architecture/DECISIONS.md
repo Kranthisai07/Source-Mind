@@ -3682,7 +3682,7 @@ the owner (17 of 18 checks; the one failure was a wrong route in the script, fix
 first call after revocation rejected 19 ms after the revoke finished with none accepted afterwards; a stopped
 database gives 503 + Retry-After (never 401) and the same key works after recovery; four kinds of bad credential
 are one identical 401; keys are refused on normal REST routes; authorized `initialize` p50 25 ms vs 6 ms for an
-unauthenticated 401 (different work, not a pure authentication cost). Not verified: Cursor, Codex, a proxy that
+unauthenticated 401 (different work, not a pure authentication cost). Not verified: Cursor, the Codex extension panel (the Codex CLI is covered in addendum 3), a proxy that
 rewrites `Authorization`, production and multi-replica use, live expiry, `get_memory` through real Claude Code.
 Process notes: an early live attempt failed because a literal placeholder was pasted into the header (server-side
 `last_used_at` stayed empty, proving no valid key was presented); one acceptance test
@@ -3690,6 +3690,16 @@ Process notes: an early live attempt failed because a literal placeholder was pa
 database had accumulated 775 connector rows against a limit of 500 and passed after a database reset, so that test
 is sensitive to accumulated test data. MCP stays disabled by default; enabling it anywhere real is the owner's
 decision.
+
+**D-048 addendum 3 (Codex, 2026-10-16).** The Codex CLI bundled with the VS Code extension (0.162.0-alpha) was
+configured with `codex mcp add --url ... --bearer-token-env-var` (the key stays in an environment variable; the
+config file holds only its name). `search_memories` returned the same five memories as Claude Code. After the key
+was revoked the next Codex run failed at connection time with the server's `AuthRequired` /
+`WWW-Authenticate: Bearer realm="sourcemind-mcp", error="invalid_token"` and never called the tool; the server log
+shows the last good call at 22:38:52 UTC, the revoke at 22:41:52.705 and the next request as 401. Not tested: the
+Codex VS Code extension panel (it would need the variable in VS Code's own environment) and Cursor. Operational
+note: after the WSL port forward for a restarted API stopped answering Windows, a WSL restart (`wsl --shutdown`)
+was needed; it is a local test-harness issue, not a product one.
 
 ## D-049 — MCP keys UI: the secret lives only in the show-once dialog
 

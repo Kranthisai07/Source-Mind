@@ -2,7 +2,7 @@
 
 Status: implemented, **off by default** (`MCP_ENABLED=false`), **not deployed**. Two authentication modes
 exist (`MCP_AUTH_MODE`): `api_key` (workspace MCP keys, decision D-048) and `oauth` (Clerk-issued tokens,
-decision D-033, the default value). Key mode was verified locally with a real Claude Code client (see
+decision D-033, the default value). Key mode was verified locally with real Claude Code and Codex clients (see
 "Verification"). OAuth mode has **not** been verified against a live identity provider and, as measured on
 2026-10-14, Clerk cannot meet the contract (see "Authentication: OAuth mode").
 
@@ -74,14 +74,25 @@ safe as that file. Treat it like a password.
 
 ### Client setup
 
-Tested against this server (local, loopback): **Claude Code**.
+Tested against this server (local, loopback): **Claude Code** and **Codex** (see "Verification").
+
+Claude Code:
 
 ```
 claude mcp add --transport http <name> https://<your-api-host>/mcp --header "Authorization: Bearer <key>"
 ```
 
-Cursor (`headers` in its MCP config) and Codex (`bearer_token_env_var`) are expected to work because they can
-send a static bearer header, but **have not been tested** against this server.
+Codex (CLI 0.162.0-alpha, as bundled with the VS Code extension; the key is read from an environment variable
+of the process that runs Codex, so `config.toml` holds only the variable's name):
+
+```
+codex mcp add <name> --url https://<your-api-host>/mcp --bearer-token-env-var SM_MCP_KEY
+```
+
+Tested through the Codex command line (`codex exec`). The Codex VS Code extension reads the same
+`config.toml`, but the variable must then be present in VS Code's own environment; that was **not** tested.
+Cursor (`headers` in its MCP config) is expected to work because it can send a static bearer header, but has
+**not been tested** against this server.
 
 ## Authentication: OAuth mode (`MCP_AUTH_MODE=oauth`, the default value)
 
@@ -154,8 +165,10 @@ Claude Code; evidence in the operations folder `auto-ingest/evidence/2026-10-16-
 | Key on REST routes | 401 on `/v1/workspaces`, `/v1/workspaces/{id}/mcp-keys` and, with a fake key, on three more routes |
 | Latency, client side, loopback, 30 calls each | authorized `initialize` p50 25 ms / p95 29 ms; unauthenticated 401 p50 6 ms / p95 8 ms (different work on the two paths, so not a pure authentication cost) |
 | `get_memory` with a key (script, real protocol) | pass; **not** exercised through real Claude Code |
+| Codex CLI 0.162.0-alpha (bearer token from an environment variable): `search_memories`, keyword "redis" | pass: 5 results, first source GitHub issue `acme/repo#1`, the same as Claude Code saw |
+| Revoke, then the next Codex run | rejected (401) at connection time; Codex printed `AuthRequired` with the server's `WWW-Authenticate: Bearer realm="sourcemind-mcp", error="invalid_token"` and stopped before calling the tool; no OAuth flow. Server log: last good call 22:38:52 UTC, revoke 22:41:52.705, next request 401 |
 
-**Not established:** Cursor and Codex clients; a reverse proxy or gateway that rewrites or strips the
+**Not established:** the Cursor client and the Codex VS Code extension panel (only the Codex command line was run); a reverse proxy or gateway that rewrites or strips the
 `Authorization` header; any production or multi-replica deployment (the transport keeps legacy sessions
 in-process, so revisit before running several API replicas); live key expiry (automated tests only); any
 identity-provider-based (OAuth) path. Until the owner decides to enable it, the interface stays off.
