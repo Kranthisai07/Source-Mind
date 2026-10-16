@@ -3424,6 +3424,8 @@ viewer-role write scope on the three new tables (application layer is the contro
 
 ## D-033 — A read-only MCP interface, OAuth resource server only, off by default
 
+*Update 2026-10-16: the bearer-credential scheme listed below as "not built, deliberately" now exists as workspace MCP keys with the owner's approval; see D-048 and `MCP_INTERFACE.md`. The OAuth path described here remains unusable with Clerk.*
+
 **What:** `sourcemind/mcp` mounts a Streamable HTTP MCP endpoint (`/mcp`) with two read-only tools,
 `search_memories` and `get_memory`, built on the official `mcp==2.3.0` SDK and the shared read service
 from D-031. Documented in `docs/architecture/MCP_INTERFACE.md`.
@@ -3671,6 +3673,23 @@ budget (`MCP_KEY_READ`, keyed by key id) so an agent loop cannot drain the membe
 search path still applies the per-user SEARCH limiter on top. `MCP_AUTH_MODE` defaults to `oauth` and `MCP_ENABLED`
 to false; the OAuth path and its 13 real-client tests are unchanged. Not verified here: real Claude Code, Cursor or
 Codex clients (live step), and behaviour behind a reverse proxy that rewrites the `Authorization` header.
+
+**D-048 addendum 2 (live verification, 2026-10-16, local loopback).** Real Claude Code connected with a
+workspace key and `search_memories` returned five memories with source links and stale/current state; after the
+key was revoked in the Settings UI the next request was 401 (Claude Code showed a generic header-rejected message
+and did not start an OAuth flow, as intended: key mode advertises no OAuth metadata). A measurement script run by
+the owner (17 of 18 checks; the one failure was a wrong route in the script, fixed and re-checked by hand) showed:
+first call after revocation rejected 19 ms after the revoke finished with none accepted afterwards; a stopped
+database gives 503 + Retry-After (never 401) and the same key works after recovery; four kinds of bad credential
+are one identical 401; keys are refused on normal REST routes; authorized `initialize` p50 25 ms vs 6 ms for an
+unauthenticated 401 (different work, not a pure authentication cost). Not verified: Cursor, Codex, a proxy that
+rewrites `Authorization`, production and multi-replica use, live expiry, `get_memory` through real Claude Code.
+Process notes: an early live attempt failed because a literal placeholder was pasted into the header (server-side
+`last_used_at` stayed empty, proving no valid key was presented); one acceptance test
+(`test_tick_selection_excludes_paused_leased_and_future_connectors`) failed only because the disposable test
+database had accumulated 775 connector rows against a limit of 500 and passed after a database reset, so that test
+is sensitive to accumulated test data. MCP stays disabled by default; enabling it anywhere real is the owner's
+decision.
 
 ## D-049 — MCP keys UI: the secret lives only in the show-once dialog
 
