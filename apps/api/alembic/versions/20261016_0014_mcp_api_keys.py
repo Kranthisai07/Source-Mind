@@ -140,7 +140,7 @@ def sweep_other_grantees(execute: Callable[[str], Any], role: str) -> None:
                 FROM pg_proc p
                 JOIN pg_namespace n ON n.oid = p.pronamespace AND n.nspname = 'public'
                 CROSS JOIN LATERAL aclexplode(p.proacl) a
-                WHERE p.proname = 'prevent_mcp_key_event_mutation'
+                WHERE p.proname IN ('prevent_mcp_key_event_mutation', 'protect_mcp_key_revocation')
                   AND a.grantee <> 0 AND a.grantee <> p.proowner
             LOOP
                 EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I', r.proc, r.grantee_name);
@@ -210,6 +210,40 @@ def upgrade() -> None:
         "FOR EACH ROW EXECUTE FUNCTION prevent_mcp_key_event_mutation()"
     )
 
+    # Permissive UPDATE policies are ORed: the owner/admin policy (USING) can admit an already
+    # revoked row, while the hash-lookup policy (WITH CHECK) accepts revoked_at IS NULL. Policies
+    # alone therefore cannot make revocation irreversible when both contexts are present, so the
+    # database layer enforces it: once revoked_at is set it can never change, and revoked_by can
+    # never be rewritten to another actor. revoked_by may become NULL only because the foreign key
+    # is ON DELETE SET NULL (the actor row was deleted); the append-only mcp_key_events row still
+    # records the actor. The first revocation (OLD.revoked_at IS NULL) and last_used_at updates are
+    # unaffected.
+    op.execute(
+        """
+        CREATE FUNCTION protect_mcp_key_revocation() RETURNS trigger
+        LANGUAGE plpgsql
+        SET search_path = pg_catalog, public
+        AS $$
+        BEGIN
+            IF OLD.revoked_at IS NOT NULL AND (
+                NEW.revoked_at IS DISTINCT FROM OLD.revoked_at
+                OR (NEW.revoked_by IS NOT NULL AND NEW.revoked_by IS DISTINCT FROM OLD.revoked_by)
+            ) THEN
+                RAISE EXCEPTION 'mcp_api_keys revocation is irreversible'
+                    USING ERRCODE = 'check_violation';
+            END IF;
+            RETURN NEW;
+        END
+        $$
+        """
+    )
+    op.execute("REVOKE ALL ON FUNCTION protect_mcp_key_revocation() FROM PUBLIC")
+    op.execute(
+        "CREATE TRIGGER mcp_api_keys_revocation_irreversible "
+        "BEFORE UPDATE ON mcp_api_keys "
+        "FOR EACH ROW EXECUTE FUNCTION protect_mcp_key_revocation()"
+    )
+
     for table in NEW_TABLES:
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
@@ -262,6 +296,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute("DROP TRIGGER IF EXISTS mcp_api_keys_revocation_irreversible ON mcp_api_keys")
+    op.execute("DROP FUNCTION IF EXISTS protect_mcp_key_revocation()")
     op.execute("DROP TRIGGER IF EXISTS mcp_key_events_append_only ON mcp_key_events")
     op.execute("DROP FUNCTION IF EXISTS prevent_mcp_key_event_mutation()")
     op.execute("DROP TABLE IF EXISTS mcp_key_events")

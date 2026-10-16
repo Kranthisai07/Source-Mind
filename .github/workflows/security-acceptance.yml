@@ -169,7 +169,7 @@ jobs:
       # pyproject so the collected count is the raw test count. Asserting the
       # exact node IDs means a rename cannot silently shrink the gate, which a
       # bare count would not catch.
-      - name: Verify exact test selection (263 nodes)
+      - name: Verify exact test selection (264 nodes)
         working-directory: apps/api
         # SECURITY_TEST_ALLOW_DISPOSABLE / TEST_DATABASE_URL / TEST_REDIS_URL
         # are already in the environment via GITHUB_ENV.
@@ -327,6 +327,7 @@ jobs:
           tests/integration/test_mcp_keys_real_db.py::test_lookup_policy_and_resolve_expose_only_one_live_matching_key
           tests/integration/test_mcp_keys_real_db.py::test_member_admin_and_workspace_authorization_are_indistinguishable
           tests/integration/test_mcp_keys_real_db.py::test_revoke_is_immediate_idempotent_and_writes_one_event
+          tests/integration/test_mcp_keys_real_db.py::test_revoked_key_cannot_be_reactivated_with_member_and_hash_contexts_combined
           tests/integration/test_mcp_keys_real_db.py::test_touch_is_throttled_and_sensitive_columns_are_not_writable
           tests/integration/test_mcp_keys_real_db.py::test_validation_and_create_rate_limit
           tests/integration/test_mcp_keys_real_db.py::test_viewer_can_create_but_departure_blocks_management_not_resolution
@@ -473,7 +474,7 @@ jobs:
             | grep '::' | sort > "$actual"
           echo "collected $(wc -l < "$actual") node(s)"
           diff -u "$expected" "$actual" || {
-            echo "::error::collected node IDs differ from the expected 263"
+            echo "::error::collected node IDs differ from the expected 264"
             exit 1
           }
 
@@ -483,7 +484,7 @@ jobs:
       # never reported as an acceptance timeout.
       #
       # A JUnit report is emitted so the next step can prove the tests RAN.
-      # `pytest` exits 0 on "263 skipped", and every one of these is guarded by
+      # `pytest` exits 0 on "264 skipped", and every one of these is guarded by
       # the disposable-DB check — so a silent skip is the realistic failure and
       # exit status alone cannot detect it.
       - name: Security acceptance tests
@@ -527,7 +528,7 @@ jobs:
             tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable \
             tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs
 
-      - name: Assert all 263 tests executed and passed
+      - name: Assert all 264 tests executed and passed
         if: always() && steps.acceptance.outcome != 'skipped'
         working-directory: apps/api
         run: |
@@ -555,11 +556,11 @@ jobs:
               else:
                   bad.append(f"{node} -> {state}")
           print(f"executed {total}, passed {passed}")
-          if total != 263:
-              print(f"::error::expected 263 test cases, report contains {total}")
+          if total != 264:
+              print(f"::error::expected 264 test cases, report contains {total}")
           for b in bad:
               print(f"::error::{b}")
-          sys.exit(0 if (total == 263 and passed == 263) else 1)
+          sys.exit(0 if (total == 264 and passed == 264) else 1)
           PY
 
       - name: Upload acceptance report

@@ -3630,3 +3630,29 @@ window and keeps co-authored activity separate from individual activity. It disp
 coverage and API notes with the counts so partial data cannot look complete. Client-side type filtering
 avoids extra endpoint semantics; percentages, rankings, and quality language were rejected because the
 underlying artifact counts do not measure performance or full individual credit.
+
+## D-048 — Workspace MCP API keys with next-call revocation; database-enforced irreversible revocation
+
+MCP authorization is delegated to workspace-scoped API keys (`smk_` + 256-bit random, only its SHA-256 stored,
+shown once, mandatory 30/90/365-day expiry, read-only, acting as the creating member). Clerk cannot meet the
+MCP contract (no audience, no custom scope, no JWT revocation) and the 2026-10-16 Cloudflare Worker spike worked
+but adds a second runtime and left cross-location revocation unmeasured. Every MCP call re-resolves the key row
+in PostgreSQL, so revocation applies on the next call with no cache. This supersedes the "no bearer scheme"
+parts of D-033; MCP stays disabled by default.
+
+Lookup design: a `SECURITY DEFINER` function cannot read a `FORCE ROW LEVEL SECURITY` table when both the owner
+and runtime roles are `NOBYPASSRLS`, and a non-RLS mirror (as in 0013) would duplicate the credential hash. The
+key table instead has a hash-gated policy (`app.mcp_key_hash`) that exposes at most one live row, plus
+column-level UPDATE grants limited to `revoked_at`, `revoked_by`, `last_used_at`.
+
+Review finding (database layer): permissive UPDATE policies are ORed, so with BOTH an active member context and
+the matching hash context set, the owner/admin policy's USING admitted an already revoked row and the lookup
+policy's WITH CHECK accepted `revoked_at IS NULL`. A restricted-role regression reproduced this against commit
+ded4f1c: `UPDATE ... SET revoked_at = NULL` (with or without `revoked_by`) made a revoked key usable again, and
+`revoked_by` / `revoked_at` could be rewritten. Fixed in migration 0014 (unmerged, never applied outside test
+databases) by a narrow `BEFORE UPDATE` trigger: once `revoked_at` is set it can never change and `revoked_by`
+can never be rewritten to another actor (it may become NULL only through the `ON DELETE SET NULL` foreign key;
+the append-only `mcp_key_events` row keeps the actor). First revocation and `last_used_at` updates are
+unchanged. No HTTP path was shown to exploit this (the routes only ever set `revoked_at = now()`); the finding
+and fix are database-layer defence in depth. Rewriting the policies alone was rejected because ORed policies
+cannot express "this row is frozen" across contexts.

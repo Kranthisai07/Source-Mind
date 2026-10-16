@@ -540,7 +540,8 @@ async def test_touch_is_throttled_and_sensitive_columns_are_not_writable(
     async with await _session(
         supabase_engine, tenants.member_id, tenants.target_workspace_id
     ) as member:
-        with pytest.raises(DBAPIError, match="row-level security"):
+        # The revocation trigger fires before the RLS WITH CHECK; either rejection is correct.
+        with pytest.raises(DBAPIError, match="row-level security|irreversible"):
             await member.execute(
                 text(
                     "UPDATE mcp_api_keys SET revoked_at = NULL "
@@ -548,3 +549,90 @@ async def test_touch_is_throttled_and_sensitive_columns_are_not_writable(
                 ),
                 {"key_id": str(created.id)},
             )
+
+
+async def test_revoked_key_cannot_be_reactivated_with_member_and_hash_contexts_combined(
+    supabase_engine: AsyncEngine,
+    tenants: SecurityTenantData,
+) -> None:
+    """Permissive UPDATE policies are ORed: the member policy (USING) admits a revoked row and the
+    hash-lookup policy (WITH CHECK) accepts ``revoked_at IS NULL``. With both contexts set, the
+    database layer alone must still keep a revoked key revoked."""
+    created = await _create(supabase_engine, tenants, tenants.member_id)
+    async with await _session(
+        supabase_engine, tenants.admin_id, tenants.target_workspace_id
+    ) as admin:
+        revoked = await mcp_keys.revoke_key(
+            admin,
+            key_id=created.id,
+            actor_user_id=tenants.admin_id,
+            workspace_id=tenants.target_workspace_id,
+            is_admin=True,
+        )
+        await admin.commit()
+    assert revoked is not None and revoked.revoked_at is not None
+
+    async def raw_state() -> tuple[object, object]:
+        # Forced RLS applies to every role, so read through an admin's own (all-keys) context.
+        async with await _session(
+            supabase_engine, tenants.admin_id, tenants.target_workspace_id
+        ) as admin_read:
+            row = (
+                await admin_read.execute(
+                    text(
+                        "SELECT revoked_at, revoked_by FROM mcp_api_keys "
+                        "WHERE id = CAST(:key_id AS uuid)"
+                    ),
+                    {"key_id": str(created.id)},
+                )
+            ).one()
+        return row.revoked_at, row.revoked_by
+
+    before = await raw_state()
+    assert before[0] is not None and before[1] == tenants.admin_id
+
+    attempts = (
+        "UPDATE mcp_api_keys SET revoked_at = NULL, revoked_by = NULL "
+        "WHERE id = CAST(:key_id AS uuid)",
+        "UPDATE mcp_api_keys SET revoked_at = NULL WHERE id = CAST(:key_id AS uuid)",
+        "UPDATE mcp_api_keys SET revoked_by = CAST(:member AS uuid) "
+        "WHERE id = CAST(:key_id AS uuid)",
+        "UPDATE mcp_api_keys SET revoked_at = now() + interval '1 year' "
+        "WHERE id = CAST(:key_id AS uuid)",
+    )
+    failures: list[str] = []
+    for statement in attempts:
+        # The member is still an active member and also presents the matching key hash.
+        async with await _session(
+            supabase_engine, tenants.member_id, tenants.target_workspace_id
+        ) as member:
+            await _set_lookup(member, created.key)
+            try:
+                await member.execute(
+                    text(statement),
+                    {"key_id": str(created.id), "member": str(tenants.member_id)},
+                )
+                await member.commit()
+            except DBAPIError:
+                await member.rollback()
+        if await raw_state() != before:
+            async with await _session(supabase_engine) as probe:
+                live = await mcp_keys.resolve_key(probe, created.key) is not None
+            failures.append(f"{statement.split(' WHERE')[0]} -> key usable again: {live}")
+            async with await _session(
+                supabase_engine, tenants.admin_id, tenants.target_workspace_id
+            ) as admin_reset:  # restore so each statement is judged independently
+                await admin_reset.execute(
+                    text(
+                        "UPDATE mcp_api_keys SET revoked_at = now(), "
+                        "revoked_by = CAST(:admin AS uuid) WHERE id = CAST(:key_id AS uuid)"
+                    ),
+                    {"admin": str(tenants.admin_id), "key_id": str(created.id)},
+                )
+                await admin_reset.commit()
+            before = await raw_state()
+
+    async with await _session(supabase_engine) as resolver:
+        usable = await mcp_keys.resolve_key(resolver, created.key)
+    assert not failures, f"revocation was altered by: {failures}"
+    assert usable is None
