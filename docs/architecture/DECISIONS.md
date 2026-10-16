@@ -3613,3 +3613,12 @@ dependency of the ingestion worker that was not documented before). Verified loc
 they used to download the model during the test run. API CI now fetches and caches the weights in a setup
 step; the test run stays offline (guard + `HF_HUB_OFFLINE`). Skipping the tests was rejected: they assert
 real scoring behaviour.
+
+## D-046 — GitHub insights count stored, published activity by stable source identity
+
+GitHub contributor insights use one workspace-scoped SQL aggregation over published artifact revisions,
+deduplicating anchor/memory link clones by source identity and separating shared and unresolved labels from
+numeric GitHub accounts. This reports auditable import-window activity without implying quality or lines of
+code; numeric accounts are joined to members only through admin-asserted links. Counting link rows would
+inflate multi-memory artifacts, counting every revision would inflate edits, and provider API calls would
+make results depend on live external state rather than the data SourceMind actually imported.
