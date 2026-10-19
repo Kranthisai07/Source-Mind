@@ -3761,3 +3761,14 @@ Consequences to act on: the staging Redis password appeared in a log line and in
 treated as exposed (staging data is fake; deleting the staging environment discards it). Production logs written before
 this fix may contain credentials from past exceptions: review and rotate on the owner's decision. This commit does not
 touch production; it reaches `main` only through a later reviewed merge.
+
+## D-050 addendum (staging run, 2026-10-19)
+
+Executed on a new empty Railway environment (`staging`, own pgvector Postgres 16, Redis, `api` built from `Dockerfile.staging`
+on branch `staging/mcp-keys`; production untouched). Build, pre-deploy migrations (`20261016_0014`) and `/health` worked on
+the first hosted attempt. Findings: Railway no longer accepts config-as-code for new services (settings set in the
+dashboard); a variable-only change did not redeploy; Clerk no longer displays full secret keys, so a copied masked preview
+caused 401s; the seeder worked as the restricted role. Real Claude Code over HTTPS, key in the `Authorization` header, got
+all 5 seeded memories (after D-051), and after the key was revoked in the UI the next `/mcp` request was 401 with no request
+accepted in between. Railway's edge passes the `Authorization` header through. Not tested: Codex over HTTPS, remote
+latency/outage measurements, expiry, multiple replicas, any production deployment.

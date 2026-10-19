@@ -2,8 +2,7 @@
 
 Purpose: run this branch on a **separate, empty Railway environment** and test the MCP key interface over
 HTTPS with real Claude Code and Codex, **without touching production**. Rehearsed locally on a fresh
-PostgreSQL (all migrations, role bootstrap, app boot as the restricted role, seeder) before this was
-written; the Railway steps themselves have not been run yet.
+PostgreSQL first, then executed on Railway on 2026-10-19 (see "Lessons from the first hosted run" at the end).
 
 ## Ground rules
 
@@ -24,7 +23,7 @@ written; the Railway steps themselves have not been run yet.
 |---|---|---|
 | `postgres` | Docker image `pgvector/pgvector:pg16` | Needs the `vector` extension. Add a volume. (PG 16 and 18 are both exercised by our CI.) |
 | `redis` | Railway Redis | Mandatory (rate limiter, Celery broker). |
-| `api` | GitHub repo, branch `staging/mcp-keys` | Root directory `apps/api`, config file `apps/api/railway.staging.json`. One replica. |
+| `api` | GitHub repo, branch `staging/mcp-keys` | Root directory `/apps/api`, builder **Dockerfile**, path `/apps/api/Dockerfile.staging` (set in the service settings: Railway no longer accepts config-as-code for new services, so `railway.staging.json` is unused). One replica. |
 
 No worker service in this pass: MCP reads do not need one.
 
@@ -147,3 +146,23 @@ then **delete the whole `staging` environment** in Railway (this removes its ser
 
 Redeploy the previous successful deployment of `api`, or delete and recreate the environment. Because
 staging holds only fake data, the simplest recovery is to delete the environment and repeat the steps.
+
+## Lessons from the first hosted run (2026-10-19)
+
+* **Railway no longer loads config-as-code for new services.** Set the root directory, the Dockerfile path, the
+  health check path (`/health`) and the pre-deploy command in the dashboard (`railway.staging.json` is kept only as
+  a record of the values).
+* **Variable-only changes did not start a deployment** here; use the deployment menu, **Redeploy**, after adding the
+  `SEED_*` variables (the pre-deploy step then runs the seeder).
+* **Clerk no longer shows full existing secret keys.** Copying the masked preview gives a truncated key and every
+  authenticated request is a 401 ("Unable to verify the Clerk user profile", caused by Clerk's own 401). Use the value
+  already in your local `apps/api/.env`, or create a new key, and paste it with no quotes or spaces.
+* **Sign-in against a brand-new database** shows "create a workspace"; create `staging-test` in the app, then seed.
+* **Keyword search needs no provider key** only after D-051 (commit `2b1c845`); before it, keyword mode called the
+  embedding provider and failed with `internal_error`.
+* **Exception logs carried local variables** (including a Redis password) before D-051; staging logs written earlier
+  contain it. Treat that Redis password as exposed.
+* **Measured over HTTPS through Railway's edge:** real Claude Code connected with a workspace key, search returned the
+  5 seeded memories; after revoking the key in the UI the next `/mcp` request was 401 (revoke 22:43:11.969 UTC,
+  next request 22:43:40.026 UTC, no request accepted in between; the 28 s is human delay, not a timing measurement).
+* **Not tested on staging:** Codex over HTTPS, the remote measurement script (latency, outage), expiry, several replicas.

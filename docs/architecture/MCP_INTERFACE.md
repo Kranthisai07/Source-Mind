@@ -165,10 +165,11 @@ Claude Code; evidence in the operations folder `auto-ingest/evidence/2026-10-16-
 | Key on REST routes | 401 on `/v1/workspaces`, `/v1/workspaces/{id}/mcp-keys` and, with a fake key, on three more routes |
 | Latency, client side, loopback, 30 calls each | authorized `initialize` p50 25 ms / p95 29 ms; unauthenticated 401 p50 6 ms / p95 8 ms (different work on the two paths, so not a pure authentication cost) |
 | `get_memory` with a key (script, real protocol) | pass; **not** exercised through real Claude Code |
+| Hosted staging on Railway (HTTPS, key in header through Railway's edge), real Claude Code | search returned the 5 seeded memories; after revoking the key the next request was 401 and none was accepted in between (revoke 22:43:11.969 UTC, next request 22:43:40.026 UTC; the gap is human delay). Staging only, not production |
 | Codex CLI 0.162.0-alpha (bearer token from an environment variable): `search_memories`, keyword "redis" | pass: 5 results, first source GitHub issue `acme/repo#1`, the same as Claude Code saw |
 | Revoke, then the next Codex run | rejected (401) at connection time; Codex printed `AuthRequired` with the server's `WWW-Authenticate: Bearer realm="sourcemind-mcp", error="invalid_token"` and stopped before calling the tool; no OAuth flow. Server log: last good call 22:38:52 UTC, revoke 22:41:52.705, next request 401 |
 
 **Not established:** the Cursor client and the Codex VS Code extension panel (only the Codex command line was run); a reverse proxy or gateway that rewrites or strips the
-`Authorization` header; any production or multi-replica deployment (the transport keeps legacy sessions
+`Authorization` header; any production deployment, multi-replica behaviour, (the transport keeps legacy sessions
 in-process, so revisit before running several API replicas); live key expiry (automated tests only); any
 identity-provider-based (OAuth) path. Until the owner decides to enable it, the interface stays off.
