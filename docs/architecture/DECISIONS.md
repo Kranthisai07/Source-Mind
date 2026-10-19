@@ -3743,3 +3743,39 @@ exercised the seeder (5 memories, idempotent, slug lookup, unknown slug, refusal
 keyword search). Not verified: the Docker image build (Docker Desktop's engine was not running; Railway's first
 build is the first test), the Railway steps themselves, the pre-deploy command on Railway, and TLS/proxy behaviour
 in front of `Authorization` (that is what staging is for).
+
+## D-051 — Two defects found by the first hosted staging run: keyword search needed a provider key, and exception logs carried local variables
+
+Running MCP against the hosted staging API (no AI provider keys) failed with `internal_error` on a keyword search.
+The server log showed why: `hybrid_search` embedded the query before looking at the mode, so even `mode: keyword`
+called the embedding provider (OpenAI, 401 without a key). Local and CI runs hid it because the tests patch
+`_get_query_embedding`. Fix: keyword mode skips the embedding step.
+
+The same log line exposed a worse problem: `structlog.processors.dict_tracebacks` defaults to `show_locals=True`, so any
+logged exception wrote every frame's local variables to the JSON log, including a Redis client whose repr contained the
+staging Redis password, and the full Settings repr. The code is identical on `main`, so the production service writes
+the same data on any exception. Fix: `ExceptionRenderer(ExceptionDictTransformer(show_locals=False))` (stack frames stay,
+values go). Two unit tests fail without the fixes and pass with them.
+
+Consequences to act on: the staging Redis password appeared in a log line and in an operator's tool output, so it is
+treated as exposed (staging data is fake; deleting the staging environment discards it). Production logs written before
+this fix may contain credentials from past exceptions: review and rotate on the owner's decision. This commit does not
+touch production; it reaches `main` only through a later reviewed merge.
+
+## D-051 — Two defects found by the first hosted staging run: keyword search needed a provider key, and exception logs carried local variables
+
+Running MCP against the hosted staging API (no AI provider keys) failed with `internal_error` on a keyword search.
+The server log (Railway) showed why: `hybrid_search` embedded the query before looking at the mode, so even
+`mode: keyword` called the embedding provider (OpenAI, 401 without a key). Local and CI runs hid it because the tests
+patch `_get_query_embedding`. Fix: keyword mode skips the embedding step.
+
+The same log line exposed a worse problem: `structlog.processors.dict_tracebacks` defaults to `show_locals=True`, so any
+logged exception wrote every frame's local variables to the JSON log, including a Redis connection object whose repr
+contained the staging Redis password, and the full Settings repr. The code is identical on `main`, so the production
+service writes the same data on any exception. Fix: `ExceptionRenderer(ExceptionDictTransformer(show_locals=False))`
+(stack frames stay; values go). Two unit tests fail without the fixes and pass with them.
+
+Consequences to act on: the staging Redis password appeared in a log line and in an operator's tool output, so it is
+treated as exposed (staging data is fake; deleting the staging environment discards it). Production logs written before
+this fix may contain credentials from past exceptions: review and rotate on the owner's decision. This commit does not
+touch production; it reaches `main` only through a later reviewed merge.

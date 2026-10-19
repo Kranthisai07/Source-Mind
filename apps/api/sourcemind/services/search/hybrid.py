@@ -478,8 +478,11 @@ async def hybrid_search(
     # D-004 on why the trigger is rule-based rather than a learned classifier.
     identifiers = _extract_identifiers(query)
 
-    # Step 1: Embed query
-    embedding, emb_cached = await _get_query_embedding(query, openai_client)
+    # Step 1: Embed query. Keyword mode never reads the embedding, so it must not need a provider.
+    if mode == "keyword":
+        embedding, emb_cached = [], False
+    else:
+        embedding, emb_cached = await _get_query_embedding(query, openai_client)
 
     # Step 2: Run searches
     if mode == "semantic":
