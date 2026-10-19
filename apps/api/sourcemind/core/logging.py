@@ -70,7 +70,11 @@ def configure_logging() -> None:
         # JSON lines for production log aggregation
         processors = [
             *shared_processors,
-            structlog.processors.dict_tracebacks,
+            # show_locals=False: the default dumps every frame's variables (Redis/DB credentials
+            # included) into the log line of any exception.
+            structlog.processors.ExceptionRenderer(
+                structlog.tracebacks.ExceptionDictTransformer(show_locals=False)
+            ),
             structlog.processors.JSONRenderer(),
         ]
 

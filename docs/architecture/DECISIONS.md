@@ -3711,3 +3711,22 @@ by accident, and revoking needs an in-page confirmation (the app shows no native
 plainly that a key acts as the member, read-only, in one workspace, and does not claim any client is verified.
 A failed list shows the shared error state, never an empty table. Rejected: re-showing a key later (would need
 the secret stored), and copy-to-clipboard without a failure path.
+
+## D-050 — Keyword search no longer needs a provider key; exception logs no longer carry local variables
+
+Found by running the MCP interface against a hosted staging API with no AI provider keys (the staging environment is
+deleted; its branch kept the deployment material). Two defects, both present on `main`:
+
+1. `hybrid_search` embedded the query before looking at the mode, so even `mode: keyword` called the embedding provider
+   and failed with `internal_error` when no key was set. Local and CI runs hid it because the tests patch
+   `_get_query_embedding`. Fix: keyword mode skips the embedding step.
+2. `structlog.processors.dict_tracebacks` defaults to `show_locals=True`, so any logged exception wrote every frame's local
+   variables to the JSON log, including a Redis client whose repr held the Redis password and the full Settings repr.
+   Fix: `ExceptionRenderer(ExceptionDictTransformer(show_locals=False))` (frames stay, values go).
+   Two unit tests (`test_staging_findings.py`) fail without the fixes and pass with them.
+
+Production log review (read-only, 2026-10-19; evidence kept outside the repo): the retained logs of the current api
+(2026-10-14 on) and worker (2026-10-13 on) deployments hold no exception dump (0 `request.unhandled_exception`,
+0 `application.startup_failed`), so no credential was found in them. Logs of removed older deployments could not be
+checked, and no log drain or Sentry was checked. Until this change ships, the next unhandled exception in production
+WOULD dump locals; ship it before enabling MCP. Rotation of the Redis password is optional hardening, not evidenced need.
