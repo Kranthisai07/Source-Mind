@@ -62,6 +62,11 @@ class ErrorCode(StrEnum):
     ATTRIBUTION_STATE_CONFLICT = "SM034"
     MEMORY_VERSION_STALE = "SM035"
     WORKSPACE_MEMBER_EXISTS = "SM036"
+    # Source refresh retired the memory an edit targeted (contract C10). These
+    # two use their descriptive code, not an SM number, because clients branch
+    # on them to offer a re-apply of the draft.
+    SOURCE_RETIRED = "source_retired"
+    NO_REPLACEMENT = "no_replacement"
 
     # Processing / Pipeline (040–049)
     INGESTION_FAILED = "SM040"
@@ -282,6 +287,25 @@ class MemoryVersionStaleError(SourceMindError):
     assignment) reaches the memory after a newer version became current.
     """
     code = ErrorCode.MEMORY_VERSION_STALE
+    http_status = HTTPStatus.CONFLICT
+
+
+class SourceRetiredError(SourceMindError):
+    """
+    The memory being edited was retired because its source was revised, deleted
+    or disconnected (contract C10).
+
+    ``details`` = {reason, newer_source_url, candidates: [{memory_id, preview}]}.
+    The candidate list may be empty or hold several memories; neither the server
+    nor the client picks one. The caller's draft is never touched.
+    """
+    code = ErrorCode.SOURCE_RETIRED
+    http_status = HTTPStatus.CONFLICT
+
+
+class NoReplacementError(SourceMindError):
+    """A source-retired memory has no replacement memory to re-apply an edit to."""
+    code = ErrorCode.NO_REPLACEMENT
     http_status = HTTPStatus.CONFLICT
 
 

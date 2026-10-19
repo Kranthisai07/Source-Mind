@@ -35,6 +35,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      # Test fixtures that need model weights are fetched HERE, in setup, and cached. The test run
+      # itself is offline (tests/netguard.py refuses any non-loopback connection and HF_HUB_OFFLINE=1
+      # is set by tests/conftest.py), so a test can never download anything or reach a provider.
+      - name: Cache sentence-transformer weights
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-all-MiniLM-L6-v2-v1
+
+      - name: Fetch sentence-transformer weights (setup only)
+        run: python -c "from sentence_transformers import SentenceTransformer as S; S('all-MiniLM-L6-v2')"
+
       - name: Lint
         run: ruff check sourcemind/
 

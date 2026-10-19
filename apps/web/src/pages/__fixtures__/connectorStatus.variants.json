@@ -1,0 +1,383 @@
+{
+  "idle": {
+    "connector_id": "00000000-0000-4000-8000-0000000000b1",
+    "workspace_id": "00000000-0000-4000-8000-0000000000aa",
+    "connector_type": "github",
+    "display_name": "acme/platform",
+    "status": "active",
+    "state": "idle",
+    "generation": 1,
+    "last_sync_at": "2026-10-04T09:30:00Z",
+    "next_sync_at": "2026-10-04T10:30:00Z",
+    "last_success_at": "2026-10-04T09:30:00Z",
+    "last_error_code": null,
+    "current_run": null,
+    "scopes": [
+      {
+        "repo": "acme/platform",
+        "artifact_type": "commits",
+        "status": "ok",
+        "phase": "steady",
+        "listing_complete": true,
+        "last_error_code": null,
+        "last_progress_at": "2026-10-04T09:50:00Z",
+        "authorization_verified_at": "2026-10-04T09:50:00Z",
+        "window_low": null,
+        "window_high": null
+      },
+      {
+        "repo": "acme/platform",
+        "artifact_type": "pull_requests",
+        "status": "ok",
+        "phase": "steady",
+        "listing_complete": true,
+        "last_error_code": null,
+        "last_progress_at": "2026-10-04T09:50:00Z",
+        "authorization_verified_at": "2026-10-04T09:50:00Z",
+        "window_low": null,
+        "window_high": null
+      }
+    ],
+    "documents": {
+      "pending": 0,
+      "processing": 0,
+      "completed": 310,
+      "failed": 2,
+      "quarantined": 1,
+      "zero_facts": 4
+    },
+    "filtered": {
+      "skip_bots": 17,
+      "skip_empty_body": 3
+    },
+    "recent_logs": [
+      {
+        "id": "00000000-0000-4000-8000-0000000000d1",
+        "connector_id": "00000000-0000-4000-8000-0000000000b1",
+        "sync_type": "incremental",
+        "status": "completed",
+        "artifacts_found": 44,
+        "artifacts_new": 40,
+        "artifacts_skipped": 2,
+        "error_message": null,
+        "started_at": "2026-10-04T08:58:00Z",
+        "completed_at": "2026-10-04T08:59:00Z",
+        "trigger": "scheduled",
+        "artifacts_updated": 2,
+        "artifacts_failed": 0,
+        "artifacts_filtered": {
+          "skip_bots": 2
+        },
+        "error_code": null
+      },
+      {
+        "id": "00000000-0000-4000-8000-0000000000d2",
+        "connector_id": "00000000-0000-4000-8000-0000000000b1",
+        "sync_type": "incremental",
+        "status": "failed",
+        "artifacts_found": 44,
+        "artifacts_new": 40,
+        "artifacts_skipped": 2,
+        "error_message": "Connector sync failed.",
+        "started_at": "2026-10-04T07:58:00Z",
+        "completed_at": "2026-10-04T07:59:00Z",
+        "trigger": "manual",
+        "artifacts_updated": 2,
+        "artifacts_failed": 0,
+        "artifacts_filtered": {
+          "skip_bots": 2
+        },
+        "error_code": "rate_limited"
+      }
+    ]
+  },
+  "syncing": {
+    "connector_id": "00000000-0000-4000-8000-0000000000b1",
+    "workspace_id": "00000000-0000-4000-8000-0000000000aa",
+    "connector_type": "github",
+    "display_name": "acme/platform",
+    "status": "active",
+    "state": "syncing",
+    "generation": 1,
+    "last_sync_at": "2026-10-04T09:30:00Z",
+    "next_sync_at": "2026-10-04T10:30:00Z",
+    "last_success_at": "2026-10-04T09:30:00Z",
+    "last_error_code": null,
+    "current_run": {
+      "sync_log_id": "00000000-0000-4000-8000-0000000000d9",
+      "trigger": "manual",
+      "sync_type": "incremental",
+      "started_at": "2026-10-04T09:59:00Z",
+      "artifacts_found": 120,
+      "artifacts_new": 30,
+      "artifacts_updated": 4,
+      "artifacts_skipped": 6,
+      "artifacts_failed": 1,
+      "artifacts_filtered": {
+        "skip_bots": 5
+      }
+    },
+    "scopes": [
+      {
+        "repo": "acme/platform",
+        "artifact_type": "commits",
+        "status": "ok",
+        "phase": "steady",
+        "listing_complete": true,
+        "last_error_code": null,
+        "last_progress_at": "2026-10-04T09:50:00Z",
+        "authorization_verified_at": "2026-10-04T09:50:00Z",
+        "window_low": null,
+        "window_high": null
+      }
+    ],
+    "documents": {
+      "pending": 12,
+      "processing": 3,
+      "completed": 100,
+      "failed": 0,
+      "quarantined": 0,
+      "zero_facts": 0
+    },
+    "filtered": {
+      "skip_bots": 17,
+      "skip_empty_body": 3
+    },
+    "recent_logs": [
+      {
+        "id": "00000000-0000-4000-8000-0000000000d1",
+        "connector_id": "00000000-0000-4000-8000-0000000000b1",
+        "sync_type": "incremental",
+        "status": "completed",
+        "artifacts_found": 44,
+        "artifacts_new": 40,
+        "artifacts_skipped": 2,
+        "error_message": null,
+        "started_at": "2026-10-04T08:58:00Z",
+        "completed_at": "2026-10-04T08:59:00Z",
+        "trigger": "scheduled",
+        "artifacts_updated": 2,
+        "artifacts_failed": 0,
+        "artifacts_filtered": {
+          "skip_bots": 2
+        },
+        "error_code": null
+      },
+      {
+        "id": "00000000-0000-4000-8000-0000000000d2",
+        "connector_id": "00000000-0000-4000-8000-0000000000b1",
+        "sync_type": "incremental",
+        "status": "failed",
+        "artifacts_found": 44,
+        "artifacts_new": 40,
+        "artifacts_skipped": 2,
+        "error_message": "Connector sync failed.",
+        "started_at": "2026-10-04T07:58:00Z",
+        "completed_at": "2026-10-04T07:59:00Z",
+        "trigger": "manual",
+        "artifacts_updated": 2,
+        "artifacts_failed": 0,
+        "artifacts_filtered": {
+          "skip_bots": 2
+        },
+        "error_code": "rate_limited"
+      }
+    ]
+  },
+  "needs_attention": {
+    "connector_id": "00000000-0000-4000-8000-0000000000b1",
+    "workspace_id": "00000000-0000-4000-8000-0000000000aa",
+    "connector_type": "github",
+    "display_name": "acme/platform",
+    "status": "active",
+    "state": "needs_attention",
+    "generation": 1,
+    "last_sync_at": "2026-10-04T09:30:00Z",
+    "next_sync_at": "2026-10-04T10:30:00Z",
+    "last_success_at": "2026-10-04T09:30:00Z",
+    "last_error_code": "reauthorization_required",
+    "current_run": null,
+    "scopes": [
+      {
+        "repo": "acme/platform",
+        "artifact_type": "commits",
+        "status": "authorization_unverified",
+        "phase": "steady",
+        "listing_complete": true,
+        "last_error_code": "verifier_unavailable",
+        "last_progress_at": "2026-10-04T09:50:00Z",
+        "authorization_verified_at": "2026-10-04T09:50:00Z",
+        "window_low": null,
+        "window_high": null
+      },
+      {
+        "repo": "acme/platform",
+        "artifact_type": "issues",
+        "status": "reauthorization_required",
+        "phase": "steady",
+        "listing_complete": true,
+        "last_error_code": "reauthorization_required",
+        "last_progress_at": "2026-10-04T09:50:00Z",
+        "authorization_verified_at": "2026-10-04T09:50:00Z",
+        "window_low": null,
+        "window_high": null
+      },
+      {
+        "repo": "acme/platform",
+        "artifact_type": "pull_requests",
+        "status": "access_lost",
+        "phase": "steady",
+        "listing_complete": true,
+        "last_error_code": "access_lost",
+        "last_progress_at": "2026-10-04T09:50:00Z",
+        "authorization_verified_at": "2026-10-04T09:50:00Z",
+        "window_low": null,
+        "window_high": null
+      },
+      {
+        "repo": "acme/platform",
+        "artifact_type": "issue_comments",
+        "status": "error",
+        "phase": "steady",
+        "listing_complete": true,
+        "last_error_code": "github_unavailable",
+        "last_progress_at": "2026-10-04T09:50:00Z",
+        "authorization_verified_at": "2026-10-04T09:50:00Z",
+        "window_low": null,
+        "window_high": null
+      }
+    ],
+    "documents": {
+      "pending": 0,
+      "processing": 0,
+      "completed": 5,
+      "failed": 0,
+      "quarantined": 0,
+      "zero_facts": 0
+    },
+    "filtered": {
+      "skip_bots": 17,
+      "skip_empty_body": 3
+    },
+    "recent_logs": [
+      {
+        "id": "00000000-0000-4000-8000-0000000000d1",
+        "connector_id": "00000000-0000-4000-8000-0000000000b1",
+        "sync_type": "incremental",
+        "status": "completed",
+        "artifacts_found": 44,
+        "artifacts_new": 40,
+        "artifacts_skipped": 2,
+        "error_message": null,
+        "started_at": "2026-10-04T08:58:00Z",
+        "completed_at": "2026-10-04T08:59:00Z",
+        "trigger": "scheduled",
+        "artifacts_updated": 2,
+        "artifacts_failed": 0,
+        "artifacts_filtered": {
+          "skip_bots": 2
+        },
+        "error_code": null
+      },
+      {
+        "id": "00000000-0000-4000-8000-0000000000d2",
+        "connector_id": "00000000-0000-4000-8000-0000000000b1",
+        "sync_type": "incremental",
+        "status": "failed",
+        "artifacts_found": 44,
+        "artifacts_new": 40,
+        "artifacts_skipped": 2,
+        "error_message": "Connector sync failed.",
+        "started_at": "2026-10-04T07:58:00Z",
+        "completed_at": "2026-10-04T07:59:00Z",
+        "trigger": "manual",
+        "artifacts_updated": 2,
+        "artifacts_failed": 0,
+        "artifacts_filtered": {
+          "skip_bots": 2
+        },
+        "error_code": "rate_limited"
+      }
+    ]
+  },
+  "paused": {
+    "connector_id": "00000000-0000-4000-8000-0000000000b2",
+    "workspace_id": "00000000-0000-4000-8000-0000000000aa",
+    "connector_type": "github",
+    "display_name": "acme/infra",
+    "status": "paused",
+    "state": "paused",
+    "generation": 1,
+    "last_sync_at": "2026-10-04T09:30:00Z",
+    "next_sync_at": "2026-10-04T10:30:00Z",
+    "last_success_at": "2026-10-04T09:30:00Z",
+    "last_error_code": null,
+    "current_run": null,
+    "scopes": [
+      {
+        "repo": "acme/infra",
+        "artifact_type": "commits",
+        "status": "ok",
+        "phase": "steady",
+        "listing_complete": true,
+        "last_error_code": null,
+        "last_progress_at": "2026-10-04T09:50:00Z",
+        "authorization_verified_at": "2026-10-04T09:50:00Z",
+        "window_low": null,
+        "window_high": null
+      }
+    ],
+    "documents": {
+      "pending": 0,
+      "processing": 0,
+      "completed": 8,
+      "failed": 0,
+      "quarantined": 0,
+      "zero_facts": 0
+    },
+    "filtered": {
+      "skip_bots": 17,
+      "skip_empty_body": 3
+    },
+    "recent_logs": [
+      {
+        "id": "00000000-0000-4000-8000-0000000000d1",
+        "connector_id": "00000000-0000-4000-8000-0000000000b1",
+        "sync_type": "incremental",
+        "status": "completed",
+        "artifacts_found": 44,
+        "artifacts_new": 40,
+        "artifacts_skipped": 2,
+        "error_message": null,
+        "started_at": "2026-10-04T08:58:00Z",
+        "completed_at": "2026-10-04T08:59:00Z",
+        "trigger": "scheduled",
+        "artifacts_updated": 2,
+        "artifacts_failed": 0,
+        "artifacts_filtered": {
+          "skip_bots": 2
+        },
+        "error_code": null
+      },
+      {
+        "id": "00000000-0000-4000-8000-0000000000d2",
+        "connector_id": "00000000-0000-4000-8000-0000000000b1",
+        "sync_type": "incremental",
+        "status": "failed",
+        "artifacts_found": 44,
+        "artifacts_new": 40,
+        "artifacts_skipped": 2,
+        "error_message": "Connector sync failed.",
+        "started_at": "2026-10-04T07:58:00Z",
+        "completed_at": "2026-10-04T07:59:00Z",
+        "trigger": "manual",
+        "artifacts_updated": 2,
+        "artifacts_failed": 0,
+        "artifacts_filtered": {
+          "skip_bots": 2
+        },
+        "error_code": "rate_limited"
+      }
+    ]
+  }
+}

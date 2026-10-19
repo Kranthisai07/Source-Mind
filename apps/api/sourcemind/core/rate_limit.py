@@ -30,6 +30,9 @@ return {current, remaining_ms}
 
 class RateLimitedOperation(StrEnum):
     SEARCH = "search"
+    MCP_READ = "mcp-read"
+    MCP_KEY_CREATE = "mcp-key-create"
+    MCP_KEY_READ = "mcp-key-read"
     INGEST = "ingest"
     ANALYTICS = "analytics"
     WORKSPACE_CREATE = "workspace-create"
@@ -41,8 +44,13 @@ class RateLimitedOperation(StrEnum):
 
 def _operation_limit(operation: RateLimitedOperation) -> tuple[int, int]:
     settings = get_settings()
+    if operation is RateLimitedOperation.MCP_KEY_CREATE:
+        return settings.rate_limit_mcp_key_create_per_hour, 3600
+    if operation is RateLimitedOperation.MCP_KEY_READ:
+        return settings.rate_limit_mcp_key_read_per_minute, 60
     limits = {
         RateLimitedOperation.SEARCH: (settings.rate_limit_search_per_minute, 60),
+        RateLimitedOperation.MCP_READ: (settings.rate_limit_mcp_read_per_minute, 60),
         RateLimitedOperation.INGEST: (settings.rate_limit_ingestion_per_minute, 60),
         RateLimitedOperation.ANALYTICS: (settings.rate_limit_analytics_per_minute, 60),
         RateLimitedOperation.WORKSPACE_CREATE: (

@@ -5,6 +5,7 @@ import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import TopBar from "../components/layout/TopBar";
 import ContributorAvatar from "../components/widgets/ContributorAvatar";
 import Markdown from "../components/widgets/Markdown";
+import SourceInfo from "../components/widgets/SourceInfo";
 import { PageLoadError } from "../components/widgets/PageLoadState";
 import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
@@ -24,6 +25,7 @@ import { isStaleWorkspaceError } from "../lib/realApi";
 import { carryDraft, clearCarriedDraft, clearDraft, loadCarriedDraft, loadDraft, saveDraft } from "../lib/editDrafts";
 import { relativeTime, formatDate } from "../lib/format";
 import { isPilotMode } from "../lib/pilotMode";
+import { safeHttpsUrl } from "../lib/sourceView";
 import { createSubmissionKeyHolder, submissionIdentity } from "../lib/submissionKey";
 
 const NO_SINGLE_NEWER = {
@@ -48,6 +50,20 @@ function classifySaveError(error) {
             latestId: reason === "superseded" ? body.details?.latest_memory_id ?? null : null,
         };
     }
+    // The memory was retired because its source changed or was removed. The
+    // server lists candidate replacements; neither it nor this page picks one.
+    if (status === 409 && body?.code === "source_retired") {
+        const details = body.details ?? {};
+        return {
+            kind: "source_retired",
+            reason: typeof details.reason === "string" ? details.reason : null,
+            newerUrl: safeHttpsUrl(details.newer_source_url),
+            candidates: Array.isArray(details.candidates)
+                ? details.candidates.filter((c) => c && typeof c.memory_id === "string")
+                : [],
+        };
+    }
+    if (status === 409 && body?.code === "no_replacement") return { kind: "no_replacement" };
     if (status === 404) return { kind: "notfound" };
     if (error?.network === true || status === 0 || (status !== null && status >= 500)) {
         return { kind: "unknown" };
@@ -95,6 +111,12 @@ function MemoryDetailView({ id }) {
     const [editSaving, setEditSaving] = useState(false);
     const [saveError, setSaveError] = useState(null);
     const [history, setHistory] = useState(null);
+    // Re-apply on a replacement of a source-retired memory: the chosen target
+    // starts empty (never preselected) and is cleared whenever the error does.
+    const [reapplyTarget, setReapplyTarget] = useState(null);
+    const [reapplySaving, setReapplySaving] = useState(false);
+    const [reapplyError, setReapplyError] = useState(null);
+    const reapplyKeyHolder = useRef(createSubmissionKeyHolder());
     const [editSuccess, setEditSuccess] = useState(location.state?.editSuccess ?? null);
     const saveInFlight = useRef(false);
     // The caller's role in the current workspace, same lookup as Settings. Only
@@ -255,6 +277,48 @@ function MemoryDetailView({ id }) {
         });
     };
 
+    const reapply = async () => {
+        if (!reapplyTarget || reapplySaving || saveInFlight.current || !contentValue.trim()) return;
+        const nextTags = tagsValue.split(",").map((tag) => tag.trim()).filter(Boolean);
+        const payload = { target_memory_id: reapplyTarget, content: contentValue, tags: nextTags };
+        const idempotencyKey = reapplyKeyHolder.current.keyFor(submissionIdentity({
+            payload, workspaceId: mem.workspace_id, userId,
+        }));
+        saveInFlight.current = true;
+        setReapplySaving(true);
+        setReapplyError(null);
+        try {
+            const updated = await api.reapplyMemory(memoryId, { ...payload, idempotencyKey });
+            reapplyKeyHolder.current.clear();
+            clearDraft(userId, id);
+            setDraftState(null);
+            setEditOpen(false);
+            setSaveError(null);
+            setReapplyTarget(null);
+            const message = `Re-applied on the selected memory (now version ${updated?.version ?? "next"}).`;
+            setEditSuccess(message);
+            if (updated?.id && updated.id !== id) {
+                navigate(`/memories/${updated.id}`, { replace: true, state: { editSuccess: message } });
+            }
+        } catch (requestError) {
+            if (isStaleWorkspaceError(requestError)) return;
+            const failure = classifySaveError(requestError);
+            // The draft is kept in every failure; say only what is known.
+            setReapplyError(
+                failure.kind === "no_replacement"
+                    ? "The source has no replacement memory any more. Nothing was saved. Your draft is kept."
+                    : failure.kind === "source_retired" || failure.kind === "conflict"
+                        ? "That memory can no longer take the edit. Nothing was saved. Your draft is kept."
+                        : failure.kind === "unknown"
+                            ? "Outcome unknown: the request did not complete. Your draft is kept."
+                            : `${failure.message || "The edit was not re-applied."} Your draft is kept.`
+            );
+        } finally {
+            saveInFlight.current = false;
+            setReapplySaving(false);
+        }
+    };
+
     const saveEdit = async () => {
         if (!contentValue.trim() || editSaving || saveInFlight.current) return;
         const nextTags = tagsValue
@@ -288,6 +352,8 @@ function MemoryDetailView({ id }) {
             }
         } catch (requestError) {
             if (isStaleWorkspaceError(requestError)) return;
+            setReapplyTarget(null);
+            setReapplyError(null);
             setSaveError(classifySaveError(requestError));
         } finally {
             saveInFlight.current = false;
@@ -391,6 +457,12 @@ function MemoryDetailView({ id }) {
                     <article className="prose prose-invert max-w-none">
                         <Markdown>{mem.content}</Markdown>
                     </article>
+
+                    {!pilotMode && (mem.source || mem.authorship || mem.source_state) && (
+                        <div className="mt-6" data-testid="memory-source-section">
+                            <SourceInfo memory={mem} testPrefix="memory-source" />
+                        </div>
+                    )}
 
                     <div className="mt-8 pt-6 border-t border-sm-border flex items-center justify-between">
                         {!pilotMode ? (
@@ -529,6 +601,11 @@ function MemoryDetailView({ id }) {
                             onViewLatest={viewLatest}
                             onCheckHistory={checkHistory}
                             history={history}
+                            retired={{
+                                target: reapplyTarget, onSelect: setReapplyTarget,
+                                saving: reapplySaving, error: reapplyError, onReapply: reapply,
+                                canReapply: Boolean(contentValue.trim()),
+                            }}
                         />
                         <div>
                             <label htmlFor="memory-edit-content" className="mb-2 block text-[12px] text-sm-text-secondary">Content</label>
@@ -571,9 +648,20 @@ function MemoryDetailView({ id }) {
     );
 }
 
-function SaveErrorBanner({ error, onViewLatest, onCheckHistory, history }) {
+function SaveErrorBanner({ error, onViewLatest, onCheckHistory, history, retired }) {
     if (!error) return null;
     const keptNote = "Your draft is kept.";
+    if (error.kind === "source_retired") {
+        return <SourceRetiredBanner error={error} retired={retired} keptNote={keptNote} />;
+    }
+    if (error.kind === "no_replacement") {
+        return (
+            <div role="alert" data-testid="memory-edit-no-replacement" className="rounded-lg border border-sm-amber/30 bg-sm-amber/10 px-3 py-2 text-[12.5px] text-sm-amber">
+                <p className="font-medium">The source this memory came from has no replacement memory.</p>
+                <p className="mt-1">Nothing was saved. {keptNote}</p>
+            </div>
+        );
+    }
     if (error.kind === "conflict") {
         return (
             <div role="alert" data-testid="memory-edit-conflict" className="rounded-lg border border-sm-amber/30 bg-sm-amber/10 px-3 py-2 text-[12.5px] text-sm-amber">
@@ -609,6 +697,72 @@ function SaveErrorBanner({ error, onViewLatest, onCheckHistory, history }) {
         );
     }
     return <p role="alert" data-testid="memory-edit-error" className="text-[12px] text-sm-red">{error.message}</p>;
+}
+
+const RETIRED_REASON = {
+    source_superseded: "The source was edited, so this memory was retired.",
+    source_deleted: "The source was deleted, so this memory was retired.",
+    connector_removed: "The connector was removed, so this memory was retired.",
+};
+
+// The edit target was retired by a source refresh. Candidates are offered as an
+// explicit choice: nothing is preselected, and nothing is sent until the user
+// picks one and presses the button. With no candidates the draft simply stays.
+function SourceRetiredBanner({ error, retired, keptNote }) {
+    const candidates = error.candidates;
+    return (
+        <div role="alert" data-testid="memory-edit-source-retired" className="rounded-lg border border-sm-amber/30 bg-sm-amber/10 px-3 py-2 text-[12.5px] text-sm-amber">
+            <p className="font-medium">This memory was retired because its source changed.</p>
+            <p className="mt-1">
+                {RETIRED_REASON[error.reason] ?? "Its source changed, so it can no longer be edited."} Nothing was saved. {keptNote}
+            </p>
+            {error.newerUrl && (
+                <p className="mt-1">
+                    <a href={error.newerUrl} target="_blank" rel="noopener noreferrer" data-testid="memory-retired-newer-link" className="underline">
+                        View the newer source
+                    </a>
+                </p>
+            )}
+            {candidates.length === 0 ? (
+                <p data-testid="memory-retired-no-candidates" className="mt-2">
+                    There is no replacement memory to apply your edit to yet. Your text stays in the editor; copy it before closing if you need it elsewhere.
+                </p>
+            ) : (
+                <fieldset className="mt-2 text-sm-text">
+                    <legend className="text-[12px] text-sm-amber">
+                        Choose the memory to re-apply your edit on. Nothing is chosen for you.
+                    </legend>
+                    <div className="mt-1 space-y-1.5">
+                        {candidates.map((candidate) => (
+                            <label key={candidate.memory_id} className="flex items-start gap-2 rounded-md border border-sm-border bg-sm-bg/60 p-2 cursor-pointer">
+                                <input
+                                    type="radio"
+                                    name="reapply-target"
+                                    value={candidate.memory_id}
+                                    checked={retired.target === candidate.memory_id}
+                                    onChange={() => retired.onSelect(candidate.memory_id)}
+                                    disabled={retired.saving}
+                                    data-testid={`reapply-candidate-${candidate.memory_id}`}
+                                    className="mt-1"
+                                />
+                                <span className="text-[12px] whitespace-pre-wrap">{candidate.preview}</span>
+                            </label>
+                        ))}
+                    </div>
+                    <Button
+                        size="sm"
+                        onClick={retired.onReapply}
+                        disabled={!retired.target || retired.saving || !retired.canReapply}
+                        data-testid="memory-reapply"
+                        className="mt-2 bg-sm-blue text-white disabled:opacity-50"
+                    >
+                        {retired.saving ? "Re-applying…" : "Re-apply on selected memory"}
+                    </Button>
+                    {retired.error && <p data-testid="memory-reapply-error" className="mt-2 text-sm-red">{retired.error}</p>}
+                </fieldset>
+            )}
+        </div>
+    );
 }
 
 // Facts only. Deliberately no comparison with the draft and no verdict: even a

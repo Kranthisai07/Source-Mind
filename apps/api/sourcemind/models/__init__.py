@@ -15,12 +15,16 @@ from sourcemind.models.attribution import (
 )
 from sourcemind.models.base import Base, SoftDeleteMixin, TimestampMixin
 from sourcemind.models.connector import (
+    ArtifactHead,
     ArtifactLink,
     ConnectorConfig,
+    ConnectorSyncCursor,
     ConnectorSyncLog,
+    ConnectorWorkItem,
     GitHubAuthorLink,
 )
 from sourcemind.models.document import Document, DocumentSourceType, IngestionStatus
+from sourcemind.models.mcp_key import McpApiKey, McpKeyEvent
 from sourcemind.models.memory import Memory
 from sourcemind.models.memory_conflict import ConflictStatus, ConflictType, MemoryConflict
 from sourcemind.models.memory_relation import MemoryRelation, RelationType
@@ -49,6 +53,8 @@ __all__ = [
     "DocumentSourceType",
     "IngestionStatus",
     "Memory",
+    "McpApiKey",
+    "McpKeyEvent",
     "Attribution",
     "AttributionEdit",
     "AttributionActionType",
@@ -59,7 +65,10 @@ __all__ = [
     "ConflictStatus",
     "ConnectorConfig",
     "ConnectorSyncLog",
+    "ArtifactHead",
     "ArtifactLink",
+    "ConnectorSyncCursor",
+    "ConnectorWorkItem",
     "GitHubAuthorLink",
     "SearchEvent",
     "SearchRating",

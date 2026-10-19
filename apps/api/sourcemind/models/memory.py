@@ -7,9 +7,10 @@ and links to attribution records.
 """
 
 import uuid
+from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import ForeignKey, Index, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -80,6 +81,26 @@ class Memory(Base, TimestampMixin, SoftDeleteMixin):
         nullable=True,
         index=True,
         comment="Previous version's ID for version chain traversal",
+    )
+
+    # ── Source lifecycle (migration 20261014_0012) ────────────────
+    source_stale_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="Set on a human-edited memory whose source later changed or vanished",
+    )
+    source_stale_reason: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="source_revised | source_deleted | connector_removed",
+    )
+    deleted_reason: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment=(
+            "Why deleted_at was set: user_deleted | source_superseded | "
+            "source_deleted | connector_removed"
+        ),
     )
 
     # ── Content ───────────────────────────────────────────────────

@@ -6,7 +6,10 @@ import {
     WORKSPACE, CURRENT_USER, CONTRIBUTORS, MEMORIES, CONFLICTS,
     KNOWLEDGE_GAPS, CONNECTORS, SYNC_LOGS, HANDOFFS, RECENT_ACTIVITY,
     MEMORIES_OVER_TIME, SEARCH_ACTIVITY, TEAM_MEMBERS,
+    CONNECTOR_STATUSES, MEMORY_SOURCES,
 } from "./mockData";
+import GITHUB_INSIGHTS from "../pages/__fixtures__/githubInsights.variants.json";
+import MCP_KEYS from "../pages/__fixtures__/mcpKeys.variants.json";
 
 // ----- helpers -----
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -52,6 +55,19 @@ function conflictDetail(conflict) {
         created_at: summary.created_at,
     };
 }
+
+// Source provenance fields exist only on the first demo memories, like the
+// real API where only imported memories have a source.
+function withSource(memory) {
+    const index = MEMORIES.findIndex((m) => m.memory_id === memory.memory_id);
+    const extra = index >= 0 ? MEMORY_SOURCES[index] : null;
+    return extra ? { ...memory, ...extra } : memory;
+}
+
+// Connector state lives for the page session.
+const mockConnectors = CONNECTORS.map((c) => ({ ...c }));
+// Page-session state for the MCP keys section (never persisted).
+let mockMcpKeys = MCP_KEYS.populated.keys.map((k) => ({ ...k }));
 
 // The demo has one workspace; ones created in the UI live for the page session.
 const mockWorkspaces = [WORKSPACE];
@@ -108,7 +124,7 @@ export const mockApi = {
     })),
 
     // POST /v1/memories/search
-    searchMemories: ({ query = "", mode = "hybrid", limit = 20, include_attribution = false } = {}) =>
+    searchMemories: ({ query = "", mode = "hybrid", limit = 20, include_attribution = false, include_source = false } = {}) =>
         request(() => {
             const q = query.trim().toLowerCase();
             let results = MEMORIES;
@@ -127,8 +143,10 @@ export const mockApi = {
             return {
                 // Like the API: attribution only when asked for.
                 results: results.slice(0, limit).map((m) => {
-                    if (include_attribution) return m;
-                    const { attribution: _omitted, ...withoutAttribution } = m;
+                    // Like the API: source fields only when asked for.
+                    const sourced = include_source ? withSource(m) : m;
+                    if (include_attribution) return sourced;
+                    const { attribution: _omitted, ...withoutAttribution } = sourced;
                     return withoutAttribution;
                 }),
                 total_found: results.length,
@@ -142,7 +160,7 @@ export const mockApi = {
         // is_current / latest_memory_id / supersession_reason mirror the
         // superseded-versions contract; an in-memory mock edit is always current.
         return m
-            ? { is_current: true, latest_memory_id: null, supersession_reason: null, ...m }
+            ? { is_current: true, latest_memory_id: null, supersession_reason: null, ...withSource(m) }
             : { error: "not_found" };
     }),
 
@@ -286,13 +304,169 @@ export const mockApi = {
         revisit_at,
     }), { min: 250, max: 500 }),
 
-    // GET /v1/workspaces/:id/connectors
+    // GET /v1/workspaces/:id/connectors -> ConnectorListResponse {items, total}
+    // (realApi also exposes `connectors`, the same list).
     listConnectors: (_wsId) => request(() => ({
-        connectors: CONNECTORS,
+        items: mockConnectors,
+        connectors: mockConnectors,
+        total: mockConnectors.length,
     })),
 
-    triggerSync: (_connId) => request(() => ({ ok: true }), { min: 300, max: 600 }),
-    getSyncLogs: (_connId) => request(() => ({ logs: SYNC_LOGS })),
+    // GET /v1/connectors/:id/status -> ConnectorStatusResponse
+    getConnectorStatus: (id) => request(() => {
+        const status = CONNECTOR_STATUSES[id];
+        if (!status) {
+            const err = new Error("404 Not Found");
+            err.status = 404;
+            err.body = { error: { code: "SM027", message: "Connector not found" } };
+            throw err;
+        }
+        return status;
+    }, { min: 60, max: 140 }),
+
+    // GET /v1/workspaces/:id/connectors/github/insights -> GitHubInsightsResponse
+    getGithubInsights: (_wsId, _params = {}) =>
+        request(() => GITHUB_INSIGHTS.populated, { min: 60, max: 140 }),
+
+    // GET /v1/workspaces/:id/mcp-keys -> McpKeyList {keys, mcp_enabled}
+    listMcpKeys: (_wsId) => request(() => ({
+        mcp_enabled: MCP_KEYS.populated.mcp_enabled,
+        keys: mockMcpKeys.map((k) => ({ ...k })),
+    }), { min: 60, max: 140 }),
+
+    // POST /v1/workspaces/:id/mcp-keys -> 201 McpKeyCreated (the secret is in `key`, once)
+    createMcpKey: (_wsId, { name, expires_in_days = 90 }) => request(() => {
+        const now = new Date();
+        const secret = "smk_" + Array.from({ length: 43 }, () =>
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"[Math.floor(Math.random() * 64)]
+        ).join("");
+        const id = `mock-key-${mockMcpKeys.length + 1}-${now.getTime()}`;
+        const expires = new Date(now.getTime() + expires_in_days * 24 * 60 * 60 * 1000);
+        mockMcpKeys = [{
+            id, name, key_prefix: secret.slice(0, 8), user_id: "mock-user",
+            creator_display_name: "You", created_at: now.toISOString(),
+            expires_at: expires.toISOString(), last_used_at: null, revoked_at: null, status: "active",
+        }, ...mockMcpKeys];
+        return {
+            id, name, key: secret, key_prefix: secret.slice(0, 8),
+            expires_at: expires.toISOString(), created_at: now.toISOString(),
+        };
+    }, { min: 100, max: 220 }),
+
+    // DELETE /v1/workspaces/:id/mcp-keys/:key_id -> 204
+    revokeMcpKey: (_wsId, keyId) => request(() => {
+        const found = mockMcpKeys.find((k) => k.id === keyId);
+        if (!found) {
+            const err = new Error("404 Not Found");
+            err.status = 404;
+            err.body = { error: { code: "SM027", message: "MCP API key not found." } };
+            throw err;
+        }
+        mockMcpKeys = mockMcpKeys.map((k) => k.id === keyId && !k.revoked_at
+            ? { ...k, revoked_at: new Date().toISOString(), status: "revoked" } : k);
+        return {};
+    }, { min: 60, max: 140 }),
+
+    // POST /v1/connectors/:id/sync -> 202 SyncTriggerResponse
+    triggerSync: (connId, { sync_type = "incremental" } = {}) => request(() => ({
+        task_id: `task_${Date.now().toString(36)}`,
+        connector_id: connId,
+        sync_type,
+        message: `Sync task enqueued (type=${sync_type})`,
+    }), { min: 300, max: 600 }),
+
+    // POST /v1/connectors/:id/retry-failed -> RetryFailedResponse
+    retryFailedConnector: (connId) => request(() => ({
+        connector_id: connId, eligible: 1, requeued: 1, refused: 0, remaining: 0,
+    })),
+
+    // POST /v1/connectors/:id/rescan -> 202 RescanResponse
+    rescanConnector: (connId) => request(() => ({
+        connector_id: connId,
+        scopes_marked: (CONNECTOR_STATUSES[connId]?.scopes || []).length,
+        message: "Scopes restarted from the start of the import window; the next sync re-reads it. Sources deleted on GitHub are not detected automatically.",
+    })),
+
+    // POST /v1/connectors/:id/rearm-quarantined -> 202 RearmQuarantinedResponse
+    rearmQuarantined: (connId) => request(() => ({
+        connector_id: connId,
+        rearmed: CONNECTOR_STATUSES[connId]?.documents?.quarantined || 0,
+        scopes_marked: 1,
+        message: "Items re-armed; the next sync re-reads their scopes and retries them.",
+    })),
+
+    // PATCH /v1/connectors/:id -> ConnectorResponse
+    updateConnector: (id, payload = {}) => request(() => {
+        const c = mockConnectors.find((x) => x.id === id);
+        if (c && payload.status) c.status = payload.status;
+        if (c && payload.display_name) c.display_name = payload.display_name;
+        return c || {};
+    }),
+
+    // DELETE /v1/connectors/:id?remove_memories= -> 200 DisconnectResponse
+    deleteConnector: (id, { remove_memories = false } = {}) => request(() => {
+        const c = mockConnectors.find((x) => x.id === id);
+        if (c) c.status = "disconnected";
+        return {
+            connector_id: id, status: "disconnected", generation: 2, remove_memories,
+            documents_considered: 12, memories_retired: remove_memories ? 11 : 0, memories_flagged: remove_memories ? 1 : 0,
+        };
+    }),
+
+    // GET /v1/connectors/:id/sync-logs -> SyncLogsResponse {items, total}
+    getSyncLogs: (_connId) => request(() => ({ items: SYNC_LOGS, total: SYNC_LOGS.length })),
+
+    // GET /v1/workspaces/:id/connectors/github/authorize -> GitHubAuthorizeResponse.
+    // The mock "GitHub" is this same app's callback route.
+    authorizeGithub: (_wsId) => request(() => ({
+        authorize_url: `${window.location.origin}${process.env.PUBLIC_URL || ""}/connectors/github/callback?code=mock-code&state=mock-state`,
+        state: "mock-state",
+        expires_in_seconds: 600,
+    })),
+
+    // POST /v1/connectors/github/callback -> GitHubCallbackResponse
+    completeGithubCallback: () => request(() => ({
+        ticket_id: "mock-ticket-0123456789abcdef",
+        expires_in_seconds: 900,
+        workspace_id: WORKSPACE.id,
+        installation_id: 4242,
+        github_user_id: 1001,
+        github_login: "acme-admin",
+        repositories: [
+            { full_name: "acme/platform", private: true, default_branch: "main" },
+            { full_name: "acme/mobile", private: true, default_branch: "main" },
+            { full_name: "acme/docs", private: false, default_branch: "main" },
+        ],
+        truncated: false,
+    })),
+
+    // POST /v1/workspaces/:id/connectors -> 201 ConnectorResponse
+    createConnector: (_wsId, payload = {}) => request(() => {
+        const created = {
+            id: `00000000-0000-4000-8000-${String(mockConnectors.length + 1).padStart(12, "0")}`,
+            workspace_id: WORKSPACE.id, connector_type: "github",
+            display_name: payload.display_name,
+            config: payload.config,
+            status: "active", last_sync_at: null, next_sync_at: null,
+            created_at: new Date().toISOString(), installation_id: 4242, authorized_github_user_id: 1001,
+            created_by: null, generation: 1, last_success_at: null, last_error_code: null, sync_interval_minutes: 60,
+        };
+        mockConnectors.push(created);
+        CONNECTOR_STATUSES[created.id] = {
+            connector_id: created.id, workspace_id: WORKSPACE.id, connector_type: "github",
+            display_name: created.display_name, status: "active", state: "idle", generation: 1,
+            last_sync_at: null, next_sync_at: null, last_success_at: null, last_error_code: null,
+            current_run: null, scopes: [], documents: { pending: 0, processing: 0, completed: 0, failed: 0, quarantined: 0, zero_facts: 0 },
+            filtered: {}, recent_logs: [],
+        };
+        return created;
+    }, { min: 300, max: 600 }),
+
+    // POST /v1/memories/:id/reapply -> MemoryResponse
+    reapplyMemory: (_retiredId, { target_memory_id, content } = {}) => request(() => ({
+        id: target_memory_id, content, version: 2, tags: [], category: null,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    })),
 
     // GET /v1/workspaces/:id/analytics/knowledge-gaps
     getKnowledgeGaps: (_wsId) => request(() => ({ gaps: KNOWLEDGE_GAPS })),
