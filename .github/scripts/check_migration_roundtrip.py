@@ -55,16 +55,16 @@ REGRESSION_PHASES = {
     "reupgrade": ("passed", "and it must survive the full round trip"),
 }
 
-# Head is 20261015_0013 (automatic-ingestion schema, D-032). It changes no table
+# Head is 20261016_0014 (MCP API key tables, D-048; 0013 was automatic ingestion, D-032). It changes no table
 # these phases measure; it only moves the revision every head phase reaches.
 EXPECTED_REVISIONS = {
     "prev": "20260909_0007",
-    "head": "20261015_0013",
-    "reupgrade": "20261015_0013",
+    "head": "20261016_0014",
+    "reupgrade": "20261016_0014",
     # The owner-race track, which runs after every snapshot.
-    "race_head": "20261015_0013",
+    "race_head": "20261016_0014",
     "race_prefix": "20260916_0008",
-    "race_restored": "20261015_0013",
+    "race_restored": "20261016_0014",
 }
 
 # Per-phase expectations for the concurrent owner-revocation regression.
@@ -95,7 +95,7 @@ CONNECTOR_ROLLBACK = {
     "revision_after_0008": "20260916_0008",
     "rows_after_0008": "1|1",
     "reupgrade_exit": "0",
-    "revision_after_reupgrade": "20261015_0013",
+    "revision_after_reupgrade": "20261016_0014",
     "rows_after_reupgrade": "1|1",
     "rows_after_cleanup": "0|0",
 }
