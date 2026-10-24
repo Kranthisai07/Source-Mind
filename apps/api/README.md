@@ -33,7 +33,7 @@ sourcemind/
   RECEIVE → EXTRACT → CHUNK → EXTRACT_FACTS → EMBED → INDEX → RELATE.
   Each stage is testable in isolation; the orchestrator lives in
   `workers/ingestion.py`. Tree-sitter for code, Playwright for URLs,
-  PyMuPDF for PDFs, Claude for atomic-fact extraction, OpenAI
+  pypdfium2 for PDFs, Claude for atomic-fact extraction, OpenAI
   `text-embedding-3-large` (3072-dim) for vectors.
 
 - **`attribution/`** — 5-signal contribution scoring (see

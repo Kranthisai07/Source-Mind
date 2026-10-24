@@ -4,7 +4,7 @@ Stage 2 — EXTRACT: Convert raw input into clean text + metadata.
 Supports four source types:
   - TEXT/MARKDOWN: passthrough normalization
   - URL: bounded static HTTP fetch → readability → clean text
-  - PDF: PyMuPDF layout-aware extraction
+  - PDF: per-page text extraction with pypdfium2 (PDFium)
   - CODE: tree-sitter AST-aware extraction
 
 Returns ExtractionResult with content, content_type, and metadata dict.
@@ -153,23 +153,35 @@ class URLExtractor:
 
 
 class PDFExtractor:
-    """PyMuPDF layout-aware PDF text extraction."""
+    """PDFium (pypdfium2) per-page PDF text extraction."""
 
     async def extract(self, file_bytes: bytes, filename: str = "") -> ExtractionResult:
         """Extract per-page text from a PDF, skipping pages that look scanned."""
-        import fitz  # PyMuPDF
+        import pypdfium2 as pdfium
 
         pages: list[str] = []
         scanned_pages = 0
 
-        with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+        doc = pdfium.PdfDocument(file_bytes)
+        try:
             page_count = len(doc)
-            for page_num, page in enumerate(doc):
-                text = page.get_text("text")
+            for page_num in range(page_count):
+                page = doc[page_num]
+                try:
+                    textpage = page.get_textpage()
+                    try:
+                        # PDFium separates lines with CRLF; downstream chunking expects "\n".
+                        text = textpage.get_text_bounded().replace("\r\n", "\n").replace("\r", "\n")
+                    finally:
+                        textpage.close()
+                finally:
+                    page.close()
                 if len(text.strip()) >= 50:
                     pages.append(f"[Page {page_num + 1}]\n{text.strip()}")
                 else:
                     scanned_pages += 1
+        finally:
+            doc.close()
 
         full_text = "\n\n".join(pages)
         word_count = len(full_text.split())
@@ -189,7 +201,7 @@ class PDFExtractor:
                 "scanned_pages": scanned_pages,
                 "word_count": word_count,
                 "filename": filename,
-                "extraction_method": "pymupdf",
+                "extraction_method": "pypdfium2",
             },
         )
 
