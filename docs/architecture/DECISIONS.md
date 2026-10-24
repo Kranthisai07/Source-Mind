@@ -3812,3 +3812,19 @@ verified over the network; the variable contents were not read).
 **Left open.** `ENVIRONMENT` reports `staging` in production; the database is named `sourcemind_release_0009`; no beat or scheduler
 service exists, so connector syncs are not scheduled and MCP and `CONNECTOR_SCHEDULER_ENABLED` remain off; GitHub App and Slack
 credentials were not confirmed rotated; Railway's forensic report is still pending; logs of removed deployments could not be reviewed.
+
+
+## D-052 — Verify a rotated secret against its provider, per service; dashboard deploys do not honour the commit pin
+
+After the Railway disclosure the owner rotated several secrets. The api and the worker ended up with different `CLERK_SECRET_KEY` values; the api's was rejected by Clerk, so every signed-in
+request returned `401 SM001` while Railway showed the service Online and `/health` stayed green (it does not exercise Clerk). It was found only by loading the published frontend and
+calling the API with a real session token.
+
+**Decisions.** (1) After any secret rotation, test each service's value against the provider's own API and record only the status (a read-only call such as listing one user), and sign in
+through the real frontend; a green `/health` and a successful deploy are not evidence. (2) Keep one source of truth per shared secret: copy the working service's value, or use a Railway shared
+variable, instead of typing the value twice. (3) A deploy started by a variable change built the branch head (`ed21410`, same code here) although Railway's config still showed the pin `468d7b8`. After any variable-triggered deploy,
+read `meta.commitHash` of the new deployment and, if it is not the pin, re-run `connect-service-source` with `commitSha`; this was done on 2026-10-24 and the api is back on `468d7b8`.
+
+**Rejected.** Reading the variable values to compare them (would print secrets); rotating again (the worker's key was valid).
+
+Evidence and timeline: `docs/releases/2026-10-24-production-window-record.md` (addendum).
