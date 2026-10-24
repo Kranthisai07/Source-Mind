@@ -3730,3 +3730,45 @@ Production log review (read-only, 2026-10-19; evidence kept outside the repo): t
 0 `application.startup_failed`), so no credential was found in them. Logs of removed older deployments could not be
 checked, and no log drain or Sentry was checked. Until this change ships, the next unhandled exception in production
 WOULD dump locals; ship it before enabling MCP. Rotation of the Redis password is optional hardening, not evidenced need.
+
+
+## D-051 — Production window 2026-10-20..24: maintenance-window migration, private-network database, post-incident credential rotation
+
+**What happened.** Migrations 0012-0014 (`20261010_0011` -> `20261016_0014`) and the pinned deploy of `main` `468d7b8` reached
+production through a maintenance window (api stopped, writers drained, worker warm-stopped, verified backup, owner-run migration).
+The window was interrupted for about three days by a Railway platform outage and security incident (builds and deployments paused,
+sessions invalidated). It finished on 2026-10-24 with api `f5fc5201` and worker `ce5a4f41` both `SUCCESS` on `468d7b8`.
+Full timeline and evidence: `docs/releases/2026-10-24-production-window-record.md`.
+
+**Decisions and why.**
+1. *Maintenance window, not a rolling release.* 0012 and 0013 alter live tables (`artifact_links`, `memories`, `documents`,
+   `connector_configs`, `connector_sync_logs`), toggle FORCE RLS off and on, and replace two status constraints. Old-code-on-new-schema
+   was only tested locally, so the rolling path would have needed a live-traffic rehearsal. With no real users yet, a short stop was
+   cheaper and safer. The tooling (`run_alembic.py`, `post_migration_check.*`) was adapted from the previous release and rehearsed on a
+   restore of the real backup first; the first rehearsal exposed that `documents` is also altered, which the adapted check now knows.
+2. *Production uses private addresses only.* The api's `DATABASE_URL` pointed at a public Postgres TCP proxy. Deleting that proxy on
+   2026-10-20 silently took the database away from the api (`/health` 503, PostgreSQL unhealthy) until `SOURCEMIND_RUNTIME_DATABASE_URL`
+   was repointed to `postgres.railway.internal:5432`. Railway showing "Online" had been taken as health; it only reports the process.
+   Rule going forward: check `/health` after any networking change, and leave no public proxy open outside a window.
+3. *Rotating a Railway variable does not rotate the database role.* After the Railway disclosure the owner replaced Clerk, OpenAI,
+   Anthropic, Redis and database passwords in Railway. The database roles still held the old (possibly exposed) passwords, and the first
+   new api deployment failed its health check. The role passwords were then set with `ALTER ROLE` inside the Postgres container, taking
+   the values from the container's own environment so no password was printed or typed; a network login with each new password worked
+   and a wrong password was refused. A Railway SSH key was registered for this and removed afterwards.
+4. *Pinned-commit deploys stay the deploy method.* The Railway CLI cannot pin a commit and `service source connect` would enable
+   auto-deploy, so the connector's `connect-service-source` with `commitSha` was used.
+
+**Corrections to earlier claims (so they are not repeated).** D-050 called rotating the Redis password optional; after the Railway
+disclosure it was required and was done. The release plan `2026-10-19-mcp-keys-release.md` said old code ignores the new schema and a
+rollback needs no downgrade; that was only tested locally and is now worded as such. During the window production was reported healthy
+from Railway's service status without calling `/health`, and a worker was assumed to be on old code without reading its commit; neither
+was verified at the time.
+
+**Verified 2026-10-24 17:11Z:** `/health` 200 with PostgreSQL and Redis healthy; `/mcp` 404 from the app; `/v1/workspaces` 401;
+OAuth metadata 404; api and worker deployments on `468d7b8dbe57759486cdb4d97e8c55426c6f10f7`; no SSH keys registered. **Reported by
+the owner, not re-checked here:** the rotations, and that the Railway variables match the database roles (the role passwords were
+verified over the network; the variable contents were not read).
+
+**Left open.** `ENVIRONMENT` reports `staging` in production; the database is named `sourcemind_release_0009`; no beat or scheduler
+service exists, so connector syncs are not scheduled and MCP and `CONNECTOR_SCHEDULER_ENABLED` remain off; GitHub App and Slack
+credentials were not confirmed rotated; Railway's forensic report is still pending; logs of removed deployments could not be reviewed.
