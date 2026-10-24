@@ -35,3 +35,23 @@ was tested locally only. Backups `20261020T001502Z-pre-0012` and `20261021T02281
 ## Not verified
 Contents of Railway variables (only names and match results were used), that GitHub App and Slack credentials were rotated, behaviour under real
 user load, and whether anything read the database during the exposure window (no log drain or Sentry was checked; Railway's report is preliminary).
+
+## Addendum 2026-10-24 (evening): frontend publish, Clerk key mismatch, deployment pin
+
+**Frontend published.** `gh-pages` moved from `50271d603aeb58b5cb12ce86795c5b695fe513ba` to `cf31be7ee214beab62518e51c768f5f70ff7cc01` (lease-guarded push), built from `468d7b8`.
+Bundle `main.095c4600.js`, sha256 `517e156d7f0965c146817685da99869c97e08406b919d5a7e899f5348398f0b3`; the file GitHub serves has the same hash. `check_bundle.sh` passed 10 of 10 on the
+build and again on the downloaded live files; no secret-key literal; `404.html` identical to `index.html`; `/dashboard` returns the app body with the Pages fallback status 404.
+Rollback: `git push --force-with-lease=refs/heads/gh-pages:cf31be7... origin backup/gh-pages-50271d6:refs/heads/gh-pages` (local tag).
+
+**Clerk secret key mismatch after the rotation.** On the published site every signed-in request failed (`401 SM001 "Unable to verify the Clerk user profile."`) although the browser held a valid
+Clerk session. Checking each service's `CLERK_SECRET_KEY` against Clerk's own API (kind, length and HTTP status only, no value printed): api returned 401, worker returned 200 (both test keys, 50
+characters). The api held a different, invalid value. The owner copied the worker's value to the api; afterwards both returned 200 and `/v1/workspaces` returned 200 with two workspaces.
+Sign-in was broken from at least the api deployment of 2026-10-24 16:58Z until the fix deployed at 19:57Z; the time the api's variable was changed is not known.
+
+**Browser checks after the fix** (Chrome, signed in; browser evidence): dashboard shows real Production data (5 memories, 1 contributor, 0 open conflicts); Settings > API Keys shows
+"MCP is not enabled on this deployment, so keys cannot be used yet"; Connectors shows 0 sources; `GET .../connectors/github/authorize` returns 503 "GitHub connection is not configured" as expected.
+Not checked: the Contributors page (it needs a connector, `/connectors/:id/contributors`) and the `[SourceMind] API mode: REAL` console line (not captured).
+
+**Deployment pin not kept.** The api deployment created by the variable change (`5c64439b`, 2026-10-24 19:57:20Z, reason `deploy`) is on `ed21410`, the head of `main`, not the pinned `468d7b8`. `main` differs from
+`468d7b8` by three documentation files only. The worker is still `ce5a4f41` on `468d7b8`. No deployment followed the merges of #35 and #36, so no auto-deploy trigger is evidenced; a
+dashboard-driven deploy appears to follow the branch head. Hypothesis, not confirmed. Re-pinning needs `connect-service-source` with `commitSha`, which was unavailable in the session that wrote this.
