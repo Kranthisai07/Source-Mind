@@ -31,7 +31,7 @@ Also D-050: keyword search needs no provider key, and exception logs no longer c
 
 ## Rollback
 Redeploy api and worker at `06e67a85cec7074557e69831b645362f00c2981a` (or the retained deployments, roughly 72 h).
-Migrations 0012-0014 are additive and the old code ignores the new tables/columns, so a code rollback needs no downgrade.
+Migrations 0012-0014 add tables and columns, but 0012/0013 also alter live tables and replace constraints. Old code on the new schema was tested locally only (744 unit and 131 integration tests pass; one integration test fails the same way on the old schema), not live. A code rollback after migrating therefore relies on that local evidence; see D-051.
 If data is affected, restore from the pre-migration backup. A downgrade to `20261010_0011` is tested but destroys any MCP key data.
 
 ## Enabling MCP later (separate approval)
