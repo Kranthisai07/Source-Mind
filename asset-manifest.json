@@ -1,0 +1,13 @@
+{
+  "files": {
+    "main.css": "/Source-Mind/static/css/main.bb5e54bb.css",
+    "main.js": "/Source-Mind/static/js/main.095c4600.js",
+    "index.html": "/Source-Mind/index.html",
+    "main.bb5e54bb.css.map": "/Source-Mind/static/css/main.bb5e54bb.css.map",
+    "main.095c4600.js.map": "/Source-Mind/static/js/main.095c4600.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.bb5e54bb.css",
+    "static/js/main.095c4600.js"
+  ]
+}
