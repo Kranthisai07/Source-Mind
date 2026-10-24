@@ -44,7 +44,9 @@ except Exception:
 # fallback itself is unchanged; only its visibility is.
 
 try:
-    from Levenshtein import distance as _lev_distance
+    from rapidfuzz.distance import Levenshtein as _Levenshtein
+
+    _lev_distance = _Levenshtein.distance
 
     SIGNAL_1_DEGRADED = False
 except Exception as _lev_exc:  # pragma: no cover - depends on the install

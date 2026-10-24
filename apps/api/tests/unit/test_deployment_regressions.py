@@ -271,8 +271,6 @@ def _top_level_imports() -> dict[str, set[str]]:
 # Modules that resolve through a differently-named distribution, or that are
 # guaranteed transitively. Each needs a justification, not just an entry.
 _IMPORT_ALIASES = {
-    "Levenshtein": "python-levenshtein",   # python-Levenshtein requires Levenshtein
-    "fitz": "pymupdf",                     # PyMuPDF installs as fitz
     "jwt": "pyjwt",                        # PyJWT installs as jwt
     "starlette": "fastapi",                # hard dependency of fastapi
     "jose": "python-jose",                 # python-jose installs as jose

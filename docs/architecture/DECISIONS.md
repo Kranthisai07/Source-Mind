@@ -3849,3 +3849,24 @@ already been published. Adding an open license later is possible; removing one i
 **Follow-ups (not done by this change).** (1) Replace `pymupdf` with a permissively licensed PDF reader, or buy the commercial license, or accept AGPL for the whole project, **before** friends or anyone
 else use PDF ingestion. (2) Replace `python-Levenshtein` with `rapidfuzz` (small change plus the scorer tests). (3) Decide whether the repository stays public (then the license permits viewing only) or becomes
 private. (4) Have a lawyer review `LICENSE` before any commercial use. (5) Re-run the dependency license scan when dependencies change.
+
+## D-054 — PDF reading moves to pypdfium2 and edit distance to rapidfuzz; the copyleft libraries are removed
+
+**What.** `pymupdf` (AGPL-3.0) is replaced by `pypdfium2` (Apache-2.0 OR BSD-3-Clause) in `PDFExtractor`, and `python-Levenshtein` (GPL-2.0-or-later)
+by `rapidfuzz` (MIT) in attribution signal S1 (`scorer.py`). `uv lock` removed `levenshtein`, `pymupdf` and `python-levenshtein`, added `pypdfium2` 5.14.0 and changed nothing
+else; `rapidfuzz` was already locked (as a dependency of Levenshtein) and is now declared directly. This closes the two follow-ups in D-053 that were about code.
+New PDFs record `extraction_method: "pypdfium2"` instead of `"pymupdf"`; metadata already stored is unchanged.
+
+**Why these two.** The code needs very little: per-page plain text and the page count from a PDF, and `distance(before, after)` from the scorer.
+- *PDF candidates* (PyMuPDF as the reference, three generated PDFs: prose, two columns, a near-empty page): `pypdfium2` gave identical text on all three; `pypdf` also matched but was 10 to 60 times
+  slower; `pdfminer.six` matched 96.6% on the two-column page. Chosen: `pypdfium2`, because it matched the reference, is fast, and has hash-pinned `py3-none` wheels for the platforms in use (including `manylinux x86_64`).
+  Trade-off accepted: it is native code (PDFium, the engine in Chrome) where `pypdf` is pure Python and easier to audit. The test PDFs are synthetic; real documents (scans, unusual fonts, right-to-left text) were not compared.
+- *Edit distance:* `rapidfuzz` returned the same distance as `python-Levenshtein` on 4,000 random unicode pairs (0 mismatches), a 30,000-character pair and the empty-string cases, so no attribution score changes.
+
+**Behaviour to know.** PDFium separates lines with CRLF; the extractor normalises to `"\n"` as before (tested). A file that is not a PDF now raises `pypdfium2.PdfiumError` (it raised a PyMuPDF error before); the worker's handling is the same.
+
+**Tests.** PDF extraction had none. New: eight tests on a PDF built inside the test (page markers, the scanned-page rule, newlines, metadata, bad input, dispatcher), edit-distance values (and a comparison with the old library when it is installed),
+and a tripwire that fails if `pymupdf`, `pymupdf4llm`, `python-levenshtein` or `levenshtein` is declared as a runtime dependency again. The import-to-package alias entries for `fitz` and `Levenshtein` were removed from the deployment regression test.
+Checked in a fresh environment built with `uv sync --locked` from the new lock (neither old library installed): full unit suite 946 passed, 1 skipped; ruff clean; `uv lock --check` clean.
+
+**Not done.** `Dockerfile` and `Dockerfile.worker` still install `libmupdf-dev`, which nothing needs now; removing it is an image change and is left for a separate step. No real-PDF comparison was run. The dependency license scan from D-053 should be repeated when dependencies change.
