@@ -2,6 +2,7 @@
   "name": "sourcemind-web",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "homepage": "https://Kranthisai07.github.io/Source-Mind",
   "dependencies": {
     "@clerk/clerk-react": "^5.61.9",
