@@ -1,0 +1,88 @@
+SourceMind — Proprietary Software License
+
+Copyright (c) 2025-2026 Kranthisai Gadi. All Rights Reserved.
+
+
+1. OWNERSHIP
+
+   This software, together with its source code, documentation, designs,
+   configuration, data schemas and all accompanying materials (collectively,
+   the "Software"), is the proprietary and confidential property of the
+   copyright holder named above.
+
+   The Software is licensed, not sold. No title to or ownership of the
+   Software is transferred by this document or by access to it.
+
+
+2. NO LICENSE GRANTED
+
+   No license, right or interest in the Software is granted, expressly, by
+   implication, by estoppel or otherwise, except by a separate written
+   agreement signed by the copyright holder.
+
+   Without such an agreement, you may not:
+
+     (a) copy, reproduce or store the Software, in whole or in part;
+     (b) modify, adapt, translate or create derivative works from it;
+     (c) distribute, publish, sublicense, sell, rent, lease or lend it;
+     (d) host, deploy or operate it as a service for any third party;
+     (e) reverse engineer, decompile or disassemble it, except to the extent
+         that this restriction is prohibited by applicable law;
+     (f) remove, obscure or alter any copyright, trademark or other
+         proprietary notice contained in it.
+
+   Viewing this repository does not grant any of the above.
+
+
+3. CONFIDENTIALITY
+
+   Materials that are not published in this repository (for example private
+   configuration, credentials, customer data, unreleased work and
+   non-public documents) are confidential and are the trade secrets of the
+   copyright holder. If you have been given access to such materials, you
+   must not disclose them to any third party and must protect them with at
+   least the care you use for your own confidential information.
+
+   Material that the copyright holder has made publicly available, including
+   the contents of this repository for as long as it is public, is not
+   confidential. All rights in it remain reserved under section 2.
+
+
+4. THIRD-PARTY COMPONENTS
+
+   The Software incorporates third-party components that remain subject to
+   their own licenses. Nothing in this document extends the copyright
+   holder's claim over them, and nothing in this document restricts rights
+   you hold under their licenses.
+
+   Components vendored into this repository:
+
+     - .claude/skills/ui-ux-pro-max/
+       MIT License, Copyright (c) 2024 Next Level Builder.
+       See .claude/skills/ui-ux-pro-max/LICENSE.
+
+   Dependencies resolved at build time are not vendored here and are governed
+   by their respective licenses as declared in apps/api/pyproject.toml and
+   apps/web/package.json.
+
+
+5. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NONINFRINGEMENT.
+
+
+6. LIMITATION OF LIABILITY
+
+   TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE COPYRIGHT HOLDER
+   SHALL NOT BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+   AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THE SOFTWARE OR THE USE OF OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+
+7. ENQUIRIES
+
+   For licensing, commercial use, or permission requests, contact the
+   copyright holder.

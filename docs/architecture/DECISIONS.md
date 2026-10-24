@@ -3828,3 +3828,24 @@ read `meta.commitHash` of the new deployment and, if it is not the pin, re-run `
 **Rejected.** Reading the variable values to compare them (would print secrets); rotating again (the worker's key was valid).
 
 Evidence and timeline: `docs/releases/2026-10-24-production-window-record.md` (addendum).
+
+## D-053 — License: proprietary, all rights reserved; the dependency licenses and the public repository are open issues
+
+**What.** `LICENSE` (proprietary, all rights reserved; drafted 2026-09-23) is added to `main`, with its confidentiality clause limited to materials that are not published: the repository is **public**
+(checked 2026-10-24: visibility PUBLIC, no license recorded by GitHub), so source published here cannot be a trade secret. `apps/web/package.json` already says `UNLICENSED` and `apps/api/pyproject.toml`
+says `Proprietary`; the license makes that explicit. This is not legal advice and the text has not been reviewed by a lawyer.
+
+**Why proprietary.** The project is built as a hosted product (pitch, paper and trial plans exist), the owner has not chosen to open-source it, and a grant of open rights cannot be taken back for what has
+already been published. Adding an open license later is possible; removing one is not.
+
+**Dependency findings that must be settled before the license is relied on** (read from the installed environment and `uv.lock`, 2026-10-24):
+- `pymupdf` is **AGPL-3.0** (dual-licensed with a commercial Artifex license). It is a declared dependency and `services/ingestion/extractor.py` imports it for PDF ingestion. Offering the service to other
+  people over a network is what AGPL section 13 is about; a proprietary license on the rest of the code does not remove that.
+- `python-Levenshtein` / `Levenshtein` are **GPL-2.0-or-later** (declared; `services/attribution/scorer.py` imports them). A hosted service that does not distribute the software is not the usual trigger, but
+  shipping an image or an on-premise copy would be. `rapidfuzz` (MIT) is already in the lock file and provides the same edit distance.
+- LGPL: `psycopg`, `psycopg2-binary` (and `pytest-postgresql`, `mirakuru` for tests). Used unmodified as libraries; not a conflict for this use.
+- Web: 1,365 installed packages, almost all MIT, ISC, BSD, Apache-2.0 or CC0; `node-forge` is offered as `BSD-3-Clause OR GPL-2.0` (the BSD option applies).
+
+**Follow-ups (not done by this change).** (1) Replace `pymupdf` with a permissively licensed PDF reader, or buy the commercial license, or accept AGPL for the whole project, **before** friends or anyone
+else use PDF ingestion. (2) Replace `python-Levenshtein` with `rapidfuzz` (small change plus the scorer tests). (3) Decide whether the repository stays public (then the license permits viewing only) or becomes
+private. (4) Have a lawyer review `LICENSE` before any commercial use. (5) Re-run the dependency license scan when dependencies change.
