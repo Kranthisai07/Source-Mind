@@ -3822,8 +3822,8 @@ calling the API with a real session token.
 
 **Decisions.** (1) After any secret rotation, test each service's value against the provider's own API and record only the status (a read-only call such as listing one user), and sign in
 through the real frontend; a green `/health` and a successful deploy are not evidence. (2) Keep one source of truth per shared secret: copy the working service's value, or use a Railway shared
-variable, instead of typing the value twice. (3) Treat a pinned commit as applying only to deploys made with `connect-service-source`; a deploy started from the dashboard after a variable change
-followed the branch head (`ed21410`, same code here). Re-pin after variable-triggered deploys, and check `meta.commitHash` of the new deployment.
+variable, instead of typing the value twice. (3) A deploy started by a variable change built the branch head (`ed21410`, same code here) although Railway's config still showed the pin `468d7b8`. After any variable-triggered deploy,
+read `meta.commitHash` of the new deployment and, if it is not the pin, re-run `connect-service-source` with `commitSha`; this was done on 2026-10-24 and the api is back on `468d7b8`.
 
 **Rejected.** Reading the variable values to compare them (would print secrets); rotating again (the worker's key was valid).
 

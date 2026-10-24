@@ -54,4 +54,9 @@ Not checked: the Contributors page (it needs a connector, `/connectors/:id/contr
 
 **Deployment pin not kept.** The api deployment created by the variable change (`5c64439b`, 2026-10-24 19:57:20Z, reason `deploy`) is on `ed21410`, the head of `main`, not the pinned `468d7b8`. `main` differs from
 `468d7b8` by three documentation files only. The worker is still `ce5a4f41` on `468d7b8`. No deployment followed the merges of #35 and #36, so no auto-deploy trigger is evidenced; a
-dashboard-driven deploy appears to follow the branch head. Hypothesis, not confirmed. Re-pinning needs `connect-service-source` with `commitSha`, which was unavailable in the session that wrote this.
+deploy started by a variable change followed the branch head. Hypothesis, not confirmed.
+
+**Re-pinned and verified (2026-10-24 20:27Z).** A later session ran `connect-service-source` on the api with `commitSha` `468d7b8dbe57759486cdb4d97e8c55426c6f10f7`. Railway's config still showed that pin before the re-pin, so the
+deploy that followed the variable change (`5c64439b`, `ed21410`) did not honour it. New api deployment `e726dcf8` (20:18:52Z) is `SUCCESS` on `468d7b8`; `5c64439b` is REMOVED. Verified afterwards: `/health` 200 with
+PostgreSQL and Redis healthy, `/v1/workspaces` without a login 401, `/mcp` 404, OAuth metadata 404, the api's Clerk key 200 from Clerk, worker `ce5a4f41` still `SUCCESS` on `468d7b8`. `/health` reports
+`environment: staging` in production (unchanged, listed as open in D-051).
