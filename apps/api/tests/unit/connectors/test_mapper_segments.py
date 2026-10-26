@@ -235,3 +235,38 @@ def test_skip_empty_body_reason(body):
 def test_no_minimum_length_filter():
     assert skip_empty_body("k") is None
     assert skip_empty_body("ok") is None
+
+
+@pytest.mark.unit
+def test_shared_commit_stored_metadata_carries_the_authorship_marker():
+    """The marker must be in the metadata that is stored on the link.
+
+    ConnectorDocument.authorship is not persisted; readers look at link metadata. A real sync
+    of a repo with co-authored commits stored source_authors but no marker, so those commits
+    were counted nowhere.
+    """
+    msg = "Fix it\n\nCo-authored-by: Bob Builder <bob@example.com>"
+    d = GitHubMapper.from_commit(OWN, R, _commit(msg, _user("alice", 5)))
+    assert d.metadata["authorship"] == "shared"
+    assert d.metadata["source_authors"] == ["alice", "Bob Builder"]
+
+
+@pytest.mark.unit
+def test_single_author_commit_does_not_carry_the_shared_marker():
+    d = GitHubMapper.from_commit(OWN, R, _commit("msg", _user("alice", 5)))
+    assert "authorship" not in d.metadata
+
+
+@pytest.mark.unit
+def test_memory_read_path_reports_a_mapped_shared_commit_as_shared():
+    """Producer and consumer together: the mapper's output, read back the way the API reads it."""
+    from sourcemind.services.memory.read import authorship_from_link
+
+    msg = "Fix it\n\nCo-authored-by: Bob Builder <bob@example.com>"
+    d = GitHubMapper.from_commit(OWN, R, _commit(msg, _user("alice", 5)))
+    result = authorship_from_link(
+        source_author=d.source_author, resolved=False, link_metadata=d.metadata
+    )
+    assert result is not None
+    assert result.status == "shared"
+    assert result.source_authors == ["alice", "Bob Builder"]

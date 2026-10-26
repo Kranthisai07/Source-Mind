@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from sourcemind.api.v1 import connectors as api
+from sourcemind.connectors.github.mapper import GitHubMapper
 from sourcemind.core.database import set_rls_user_context, set_rls_workspace_context
 from sourcemind.core.dependencies import AuthenticatedUser
 from sourcemind.core.exceptions import ValidationError, WorkspaceNotFoundError
@@ -324,10 +325,19 @@ async def insights_world(supabase_engine: AsyncEngine) -> InsightsWorld:
             source_type="commit",
             artifact_id="shared-commit",
             timestamp=WINDOW_START + timedelta(days=8),
-            metadata={
-                "authorship": "shared",
-                "source_authors": ["Alice Shared", "Co Author"],
-            },
+            # Built by the real mapper, not by hand, so producer and reader are tested together.
+            metadata=GitHubMapper.from_commit(
+                "acme",
+                "repo",
+                {
+                    "sha": "a" * 40,
+                    "commit": {
+                        "message": "x\n\nCo-authored-by: Co Author <co@example.com>",
+                        "author": {"name": "Alice Shared", "date": "2026-01-01T00:00:00Z"},
+                    },
+                    "author": None,
+                },
+            ).metadata,
             source_author=None,
         )
         await _add_artifact(

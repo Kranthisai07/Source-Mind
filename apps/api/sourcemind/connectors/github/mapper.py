@@ -209,6 +209,9 @@ class GitHubMapper:
             names = [primary, *co_authors] if primary else list(co_authors)
             names = list(dict.fromkeys(names))
             metadata["source_authors"] = names
+            # Readers (insights SQL, memory read path) look for this key in the STORED
+            # link metadata; the ConnectorDocument.authorship field is never persisted.
+            metadata["authorship"] = "shared"
             return cls._build(
                 source_type="commit",
                 source_id=source_id,
