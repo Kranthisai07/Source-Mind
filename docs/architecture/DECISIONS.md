@@ -3896,4 +3896,9 @@ until identities are linked.
 **Not fixed here.** (1) Links stored before this change keep the old metadata and are not repaired by a re-scan; if any exist they need a backfill (production had no GitHub connector configured when this was written,
 because the connect flow returned "not configured"; not verified in the database). (2) Worker logs showed 49 `RuntimeError: Event loop is closed` messages in 63 tasks: the OpenAI and Anthropic async clients are created per
 ingestion task and never closed before the loop ends (`workers/ingestion.py`); harmless to results, a resource-hygiene bug. (3) GitHub imports create no `attributions` rows by design (authors are not workspace members).
-(4) The end-to-end re-import after the fix, on a clean database, was not done when this was written.
+
+**Re-test after the fix (2026-10-26, same stack, clean database, same repository).** Fresh ground truth: 66 commits in the window, 63 expected imports, 3 Bot commits skipped, 9 with trailers.
+Import: 63 of 63 expected commit hashes, 63 documents completed, 0 failed. Stored metadata: exactly the 9 authorless links carry `authorship = 'shared'`, none are left without it. Insights, compared exactly
+with an independent expectation computed from GitHub: single commits 54 reported and 54 expected, identical per author; shared entries 18 reported and 18 expected, identical per name; all 18 authors from the ground truth
+appear (the five who were missing before now appear with shared counts). Memory search returns the real commit memories, and co-authored ones report `authorship: shared` with all named authors.
+Not verified: Pull requests, issues and discussions (a fork has none), identity linking of a GitHub login to a workspace member, large repositories, and any production behaviour.
