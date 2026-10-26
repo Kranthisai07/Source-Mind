@@ -3870,3 +3870,30 @@ and a tripwire that fails if `pymupdf`, `pymupdf4llm`, `python-levenshtein` or `
 Checked in a fresh environment built with `uv sync --locked` from the new lock (neither old library installed): full unit suite 946 passed, 1 skipped; ruff clean; `uv lock --check` clean.
 
 **Not done.** `Dockerfile` and `Dockerfile.worker` still install `libmupdf-dev`, which nothing needs now; removing it is an image change and is left for a separate step. No real-PDF comparison was run. The dependency license scan from D-053 should be repeated when dependencies change.
+
+## D-055 — Co-authored GitHub commits were imported but counted nowhere; found by the first real-repository test
+
+**What the test was.** A local real stack (real API, worker, OpenAI and Anthropic keys, GitHub App, Clerk dev instance, disposable PostgreSQL with the owner/runtime role split) on `main` `2332805`,
+connected through the GitHub App to a fork of `jeanp413/open-remote-ssh` (MIT). Ground truth was frozen from GitHub before the import: commits on `master` in the 90-day window that are not by a Bot account (the connector's
+own rules): 67 commits, 63 expected imports, 18 human authors, 9 of them with `Co-authored-by:` trailers.
+
+**Result.** The import was complete and correct: the 63 imported commit hashes equal the expected 63 (0 missing, 0 extra), all 63 documents completed, none failed, no Bot commit was imported. But the insights endpoint reported
+54 commits, `shared: 0`, and 13 of the 18 expected authors. The 9 commits with trailers were stored with `source_author` NULL and `metadata.source_authors`, without `metadata.authorship = 'shared'`.
+The insights query (`services/connectors/insights.py`) counts a commit as shared only when that key is present, and excludes it from the single-author branch when the author is empty, so the commits were counted nowhere
+and five authors who had only co-authored commits did not appear. The memory read path (`authorship_from_link`) needs the same key, so those memories reported no authorship either.
+
+**Cause.** The mapper set `ConnectorDocument.authorship = "shared"`, a field that is never persisted; the connector stores `doc.metadata` on the artifact link. The tests did not catch it because the insights and provenance
+integration tests write `{"authorship": "shared", ...}` into their fixtures by hand, so the producer (mapper) and the readers were never exercised together.
+
+**Fix.** `GitHubMapper.from_commit` writes `metadata["authorship"] = "shared"` for commits with co-author trailers. New unit tests assert the mapper's real output and read it back through `authorship_from_link`;
+the insights integration fixture now builds its shared commit with the real mapper. Checked that the new tests fail without the fix (two unit tests; two insights integration tests on real PostgreSQL) and pass with it.
+Full unit suite 949 passed, 1 skipped; the 90 GitHub-related integration tests pass.
+
+**Definition to remember.** A commit with co-author trailers is deliberately not credited to its primary author as a single commit: GitHub's own counts credit the primary author, this product reports it under `shared`
+for every named author. Comparing per-author counts with GitHub therefore means singles (54 in this test) plus shared (9) separately. Trailer names are display names, so one person can appear under a login and a display name
+until identities are linked.
+
+**Not fixed here.** (1) Links stored before this change keep the old metadata and are not repaired by a re-scan; if any exist they need a backfill (production had no GitHub connector configured when this was written,
+because the connect flow returned "not configured"; not verified in the database). (2) Worker logs showed 49 `RuntimeError: Event loop is closed` messages in 63 tasks: the OpenAI and Anthropic async clients are created per
+ingestion task and never closed before the loop ends (`workers/ingestion.py`); harmless to results, a resource-hygiene bug. (3) GitHub imports create no `attributions` rows by design (authors are not workspace members).
+(4) The end-to-end re-import after the fix, on a clean database, was not done when this was written.
