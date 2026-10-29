@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from neo4j.exceptions import ServiceUnavailable, SessionExpired, TransientError
 
-from sourcemind.events import backfill, projector, relay
+from sourcemind.events import backfill, graph_mapper, projector, relay
 from sourcemind.events.envelope import build_envelope, dumps
 from sourcemind.events.graph_mapper import InvalidEventError
 from tests.unit.events.fakes import RoutedSession, Rows
@@ -40,6 +42,19 @@ class DeadLetters:
         self.sent.append((value, key))
 
 
+class MarkGap:
+    """Records (workspace_id, seq) of every gap marked, in order."""
+
+    def __init__(self, fail: Exception | None = None) -> None:
+        self.marked: list[tuple[str, int]] = []
+        self.fail = fail
+
+    async def __call__(self, workspace_id: str, seq: int) -> None:
+        if self.fail:
+            raise self.fail
+        self.marked.append((workspace_id, seq))
+
+
 async def _no_sleep(_seconds: float) -> None:
     return None
 
@@ -56,6 +71,7 @@ async def test_a_good_event_is_applied_and_nothing_is_dead_lettered() -> None:
         apply=AsyncMock(return_value=True),
         dead_letters=dlq,
         max_attempts=3,
+        mark_gap=MarkGap(),
         sleep=_no_sleep,
     )
     assert outcome == "applied" and dlq.sent == []
@@ -69,6 +85,7 @@ async def test_a_stale_event_is_reported_as_stale() -> None:
         apply=AsyncMock(return_value=False),
         dead_letters=DeadLetters(),
         max_attempts=3,
+        mark_gap=MarkGap(),
         sleep=_no_sleep,
     )
     assert outcome == "stale"
@@ -83,6 +100,7 @@ async def test_an_unparseable_message_is_dead_lettered_without_applying() -> Non
         apply=apply,
         dead_letters=dlq,
         max_attempts=3,
+        mark_gap=MarkGap(),
         sleep=_no_sleep,
     )
     assert outcome == "dead_lettered"
@@ -102,6 +120,7 @@ async def test_a_transient_failure_is_retried_and_then_succeeds() -> None:
         apply=apply,
         dead_letters=dlq,
         max_attempts=5,
+        mark_gap=MarkGap(),
         sleep=_no_sleep,
     )
     assert outcome == "applied" and apply.await_count == 3 and dlq.sent == []
@@ -117,6 +136,7 @@ async def test_exhausted_retries_dead_letter_with_the_error_and_workspace_key() 
         apply=apply,
         dead_letters=dlq,
         max_attempts=3,
+        mark_gap=MarkGap(),
         sleep=_no_sleep,
     )
     assert outcome == "dead_lettered" and apply.await_count == 3
@@ -134,6 +154,7 @@ async def test_a_deterministically_invalid_event_is_not_retried() -> None:
         apply=apply,
         dead_letters=dlq,
         max_attempts=5,
+        mark_gap=MarkGap(),
         sleep=_no_sleep,
     )
     assert outcome == "dead_lettered" and apply.await_count == 1
@@ -152,8 +173,166 @@ async def test_if_the_dead_letter_topic_is_unwritable_the_error_propagates() -> 
             apply=AsyncMock(),
             dead_letters=Broken(),
             max_attempts=1,
+            mark_gap=MarkGap(),
             sleep=_no_sleep,
         )
+
+
+@pytest.mark.unit
+async def test_dead_lettering_marks_the_gap_before_the_message_leaves_the_stream() -> None:
+    order: list[str] = []
+    gaps = MarkGap()
+
+    async def marking(workspace_id, seq):
+        order.append("mark")
+        await gaps(workspace_id, seq)
+
+    class Ordered(DeadLetters):
+        async def send(self, value, key=None) -> None:
+            order.append("dead-letter")
+            await super().send(value, key)
+
+    outcome = await projector.process_message(
+        _raw(seq=50),
+        coordinates=COORDS,
+        apply=AsyncMock(side_effect=InvalidEventError("bad")),
+        dead_letters=Ordered(),
+        max_attempts=5,
+        mark_gap=marking,
+        sleep=_no_sleep,
+    )
+    assert outcome == "dead_lettered"
+    assert gaps.marked == [(WS, 50)]
+    assert order == ["mark", "dead-letter"]
+
+
+@pytest.mark.unit
+async def test_if_the_gap_cannot_be_marked_nothing_is_dead_lettered() -> None:
+    dlq = DeadLetters()
+    with pytest.raises(ConnectionError):
+        await projector.process_message(
+            _raw(),
+            coordinates=COORDS,
+            apply=AsyncMock(side_effect=InvalidEventError("bad")),
+            dead_letters=dlq,
+            max_attempts=1,
+            mark_gap=MarkGap(fail=ConnectionError("neo4j down")),
+            sleep=_no_sleep,
+        )
+    assert dlq.sent == [], "an unmarked gap must be redelivered, not silently dropped"
+
+
+@pytest.mark.unit
+async def test_a_non_uuid_workspace_id_still_reaches_the_dead_letter_topic() -> None:
+    # Valid envelope shape, unusable workspace id: the real mark_gap validates the UUID and
+    # raises InvalidEventError. That must not escape (it would crash-loop the projector).
+    calls: list = []
+
+    async def run(query, params):
+        calls.append(query)
+        return []
+
+    async def real_mark_gap(workspace_id, seq):
+        await graph_mapper.mark_gap(run, workspace_id, seq)
+
+    raw = dumps(
+        build_envelope(
+            event_id=uuid.uuid4(),
+            seq=9,
+            occurred_at=datetime(2026, 10, 29, tzinfo=UTC),
+            workspace_id="not-a-uuid",
+            event_type="memory.state",
+            aggregate_id=uuid.uuid4(),
+            payload={"memory": {"id": str(uuid.uuid4())}},
+        )
+    )
+    dlq = DeadLetters()
+    outcome = await projector.process_message(
+        raw,
+        coordinates=COORDS,
+        apply=AsyncMock(side_effect=InvalidEventError("workspace_id is not a UUID")),
+        dead_letters=dlq,
+        max_attempts=1,
+        mark_gap=real_mark_gap,
+        sleep=_no_sleep,
+    )
+    assert outcome == "dead_lettered" and len(dlq.sent) == 1
+    assert calls == [], "nothing may be written to Neo4j for an unattributable message"
+
+
+@pytest.mark.unit
+async def test_a_real_neo4j_failure_while_marking_still_propagates() -> None:
+    dlq = DeadLetters()
+    with pytest.raises(ServiceUnavailable):
+        await projector.process_message(
+            _raw(),
+            coordinates=COORDS,
+            apply=AsyncMock(side_effect=InvalidEventError("bad")),
+            dead_letters=dlq,
+            max_attempts=1,
+            mark_gap=MarkGap(fail=ServiceUnavailable("neo4j down")),
+            sleep=_no_sleep,
+        )
+    assert dlq.sent == []
+
+
+@pytest.mark.unit
+async def test_an_unparseable_message_still_marks_its_workspace_when_it_names_one() -> None:
+    gaps = MarkGap()
+    raw = json.dumps({"workspace_id": WS, "seq": 7}).encode()  # valid JSON, not a valid envelope
+    await projector.process_message(
+        raw,
+        coordinates=COORDS,
+        apply=AsyncMock(),
+        dead_letters=DeadLetters(),
+        max_attempts=1,
+        mark_gap=gaps,
+        sleep=_no_sleep,
+    )
+    assert gaps.marked == [(WS, 7)]
+
+
+@pytest.mark.unit
+async def test_neo4j_unavailable_is_retried_past_max_attempts_never_dead_lettered() -> None:
+    apply = AsyncMock(side_effect=[ServiceUnavailable("down")] * 12 + [True])
+    dlq, gaps = DeadLetters(), MarkGap()
+    outcome = await projector.process_message(
+        _raw(),
+        coordinates=COORDS,
+        apply=apply,
+        dead_letters=dlq,
+        max_attempts=3,
+        mark_gap=gaps,
+        sleep=_no_sleep,
+    )
+    assert outcome == "applied" and apply.await_count == 13
+    assert dlq.sent == [] and gaps.marked == []
+
+
+@pytest.mark.unit
+async def test_stopping_during_an_outage_interrupts_without_dead_lettering() -> None:
+    stop = asyncio.Event()
+    stop.set()
+    dlq, gaps = DeadLetters(), MarkGap()
+    outcome = await projector.process_message(
+        _raw(),
+        coordinates=COORDS,
+        apply=AsyncMock(side_effect=ServiceUnavailable("down")),
+        dead_letters=dlq,
+        max_attempts=1,
+        mark_gap=gaps,
+        stop=stop,
+        sleep=_no_sleep,
+    )
+    assert outcome == "interrupted" and dlq.sent == [] and gaps.marked == []
+
+
+@pytest.mark.unit
+def test_what_counts_as_transient() -> None:
+    for exc in (ServiceUnavailable("x"), SessionExpired("x"), TransientError("x"), TimeoutError()):
+        assert projector.is_transient(exc)
+    for exc in (InvalidEventError("x"), RuntimeError("x"), ValueError("x")):
+        assert not projector.is_transient(exc)
 
 
 # ── relay ────────────────────────────────────────────────────────────────────

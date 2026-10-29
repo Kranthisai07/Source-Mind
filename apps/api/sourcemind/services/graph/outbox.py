@@ -33,6 +33,9 @@ log = structlog.get_logger(__name__)
 
 PAYLOAD_VERSION = 1
 
+# Advisory-lock namespace for emit/backfill ordering (distinct from the relay's session lock).
+EMIT_LOCK_NAMESPACE = "graph_emit"
+
 
 def _optional_float(value: Any) -> float | None:
     return None if value is None else float(value)
@@ -43,6 +46,38 @@ def _unique(ids: Iterable[uuid.UUID | str]) -> list[str]:
     for value in ids:
         seen.setdefault(str(value), None)
     return list(seen)
+
+
+async def _lock_workspaces(session: AsyncSession, ids: list[str], *, exclusive: bool) -> None:
+    """Serialise snapshot capture with concurrent emitters, per workspace, until commit.
+
+    An event's ``seq`` is assigned at INSERT, and the projector keeps whichever event has the
+    higher ``seq``. Without this lock, a backfill could read a memory, a concurrent writer could
+    commit a newer state and its event, and the backfill's older snapshot would then be inserted
+    with a higher ``seq`` and win. Writers take the lock shared (they never block each other);
+    the backfill takes it exclusive, so a batch starts only after every in-flight writer has
+    committed, and a writer that arrives mid-batch loads its state after the batch's commit and
+    so gets the higher ``seq``. Every emit goes through here, including handoff-only and
+    relation-only changes that never touch the ``memories`` row, so a row lock would not do.
+
+    Workspaces are locked in sorted order. Invisible or missing memories contribute no lock:
+    there is nothing to emit for them.
+    """
+    rows = (
+        await session.execute(
+            text(
+                "SELECT DISTINCT workspace_id::text AS workspace_id FROM memories "
+                "WHERE id = ANY(CAST(:ids AS uuid[]))"
+            ),
+            {"ids": ids},
+        )
+    ).mappings().all()
+    function = "pg_advisory_xact_lock" if exclusive else "pg_advisory_xact_lock_shared"
+    for workspace_id in sorted({row["workspace_id"] for row in rows}):
+        await session.execute(
+            text(f"SELECT {function}(hashtextextended(:key, 0))"),
+            {"key": f"{EMIT_LOCK_NAMESPACE}:{workspace_id}"},
+        )
 
 
 async def _neighbours(session: AsyncSession, ids: list[str]) -> list[str]:
@@ -172,6 +207,26 @@ async def load_memory_states(
     return states
 
 
+async def emit_workspace_marker(
+    session: AsyncSession, workspace_id: uuid.UUID | str, event_type: str, payload: dict[str, Any]
+) -> int:
+    """Insert a workspace-level control event and return its ``seq``.
+
+    Used by the backfill to bracket a full re-emit. The runtime role may INSERT into the outbox
+    but not read it, so the ``seq`` comes from ``currval`` of the sequence it was just allocated
+    from (the role has USAGE on it), which is this session's own last insert.
+    """
+    await session.execute(
+        text(
+            "INSERT INTO graph_outbox (workspace_id, event_type, aggregate_id, payload) "
+            "VALUES (CAST(:ws AS uuid), :type, CAST(:ws AS uuid), CAST(:payload AS jsonb))"
+        ),
+        {"ws": str(workspace_id), "type": event_type, "payload": dumps(payload).decode()},
+    )
+    seq = (await session.execute(text("SELECT currval('graph_outbox_seq_seq')"))).scalar()
+    return int(seq)
+
+
 async def emit_memory_states(
     session: AsyncSession,
     memory_ids: Iterable[uuid.UUID | str],
@@ -191,6 +246,7 @@ async def emit_memory_states(
     ids = _unique(memory_ids)
     if not ids:
         return 0
+    await _lock_workspaces(session, ids, exclusive=force)
     if include_neighbours:
         ids = _unique([*ids, *await _neighbours(session, ids)])
 

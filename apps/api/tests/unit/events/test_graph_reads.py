@@ -425,3 +425,21 @@ async def test_related_trusts_a_graph_whose_node_agrees() -> None:
     with _graph(), patch.object(reads, "run_read", fake):
         out = await reads.related(_pg_session(), MEM, WS)
     assert out.source == "graph" and [str(n.id) for n in out.nodes] == [str(MEM)]
+
+
+@pytest.mark.unit
+async def test_a_workspace_with_a_dead_letter_gap_is_never_fresh_even_when_caught_up() -> None:
+    async def run_with(rows):
+        async def fake(query, workspace_id, params=None):
+            assert query is reads.WORKSPACE_WATERMARK
+            return rows
+
+        with patch.object(reads, "run_read", fake):
+            return await reads._graph_fresh(_pg_session(cursor=10), WS)
+
+    # Caught up (applied 12 >= published 10) and no gap: trusted.
+    assert await run_with([{"seq": 12, "gap_seq": None}]) is True
+    # Same watermark, but an event was dead-lettered and not repaired: not trusted.
+    assert await run_with([{"seq": 12, "gap_seq": 7}]) is False
+    # Rows from before the gap field existed behave as "no gap".
+    assert await run_with([{"seq": 12}]) is True

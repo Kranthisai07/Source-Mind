@@ -488,3 +488,167 @@ async def test_a_poison_message_goes_to_the_dead_letter_topic_and_does_not_block
     errors = sorted(r["error"].split(":")[0] for r in records)
     assert errors == ["envelope", "invalid"]
     assert all(r["source"]["topic"] == stack["topic"] for r in records)
+
+
+# ── dead-letter gaps and backfill markers (D-062) ────────────────────────────────
+
+WATERMARK_AND_GAP = (
+    "MATCH (w:Workspace {key: $workspace_id}) "
+    "RETURN w.applied_seq AS applied, w.gap_seq AS gap"
+)
+
+
+class _Dlq:
+    def __init__(self) -> None:
+        self.sent: list[dict] = []
+
+    async def send(self, value, key=None) -> None:
+        self.sent.append(value)
+
+
+async def _process(envelope: dict, dlq: _Dlq) -> str:
+    return await projector.process_message(
+        json.dumps(envelope).encode(),
+        coordinates={"topic": "t", "partition": 0, "offset": 0},
+        apply=projector.apply_to_neo4j,
+        dead_letters=dlq,
+        max_attempts=2,
+        mark_gap=projector.mark_gap_in_neo4j,
+    )
+
+
+def _marker(ws: str, seq: int, kind: str, payload: dict | None = None) -> dict:
+    return build_envelope(
+        event_id=uuid.uuid4(),
+        seq=seq,
+        occurred_at=datetime(2026, 10, 29, tzinfo=UTC),
+        workspace_id=ws,
+        event_type=kind,
+        aggregate_id=ws,
+        payload=payload or {},
+    )
+
+
+async def _state(ws: str) -> dict:
+    rows = await run_read(WATERMARK_AND_GAP, ws)
+    return rows[0] if rows else {}
+
+
+async def _fresh(ws: str, published: int) -> bool:
+    from sourcemind.services.graph import reads
+    from tests.unit.events.fakes import RoutedSession, Rows
+
+    session = RoutedSession({"FROM graph_publication_cursor": Rows([{"published_seq": published}])})
+    return await reads._graph_fresh(session, uuid.UUID(ws))
+
+
+async def test_a_later_event_cannot_hide_a_dead_lettered_one(stack) -> None:
+    ws, lost, fine = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    dlq = _Dlq()
+    bad = _event(ws, lost, 50)
+    bad["payload"]["memory"]["id"] = "not-a-uuid"
+    assert await _process(bad, dlq) == "dead_lettered"
+    assert await _process(_event(ws, fine, 60), dlq) == "applied"
+
+    state = await _state(ws)
+    # The watermark is past the lost event, which is exactly how it used to look fresh...
+    assert state["applied"] == 60 and state["gap"] == 50
+    # ...and now it is not trusted: the API must answer from PostgreSQL.
+    assert await _fresh(ws, published=60) is False
+
+
+async def test_a_completed_backfill_repairs_the_gap_and_freshness_returns(stack) -> None:
+    ws, lost, other = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    dlq = _Dlq()
+    bad = _event(ws, lost, 50)
+    bad["payload"]["memory"]["id"] = "not-a-uuid"
+    await _process(bad, dlq)
+    await _process(_event(ws, other, 60), dlq)
+    assert (await _state(ws))["gap"] == 50
+
+    await _process(_marker(ws, 70, "workspace.backfill_started"), dlq)
+    await _process(_event(ws, lost, 71), dlq)  # the backfill re-emits the lost memory, now valid
+    await _process(
+        _marker(ws, 72, "workspace.backfill_complete", {"started_seq": 70, "emitted": 2}), dlq
+    )
+
+    state = await _state(ws)
+    assert state["gap"] is None and state["applied"] == 72
+    assert (await _memory(ws, lost)).get("seq") == 71
+    assert await _fresh(ws, published=72) is True
+
+
+async def test_an_incomplete_or_failed_backfill_leaves_the_workspace_on_postgres(stack) -> None:
+    ws, other = str(uuid.uuid4()), str(uuid.uuid4())
+    dlq = _Dlq()
+    bad = _event(ws, str(uuid.uuid4()), 50)
+    bad["payload"]["memory"]["id"] = "not-a-uuid"
+    await _process(bad, dlq)
+    await _process(_marker(ws, 70, "workspace.backfill_started"), dlq)
+    # No completion marker (the backfill died): still gapped.
+    await _process(_event(ws, other, 71), dlq)
+    assert (await _state(ws))["gap"] == 50 and await _fresh(ws, published=71) is False
+
+    # A backfill event that itself dead-letters records a NEWER gap than the run's start, so the
+    # completion marker must not clear it.
+    worse = _event(ws, str(uuid.uuid4()), 72)
+    worse["payload"]["memory"]["id"] = "not-a-uuid"
+    await _process(worse, dlq)
+    await _process(_marker(ws, 73, "workspace.backfill_complete", {"started_seq": 70}), dlq)
+    state = await _state(ws)
+    assert state["gap"] == 72
+    assert await _fresh(ws, published=73) is False
+
+
+async def test_a_gap_in_one_workspace_does_not_affect_another(stack) -> None:
+    ws_a, ws_b = str(uuid.uuid4()), str(uuid.uuid4())
+    dlq = _Dlq()
+    bad = _event(ws_a, str(uuid.uuid4()), 5)
+    bad["payload"]["memory"]["id"] = "not-a-uuid"
+    await _process(bad, dlq)
+    await _process(_event(ws_b, str(uuid.uuid4()), 6), dlq)
+    assert (await _state(ws_a))["gap"] == 5
+    assert (await _state(ws_b)).get("gap") is None
+    assert await _fresh(ws_b, published=6) is True
+
+
+async def test_neo4j_enforces_the_query_timeout_instead_of_stalling(
+    stack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    import neo4j.exceptions
+
+    from sourcemind.core.graph import GraphQueryError
+
+    # `$workspace_id` is in the text only to pass the tenancy guard; the work is the loop.
+    slow = (
+        "UNWIND range(1, 2000000000) AS x WITH x WHERE x < 0 AND $workspace_id IS NOT NULL "
+        "RETURN count(x) AS n"
+    )
+    monkeypatch.setenv("NEO4J_QUERY_TIMEOUT_SECONDS", "0.3")
+    # Push the client-side deadline far out so only Neo4j's own transaction timeout can end this
+    # query. Otherwise the outer deadline would pass the test even with the original bug.
+    monkeypatch.setattr(graph, "_TIMEOUT_GRACE_SECONDS", 60)
+    get_settings.cache_clear()
+    try:
+        started = time.monotonic()
+        with pytest.raises(neo4j.exceptions.Neo4jError) as raised:
+            await run_read(slow, str(uuid.uuid4()))
+        elapsed = time.monotonic() - started
+        assert GraphQueryError not in type(raised.value).__mro__  # the server stopped it
+    finally:
+        monkeypatch.delenv("NEO4J_QUERY_TIMEOUT_SECONDS")
+        get_settings.cache_clear()
+    assert elapsed < 5, f"the query ran for {elapsed:.1f}s: the timeout is not being applied"
+
+
+async def test_an_event_with_a_non_uuid_workspace_is_dead_lettered_not_fatal(stack) -> None:
+    """The projector must survive a message whose workspace cannot be attributed (Codex, #45)."""
+    dlq = _Dlq()
+    odd = _event("not-a-uuid", str(uuid.uuid4()), 5)
+    assert await _process(odd, dlq) == "dead_lettered"
+    assert len(dlq.sent) == 1
+    # And the next good event is still applied.
+    ws, mem = str(uuid.uuid4()), str(uuid.uuid4())
+    assert await _process(_event(ws, mem, 6), dlq) == "applied"

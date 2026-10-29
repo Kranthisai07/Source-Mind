@@ -72,7 +72,10 @@ def _key(workspace_id: uuid.UUID | str, item_id: uuid.UUID | str) -> str:
 
 # ── Cypher (constant text) ───────────────────────────────────────────────────
 
-WORKSPACE_WATERMARK = "MATCH (w:Workspace {key: $workspace_id}) RETURN w.applied_seq AS seq"
+WORKSPACE_WATERMARK = (
+    "MATCH (w:Workspace {key: $workspace_id}) "
+    "RETURN w.applied_seq AS seq, w.gap_seq AS gap_seq"
+)
 
 MEMORY_NODE_CYPHER = (
     "MATCH (m:Memory {key: $key, workspace_id: $workspace_id}) "
@@ -197,6 +200,10 @@ async def _graph_fresh(session: AsyncSession, workspace_id: uuid.UUID) -> bool:
         return False  # nothing has been published for this workspace, so nothing is projected
     rows = await run_read(WORKSPACE_WATERMARK, str(workspace_id))
     applied = rows[0]["seq"] if rows else None
+    if rows and rows[0].get("gap_seq") is not None:
+        # An event was dead-lettered and no backfill has repaired it since: the watermark can be
+        # past it, so "caught up" proves nothing. PostgreSQL answers until the backfill completes.
+        return False
     return applied is not None and int(applied) >= int(cursor["published_seq"])
 
 

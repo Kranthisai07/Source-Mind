@@ -10,6 +10,10 @@ whatever is there. Nothing is ever edited in Neo4j by hand.
 It reads PostgreSQL through the normal row-level security, as an active member of the
 workspace (``--as-user``, or discovered if the policy lets it), so it needs no bypass role.
 Soft-deleted memories are included so their nodes are flagged deleted.
+
+The run is bracketed by two marker events (started, complete). Completing a backfill is what
+tells the projector that every event it had to dead-letter before the run began has been
+superseded, so the graph may be trusted again (D-062).
 """
 
 from __future__ import annotations
@@ -31,7 +35,8 @@ from sourcemind.core.database import (
     set_rls_user_context,
     set_rls_workspace_context,
 )
-from sourcemind.services.graph.outbox import emit_memory_states
+from sourcemind.events.envelope import EVENT_BACKFILL_COMPLETE, EVENT_BACKFILL_STARTED
+from sourcemind.services.graph.outbox import emit_memory_states, emit_workspace_marker
 
 log = structlog.get_logger(__name__)
 
@@ -100,7 +105,21 @@ async def run(workspace_id: uuid.UUID, as_user: uuid.UUID | None) -> int:
                 )
                 return 2
             await set_rls_user_context(session, user)
+            # Bracket the re-emit. The projector clears a workspace's dead-letter gap only on the
+            # completion marker, and only gaps older than `started_seq`; if this run dies midway
+            # there is no completion marker and the workspace stays on PostgreSQL.
+            started_seq = await emit_workspace_marker(
+                session, workspace_id, EVENT_BACKFILL_STARTED, {}
+            )
+            await session.commit()
             total = await backfill_workspace(session, workspace_id)
+            await emit_workspace_marker(
+                session,
+                workspace_id,
+                EVENT_BACKFILL_COMPLETE,
+                {"started_seq": started_seq, "emitted": total},
+            )
+            await session.commit()
         print(f"Emitted {total} memory states for workspace {workspace_id}.")
         return 0
     finally:

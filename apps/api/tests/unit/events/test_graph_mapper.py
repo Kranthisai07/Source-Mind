@@ -215,3 +215,66 @@ async def test_a_deleted_memory_is_flagged_not_removed() -> None:
     claim = run.calls[0][1]
     assert claim["deleted"] is True and claim["deleted_reason"] == "user_deleted"
     assert not any("DETACH DELETE" in q or "DELETE m" in q for q in run.queries())
+
+
+# ── dead-letter gaps and backfill markers (D-062) ───────────────────────────────
+
+
+def _marker(type_, payload=None, *, seq=100) -> GraphEvent:
+    return GraphEvent(
+        event_id=str(uuid4()),
+        seq=seq,
+        occurred_at="2026-10-29T00:00:00+00:00",
+        workspace_id=WS,
+        type=type_,
+        aggregate_id=WS,
+        payload=payload or {},
+    )
+
+
+@pytest.mark.unit
+async def test_marking_a_gap_keeps_the_highest_lost_seq_and_is_workspace_scoped() -> None:
+    run = Recorder()
+    await gm.mark_gap(run, WS, 50)
+    (query, params), = run.calls
+    assert query is gm.MARK_GAP and params == {"workspace_id": WS, "seq": 50}
+    assert "$workspace_id" in gm.MARK_GAP and "gap_seq" in gm.MARK_GAP
+    with pytest.raises(gm.InvalidEventError):
+        await gm.mark_gap(run, "not-a-uuid", 1)
+
+
+@pytest.mark.unit
+async def test_the_started_marker_only_advances_the_watermark() -> None:
+    run = Recorder()
+    assert await gm.apply_event(run, _marker("workspace.backfill_started", seq=90)) is True
+    assert [q for q, _ in run.calls] == [gm.ADVANCE_WATERMARK]
+    assert run.calls[0][1]["seq"] == 90
+
+
+@pytest.mark.unit
+async def test_the_complete_marker_clears_only_older_gaps_then_advances_the_watermark() -> None:
+    run = Recorder()
+    event = _marker("workspace.backfill_complete", {"started_seq": 80, "emitted": 3}, seq=95)
+    assert await gm.apply_event(run, event) is True
+    assert [q for q, _ in run.calls] == [gm.CLEAR_GAP, gm.ADVANCE_WATERMARK]
+    assert run.calls[0][1] == {"workspace_id": WS, "seq": 95, "started_seq": 80}
+    # The clause that makes the repair provable: a newer gap (a backfill event that itself
+    # dead-lettered) is left alone.
+    assert "w.gap_seq < $started_seq" in gm.CLEAR_GAP
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "payload", [{}, {"started_seq": 0}, {"started_seq": "80"}, {"started_seq": True}]
+)
+async def test_a_complete_marker_without_a_usable_started_seq_is_invalid(payload) -> None:
+    run = Recorder()
+    with pytest.raises(gm.InvalidEventError):
+        await gm.apply_event(run, _marker("workspace.backfill_complete", payload))
+    assert run.calls == []
+
+
+@pytest.mark.unit
+def test_every_statement_including_the_gap_ones_is_scoped_to_a_workspace() -> None:
+    assert gm.MARK_GAP in gm.ALL_STATEMENTS and gm.CLEAR_GAP in gm.ALL_STATEMENTS
+    assert all("$workspace_id" in statement for statement in gm.ALL_STATEMENTS)

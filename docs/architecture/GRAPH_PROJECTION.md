@@ -121,3 +121,7 @@ broker is **not** decided or provisioned; the flags stay off.
 * `graph_outbox.seq` is assigned at insert, not commit. The relay will leave rows younger than a settle window for the
   next poll; this is a documented shortcut, to be upgraded if reconciliation finds drift.
 * Neo4j Community is GPLv3 and Redpanda is BSL; they run as separate processes in development and CI only.
+
+## Dead letters and repair (D-062)
+
+A dead-lettered event marks its workspace as gapped (`Workspace.gap_seq` in Neo4j) and reads for that workspace are answered from PostgreSQL until it is repaired. Repair is always the backfill: `python -m sourcemind.events.backfill --workspace-id <uuid>`. It writes `workspace.backfill_started` and `workspace.backfill_complete` events around the re-emit; the projector clears the gap only on the completion marker, and only for losses older than the run. A backfill that dies midway leaves the gap in place. While Neo4j is unreachable the projector retries instead of dead-lettering, so an outage by itself never creates a gap. The backfill takes an exclusive per-workspace advisory lock per batch, so a snapshot can never be inserted with a higher `seq` than a newer concurrent write.

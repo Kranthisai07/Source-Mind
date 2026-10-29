@@ -1,11 +1,15 @@
 """The Neo4j query layer must refuse anything that is not scoped to one workspace."""
 
+import asyncio
+import time
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from neo4j import Query
 
 from sourcemind.core import graph
+from sourcemind.core.config import get_settings
 from sourcemind.core.graph import SCHEMA_STATEMENTS, GraphQueryError, run_read, run_write
 
 WORKSPACE = str(uuid4())
@@ -66,9 +70,32 @@ async def test_scoped_read_binds_workspace_and_applies_the_timeout() -> None:
     with patch.object(graph, "get_graph_session", return_value=session):
         rows = await run_read(SCOPED_READ, WORKSPACE)
     assert rows == [{"id": "m1"}]
-    _, params, kwargs = session.calls[0]
+    query, params, kwargs = session.calls[0]
     assert params["workspace_id"] == WORKSPACE
-    assert kwargs["timeout"] > 0
+    # The limit must be on a Query object. A `timeout=` keyword would be sent to Neo4j as a
+    # Cypher parameter and enforce nothing (the original behaviour, which this test used to pin).
+    assert isinstance(query, Query)
+    assert query.text == SCOPED_READ
+    assert query.timeout == get_settings().neo4j_query_timeout_seconds
+    assert "timeout" not in kwargs and "timeout" not in params
+
+
+@pytest.mark.unit
+async def test_a_hung_query_is_cut_off_by_the_outer_deadline() -> None:
+    class _Hung(_Session):
+        async def run(self, query, params=None, **kwargs):
+            await asyncio.sleep(30)
+
+    settings = get_settings().model_copy(update={"neo4j_query_timeout_seconds": 0.05})
+    with (
+        patch.object(graph, "get_settings", return_value=settings),
+        patch.object(graph, "_TIMEOUT_GRACE_SECONDS", 0.05),
+        patch.object(graph, "get_graph_session", return_value=_Hung()),
+    ):
+        started = time.monotonic()
+        with pytest.raises(GraphQueryError, match="exceeded"):
+            await run_read(SCOPED_READ, WORKSPACE)
+    assert time.monotonic() - started < 2
 
 
 @pytest.mark.unit

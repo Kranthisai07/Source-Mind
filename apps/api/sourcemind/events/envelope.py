@@ -23,6 +23,10 @@ from uuid import UUID
 
 SCHEMA_VERSION = 1
 EVENT_MEMORY_STATE = "memory.state"
+# Workspace-level control events written by the backfill. They carry no memory state; the
+# projector uses them to clear a workspace's dead-letter gap once a full re-emit has been applied.
+EVENT_BACKFILL_STARTED = "workspace.backfill_started"
+EVENT_BACKFILL_COMPLETE = "workspace.backfill_complete"
 
 _REQUIRED = ("schema_version", "event_id", "seq", "occurred_at", "workspace_id", "type", "payload")
 

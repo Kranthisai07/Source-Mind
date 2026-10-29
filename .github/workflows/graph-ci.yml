@@ -133,6 +133,7 @@ jobs:
               tests/integration/test_graph_pipeline_end_to_end.py \
               tests/integration/test_graph_reads_real_db.py \
               tests/integration/test_graph_reads_parity.py \
+              tests/integration/test_graph_emit_ordering_real_db.py \
               | tee graph-results.txt
           summary=$(tail -n 1 graph-results.txt)
           echo "summary: $summary"
@@ -140,7 +141,7 @@ jobs:
             *skipped*|*failed*|*error*) echo "::error::a graph test was skipped or failed"; exit 1 ;;
           esac
           passed=$(printf '%s' "$summary" | grep -Eo '[0-9]+ passed' | cut -d' ' -f1)
-          test "${passed:-0}" -ge 188 || { echo "::error::the graph test selection shrank"; exit 1; }
+          test "${passed:-0}" -ge 218 || { echo "::error::the graph test selection shrank"; exit 1; }
 
       - name: Service logs on failure
         if: failure()

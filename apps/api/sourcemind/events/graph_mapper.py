@@ -22,7 +22,12 @@ from typing import Any
 
 import structlog
 
-from sourcemind.events.envelope import EVENT_MEMORY_STATE, GraphEvent
+from sourcemind.events.envelope import (
+    EVENT_BACKFILL_COMPLETE,
+    EVENT_BACKFILL_STARTED,
+    EVENT_MEMORY_STATE,
+    GraphEvent,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -110,6 +115,20 @@ MERGE (w:Workspace {key: $workspace_id})
 SET w.applied_seq = CASE WHEN coalesce(w.applied_seq, 0) < $seq THEN $seq ELSE w.applied_seq END
 """
 
+# A workspace whose event was dead-lettered is missing state the watermark would otherwise hide
+# (a later event lifts applied_seq past it). The gap is sticky: reads must not trust the graph
+# until a backfill that started after the lost event has been fully applied (CLEAR_GAP).
+MARK_GAP = """
+MERGE (w:Workspace {key: $workspace_id})
+SET w.gap_seq = CASE WHEN coalesce(w.gap_seq, 0) < $seq THEN $seq ELSE w.gap_seq END
+"""
+
+CLEAR_GAP = """
+MATCH (w:Workspace {key: $workspace_id})
+WHERE w.gap_seq IS NOT NULL AND w.gap_seq < $started_seq
+REMOVE w.gap_seq
+"""
+
 ALL_STATEMENTS = (
     CLAIM_MEMORY,
     DELETE_PARENT,
@@ -120,6 +139,8 @@ ALL_STATEMENTS = (
     MERGE_RELATIONS_OUT,
     MERGE_RELATIONS_IN,
     ADVANCE_WATERMARK,
+    MARK_GAP,
+    CLEAR_GAP,
 )
 
 
@@ -134,11 +155,33 @@ def _key(workspace_id: str, item_id: str) -> str:
     return f"{workspace_id}:{item_id}"
 
 
+async def mark_gap(run: Run, workspace_id: str, seq: int) -> None:
+    """Record that event ``seq`` of this workspace was lost; reads then stop trusting the graph."""
+    await run(MARK_GAP, {"workspace_id": _uuid(workspace_id, "workspace_id"), "seq": int(seq)})
+
+
+async def _apply_backfill_marker(run: Run, event: GraphEvent) -> bool:
+    workspace_id = _uuid(event.workspace_id, "workspace_id")
+    base = {"workspace_id": workspace_id, "seq": event.seq}
+    if event.type == EVENT_BACKFILL_COMPLETE:
+        started = event.payload.get("started_seq")
+        if not isinstance(started, int) or isinstance(started, bool) or started < 1:
+            raise InvalidEventError("payload.started_seq must be a positive integer")
+        # Only gaps older than the backfill's own start are repaired by it. A backfill event that
+        # was itself dead-lettered recorded a newer gap, which this leaves in place.
+        await run(CLEAR_GAP, {**base, "started_seq": started})
+    # The marker is an ordinary published event, so the watermark must account for it too.
+    await run(ADVANCE_WATERMARK, base)
+    return True
+
+
 async def apply_event(run: Run, event: GraphEvent) -> bool:
     """Apply one event through ``run``. Returns False when it was stale or not for this code.
 
     Must be called inside a single Neo4j transaction: either every statement applies or none.
     """
+    if event.type in (EVENT_BACKFILL_STARTED, EVENT_BACKFILL_COMPLETE):
+        return await _apply_backfill_marker(run, event)
     if event.type != EVENT_MEMORY_STATE:
         log.warning("graph.event_type_ignored", type=event.type)
         return False
