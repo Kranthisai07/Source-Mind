@@ -9,7 +9,11 @@ from uuid import uuid4
 
 import pytest
 
-from sourcemind.services.graph.outbox import emit_memory_states, load_memory_states
+from sourcemind.services.graph.outbox import (
+    emit_memory_states,
+    emit_workspace_marker,
+    load_memory_states,
+)
 from tests.unit.events.fakes import RoutedSession, Rows
 
 WS = str(uuid4())
@@ -256,3 +260,15 @@ async def test_flag_off_takes_no_lock_and_unseen_memories_lock_nothing() -> None
     with _flag(True):
         assert await emit_memory_states(session, [M1], reason="edit") == 0
     assert _locks(session) == []
+
+
+@pytest.mark.unit
+async def test_a_workspace_marker_is_inserted_and_its_seq_comes_from_currval() -> None:
+    session = RoutedSession({"currval": Rows(scalar=42)})
+    seq = await emit_workspace_marker(session, WS, "workspace.backfill_started", {"x": 1})
+    assert seq == 42
+    (insert,) = session.inserts()
+    assert insert["ws"] == WS and insert["type"] == "workspace.backfill_started"
+    assert json.loads(insert["payload"]) == {"x": 1}
+    # It never reads the outbox (the runtime role may not): only the sequence it just used.
+    assert not any("FROM graph_outbox" in sql for sql, _ in session.statements)

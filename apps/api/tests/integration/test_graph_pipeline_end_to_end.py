@@ -134,3 +134,105 @@ async def test_a_committed_change_reaches_the_graph_through_the_whole_pipeline(
             await conn.execute(text("SELECT count(*) FROM graph_outbox WHERE published_at IS NULL"))
         ).scalar()
     assert pending == 0
+
+
+async def test_a_dead_lettered_event_gaps_the_workspace_until_a_backfill_completes(
+    stack,  # noqa: F811
+    supabase_engine: AsyncEngine,
+    owner_engine: AsyncEngine,  # noqa: F811
+    relay_engine: AsyncEngine,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D-062 end to end: poison event -> gap -> reads distrust the graph -> backfill -> trusted."""
+    from sourcemind.core.config import get_settings
+    from sourcemind.events import backfill
+    from sourcemind.services.graph import reads
+
+    monkeypatch.setenv("GRAPH_RELAY_DATABASE_URL", os.environ["TEST_GRAPH_RELAY_DATABASE_URL"])
+    monkeypatch.setenv("GRAPH_RELAY_SETTLE_SECONDS", "0")
+    monkeypatch.setenv("GRAPH_RELAY_POLL_SECONDS", "0.2")
+    get_settings.cache_clear()
+
+    data = await _seed_security_tenants(supabase_engine)
+    ws = str(data.target_workspace_id)
+    session = await _as_owner(supabase_engine, data)
+    try:
+        memory = await _new_version(session, data, label="gap")
+        with _flag(True):
+            await emit_memory_states(session, [memory.id], reason="edit")
+        await session.commit()
+    finally:
+        await session.close()
+    # A poison event, inserted as the table owner (the runtime role could not write a bad one
+    # through the code, which is the point of the test: it is the pipeline that must cope).
+    async with owner_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO graph_outbox (workspace_id, event_type, aggregate_id, payload) "
+                "VALUES (CAST(:ws AS uuid), 'memory.state', gen_random_uuid(), "
+                "CAST('{\"memory\": {\"id\": \"not-a-uuid\"}}' AS jsonb))"
+            ),
+            {"ws": ws},
+        )
+    # ...followed by a GOOD event for the same workspace, which lifts the watermark past it.
+    session = await _as_owner(supabase_engine, data)
+    try:
+        with _flag(True):
+            await emit_memory_states(session, [data.target_memory_id], reason="edit")
+        await session.commit()
+    finally:
+        await session.close()
+
+    state_cypher = "MATCH (w:Workspace {key: $workspace_id}) RETURN w.applied_seq AS applied, "
+    state_cypher += "w.gap_seq AS gap"
+
+    async def fresh() -> bool:
+        async with supabase_engine.connect() as conn:
+            return await reads._graph_fresh(conn, data.target_workspace_id)  # type: ignore[arg-type]
+
+    async def gapped_and_caught_up() -> bool:
+        try:  # the projector initialises the shared driver a moment after it starts
+            rows = await run_read(state_cypher, ws)
+        except Exception:  # noqa: BLE001
+            return False
+        if not rows or rows[0]["gap"] is None:
+            return False
+        async with supabase_engine.connect() as conn:
+            published = (
+                await conn.execute(
+                    text(
+                        "SELECT published_seq FROM graph_publication_cursor "
+                        "WHERE workspace_id = CAST(:ws AS uuid)"
+                    ),
+                    {"ws": ws},
+                )
+            ).scalar()
+        return published is not None and rows[0]["applied"] >= published
+
+    async def repaired() -> bool:
+        rows = await run_read(state_cypher, ws)
+        return bool(rows) and rows[0]["gap"] is None and await fresh()
+
+    stop = asyncio.Event()
+    await graph.close_graph()
+    relay_task = asyncio.create_task(relay.run(stop))
+    projector_task = asyncio.create_task(projector.run(stop))
+    try:
+        await _wait_for(
+            gapped_and_caught_up, timeout=90, what="the poison event to gap the workspace"
+        )
+        # Caught up, yet not trusted: this is exactly the case the watermark used to get wrong.
+        assert await fresh() is False
+
+        # The backfill CLI builds its own pool from settings; point it at the disposable database.
+        monkeypatch.setenv("DATABASE_URL", os.environ["TEST_DATABASE_URL"])
+        get_settings.cache_clear()
+        assert await backfill.run(data.target_workspace_id, data.owner_id) == 0
+        await _wait_for(repaired, timeout=90, what="the completed backfill to clear the gap")
+    finally:
+        stop.set()
+        assert await asyncio.wait_for(relay_task, timeout=30) == 0
+        assert await asyncio.wait_for(projector_task, timeout=30) == 0
+        await graph.init_graph()  # the projector closed the shared driver on the way out
+
+    assert await fresh() is True

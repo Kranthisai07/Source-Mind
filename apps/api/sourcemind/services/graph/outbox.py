@@ -207,6 +207,26 @@ async def load_memory_states(
     return states
 
 
+async def emit_workspace_marker(
+    session: AsyncSession, workspace_id: uuid.UUID | str, event_type: str, payload: dict[str, Any]
+) -> int:
+    """Insert a workspace-level control event and return its ``seq``.
+
+    Used by the backfill to bracket a full re-emit. The runtime role may INSERT into the outbox
+    but not read it, so the ``seq`` comes from ``currval`` of the sequence it was just allocated
+    from (the role has USAGE on it), which is this session's own last insert.
+    """
+    await session.execute(
+        text(
+            "INSERT INTO graph_outbox (workspace_id, event_type, aggregate_id, payload) "
+            "VALUES (CAST(:ws AS uuid), :type, CAST(:ws AS uuid), CAST(:payload AS jsonb))"
+        ),
+        {"ws": str(workspace_id), "type": event_type, "payload": dumps(payload).decode()},
+    )
+    seq = (await session.execute(text("SELECT currval('graph_outbox_seq_seq')"))).scalar()
+    return int(seq)
+
+
 async def emit_memory_states(
     session: AsyncSession,
     memory_ids: Iterable[uuid.UUID | str],

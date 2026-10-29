@@ -1,3 +1,4 @@
+# ruff: noqa: F811  (pytest fixtures are used by parameter name)
 """A backfill must never overwrite a newer write (Codex review of #44, D-062).
 
 An outbox event's ``seq`` is assigned at INSERT and the projector keeps the higher one. Without
@@ -17,11 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from sourcemind.events.backfill import backfill_workspace
 from sourcemind.models.attribution import Attribution
-from tests.integration.test_graph_outbox_real_db import (  # noqa: F401  (fixture re-export)
+from tests.integration.test_graph_outbox_real_db import (
     _as_owner,
     _flag,
     _rows,
-    owner_engine,
+    owner_engine,  # noqa: F401  (pytest fixture, used by name)
 )
 from tests.integration.test_security_foundation_real_db import _seed_security_tenants
 
@@ -47,7 +48,7 @@ def _weights(event: dict) -> list[float]:
     return [round(c["weight"], 4) for c in event["payload"]["contributors"]]
 
 
-async def test_a_backfill_batch_waits_for_an_in_flight_writer_and_snapshots_its_state(
+async def test_a_backfill_batch_waits_for_an_in_flight_writer_and_snapshots_its_state(  # noqa: F811
     supabase_engine: AsyncEngine, owner_engine: AsyncEngine
 ) -> None:
     data = await _seed_security_tenants(supabase_engine)
@@ -77,7 +78,7 @@ async def test_a_backfill_batch_waits_for_an_in_flight_writer_and_snapshots_its_
     assert HANDOFF_WEIGHT in _weights(by_reason["handoff_assign"])
 
 
-async def test_a_writer_arriving_mid_backfill_waits_and_gets_the_higher_seq(
+async def test_a_writer_arriving_mid_backfill_waits_and_gets_the_higher_seq(  # noqa: F811
     supabase_engine: AsyncEngine, owner_engine: AsyncEngine
 ) -> None:
     data = await _seed_security_tenants(supabase_engine)
