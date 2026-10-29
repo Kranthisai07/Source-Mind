@@ -96,6 +96,8 @@ def test_neo4j_auth_without_a_slash_fails_at_boot_not_at_use() -> None:
         {"GRAPH_RELAY_POLL_SECONDS": "0"},
         {"GRAPH_RELAY_SETTLE_SECONDS": "-1"},
         {"GRAPH_PROJECTOR_MAX_ATTEMPTS": "0"},
+        {"KAFKA_GRAPH_PARTITIONS": "0"},
+        {"KAFKA_GRAPH_PARTITIONS": "65"},
     ],
 )
 def test_pipeline_limits_must_be_in_range(env: dict[str, str]) -> None:

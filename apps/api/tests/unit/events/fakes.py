@@ -47,6 +47,10 @@ class RoutedSession:
     async def commit(self) -> None:
         self.commits += 1
 
+    def begin_nested(self) -> _Savepoint:
+        self.savepoints = getattr(self, "savepoints", 0) + 1
+        return _Savepoint(self)
+
     async def rollback(self) -> None:
         return None
 
@@ -54,3 +58,18 @@ class RoutedSession:
         return [
             params for sql, params in self.statements if sql.startswith("INSERT INTO graph_outbox")
         ]
+
+
+class _Savepoint:
+    """``async with session.begin_nested():`` that records whether it was rolled back."""
+
+    def __init__(self, session: RoutedSession) -> None:
+        self._session = session
+
+    async def __aenter__(self) -> _Savepoint:
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        if exc_type is not None:
+            self._session.rolled_back = getattr(self._session, "rolled_back", 0) + 1
+        return False  # never swallow: the caller decides

@@ -65,6 +65,9 @@ async def stack(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[dict[str, str]
         "KAFKA_GRAPH_DLQ_TOPIC": names["dlq"],
         "KAFKA_CONSUMER_GROUP": names["group"],
         "GRAPH_PROJECTOR_MAX_ATTEMPTS": "2",
+        # A 512 MB Redpanda allows ~128 partitions in total and refuses to create more, so these
+        # topics are single-partition and are deleted afterwards (see _delete_topics).
+        "KAFKA_GRAPH_PARTITIONS": "1",
     }.items():
         monkeypatch.setenv(key, value)
     get_settings.cache_clear()
@@ -76,7 +79,22 @@ async def stack(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[dict[str, str]
         yield names
     finally:
         await graph.close_graph()
+        await _delete_topics(KAFKA, [names["topic"], names["dlq"]])
         get_settings.cache_clear()
+
+
+async def _delete_topics(bootstrap: str, topics: list[str]) -> None:
+    """Best effort: leaving topics behind eventually exhausts the broker's partition budget."""
+    from aiokafka.admin import AIOKafkaAdminClient
+
+    admin = AIOKafkaAdminClient(bootstrap_servers=bootstrap)
+    try:
+        await admin.start()
+        await admin.delete_topics(topics)
+    except Exception:  # noqa: BLE001  (cleanup must never fail a test)
+        pass
+    finally:
+        await admin.close()
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

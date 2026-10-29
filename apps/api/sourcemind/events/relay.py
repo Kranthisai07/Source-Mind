@@ -86,10 +86,26 @@ async def fetch_batch(
 
 
 async def mark_published(conn: AsyncConnection, seqs: Sequence[int]) -> None:
+    """Mark rows published and advance each workspace's cursor, in one transaction.
+
+    The cursor (``graph_publication_cursor``) is what lets the API tell a fresh graph from a
+    lagging one: the projector's applied seq must reach it. ``GREATEST`` keeps it monotonic.
+    """
     await conn.execute(
         text(
             "UPDATE graph_outbox SET published_at = now() "
             "WHERE seq = ANY(CAST(:seqs AS bigint[])) AND published_at IS NULL"
+        ),
+        {"seqs": list(seqs)},
+    )
+    await conn.execute(
+        text(
+            "INSERT INTO graph_publication_cursor (workspace_id, published_seq) "
+            "SELECT workspace_id, max(seq) FROM graph_outbox "
+            "WHERE seq = ANY(CAST(:seqs AS bigint[])) GROUP BY workspace_id "
+            "ON CONFLICT (workspace_id) DO UPDATE SET "
+            "published_seq = GREATEST(graph_publication_cursor.published_seq, "
+            "EXCLUDED.published_seq), updated_at = now()"
         ),
         {"seqs": list(seqs)},
     )

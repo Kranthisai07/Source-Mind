@@ -136,6 +136,9 @@ async def run(stop: asyncio.Event | None = None) -> int:
             group_id=settings.kafka_consumer_group,
             enable_auto_commit=False,
             auto_offset_reset="earliest",
+            # The default (5 minutes) is how long a consumer would wait to notice a topic that
+            # was created after it subscribed.
+            metadata_max_age_ms=30_000,
         )
         await consumer.start()
         try:

@@ -12,6 +12,8 @@ the relay must know a publish did not happen so it leaves the row unpublished.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 
 import structlog
@@ -77,10 +79,36 @@ class GraphEventProducer:
         await self.send(envelope, key=str(envelope["workspace_id"]))
 
 
+TOPIC_READY_TIMEOUT_SECONDS = 30.0
+
+
+class TopicsNotReadyError(RuntimeError):
+    """The broker did not make the graph topics usable in time."""
+
+
+def _topic_ready(description: dict[str, Any] | None) -> bool:
+    """Created AND usable: a topic can be listed before it has partitions or leaders.
+
+    A broker that is out of partition budget (a 512 MB development Redpanda allows about 128)
+    accepts the create request and then never allocates the partitions; the topic stays in an
+    error state, and nothing publishing to it can make progress.
+    """
+    if not description or description.get("error_code") or not description.get("partitions"):
+        return False
+    return all(
+        not p.get("error_code") and p.get("leader", -1) >= 0 for p in description["partitions"]
+    )
+
+
 async def ensure_topics(
     bootstrap_servers: str | None = None, topics: list[str] | None = None
 ) -> None:
-    """Create the graph topics if they do not exist. Idempotent."""
+    """Create the graph topics if they do not exist and wait until they are usable.
+
+    Idempotent. Raises ``TopicsNotReadyError`` if they are not usable within the timeout, so a
+    broker that cannot host them fails the relay or projector loudly at start instead of leaving
+    them waiting on a topic that will never appear.
+    """
     settings = get_settings()
     wanted = topics or [settings.kafka_graph_topic, settings.kafka_graph_dlq_topic]
     admin = AIOKafkaAdminClient(
@@ -91,10 +119,28 @@ async def ensure_topics(
         for name in wanted:
             try:
                 await admin.create_topics(
-                    [NewTopic(name=name, num_partitions=3, replication_factor=1)]
+                    [
+                        NewTopic(
+                            name=name,
+                            num_partitions=settings.kafka_graph_partitions,
+                            replication_factor=1,
+                        )
+                    ]
                 )
                 logger.info("graph.topic_created", topic=name)
             except TopicAlreadyExistsError:
                 continue
+        deadline = time.monotonic() + TOPIC_READY_TIMEOUT_SECONDS
+        while True:
+            described = {d["topic"]: d for d in await admin.describe_topics(wanted)}
+            pending = [name for name in wanted if not _topic_ready(described.get(name))]
+            if not pending:
+                return
+            if time.monotonic() >= deadline:
+                raise TopicsNotReadyError(
+                    f"topics not usable after {TOPIC_READY_TIMEOUT_SECONDS:.0f}s: {pending}; "
+                    "check the broker's partition and memory limits"
+                )
+            await asyncio.sleep(0.2)
     finally:
         await admin.close()

@@ -173,6 +173,9 @@ class Settings(BaseSettings):
     kafka_consumer_group: str = "sourcemind-graph-projector"
     kafka_graph_topic: str = "sourcemind.graph.events"
     kafka_graph_dlq_topic: str = "sourcemind.graph.events.dlq"
+    # Partitions per graph topic. Events are keyed by workspace, so ordering holds per workspace at
+    # any value. A development Redpanda (512 MB) allows only ~128 partitions in total.
+    kafka_graph_partitions: int = 3
 
     # ── Graph projection pipeline (outbox -> relay -> Redpanda -> projector) ──
     # The relay reads graph_outbox with its own database role (SELECT +
@@ -337,6 +340,8 @@ class Settings(BaseSettings):
             raise ValueError("NEO4J_AUTH must be in the form 'user/password'")
         if self.neo4j_query_timeout_seconds <= 0:
             raise ValueError("NEO4J_QUERY_TIMEOUT_SECONDS must be positive")
+        if not 1 <= self.kafka_graph_partitions <= 64:
+            raise ValueError("KAFKA_GRAPH_PARTITIONS must be between 1 and 64")
         if (
             self.graph_relay_batch_size < 1
             or self.graph_relay_poll_seconds <= 0

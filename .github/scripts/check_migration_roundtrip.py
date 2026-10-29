@@ -55,17 +55,17 @@ REGRESSION_PHASES = {
     "reupgrade": ("passed", "and it must survive the full round trip"),
 }
 
-# Head is 20261029_0015 (graph_outbox, D-058; 0014 was the MCP API key tables, D-048, and 0013 automatic
-# ingestion, D-032). It changes no table these phases measure; it only moves the revision every head phase
+# Head is 20261029_0016 (graph_publication_cursor, D-060; 0015 was graph_outbox, D-058, 0014 the MCP API key
+# tables, D-048, and 0013 automatic ingestion, D-032). It changes no table these phases measure; it only moves the revision every head phase
 # reaches. Its downgrade refuses while unpublished outbox events exist, and a freshly migrated database has none.
 EXPECTED_REVISIONS = {
     "prev": "20260909_0007",
-    "head": "20261029_0015",
-    "reupgrade": "20261029_0015",
+    "head": "20261029_0016",
+    "reupgrade": "20261029_0016",
     # The owner-race track, which runs after every snapshot.
-    "race_head": "20261029_0015",
+    "race_head": "20261029_0016",
     "race_prefix": "20260916_0008",
-    "race_restored": "20261029_0015",
+    "race_restored": "20261029_0016",
 }
 
 # Per-phase expectations for the concurrent owner-revocation regression.
@@ -96,7 +96,7 @@ CONNECTOR_ROLLBACK = {
     "revision_after_0008": "20260916_0008",
     "rows_after_0008": "1|1",
     "reupgrade_exit": "0",
-    "revision_after_reupgrade": "20261029_0015",
+    "revision_after_reupgrade": "20261029_0016",
     "rows_after_reupgrade": "1|1",
     "rows_after_cleanup": "0|0",
 }
