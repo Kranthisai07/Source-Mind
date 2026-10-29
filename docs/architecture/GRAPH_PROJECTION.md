@@ -14,13 +14,13 @@ the pipeline lands, the runbook. It supersedes the graph half of the deleted ADR
 | Event envelope (`events/envelope.py`) and the relay's producer (`events/producer.py`) | **Done** |
 | `graph_outbox` table, grants and migration `20261029_0015` | **Done** (unit-tested with a mocked `op`, and run for real on PostgreSQL 18: upgrade, grants, downgrade guard, re-upgrade; not run on PostgreSQL 16) |
 | Compose: graph services behind `--profile graph`, pinned images, loopback ports, no APOC | **Done** |
-| Outbox rows written from the code paths that change memories (`services/graph/outbox.py`) | **Done**, flag-gated (`FF_KAFKA_EVENTS`). Verified on real PostgreSQL for edits and handoff assignment; ingestion, conflict resolution, source retirement and delete are wired but not exercised by any real-database test yet |
-| Relay (`python -m sourcemind.events.relay`) | **Done**; ordering, settle window, advisory lock and grants verified on real PostgreSQL with a fake publisher; **not run against a broker** |
-| Projector (`python -m sourcemind.events.projector`) and the Cypher mapper | **Done** and unit-tested against a recording runner; **not run against Neo4j or a broker** |
+| Outbox rows written from the code paths that change memories (`services/graph/outbox.py`) | **Done**, flag-gated (`FF_KAFKA_EVENTS`). Verified on real PostgreSQL for edits, handoff assignment, conflict resolution (kept, merged, deferred) and source retirement; the ingestion worker and delete route are wired but not driven by a real-database test |
+| Relay (`python -m sourcemind.events.relay`) | **Done**; verified on real PostgreSQL and through a real Redpanda |
+| Projector (`python -m sourcemind.events.projector`) and the Cypher mapper | **Done**; verified against a real Neo4j 5.26.24 and Redpanda v24.3.14, including out-of-order delivery, duplicates, wholesale replacement, the dead-letter topic, and one end-to-end run from the PostgreSQL outbox to the graph |
 | Backfill (`python -m sourcemind.events.backfill`) | **Done**; verified on real PostgreSQL |
 | Freshness watermark for reads, graph-backed read endpoints, web views | Planned (later stages) |
 
-The Cypher in `events/graph_mapper.py` has never been executed against a Neo4j server, and nothing has run against Redpanda or Kafka. Do not enable the flags in production.
+Verified means: run against disposable real services on a developer machine (Docker Desktop, Windows host with PostgreSQL in WSL) and defined in `.github/workflows/graph-ci.yml`, which has not yet run on GitHub. Not verified: the Neo4j 6.x Python driver against anything but 5.26, Redpanda or Neo4j under load, a production deployment of either, and PostgreSQL 16 (the tests used 18). Do not enable the flags in production.
 
 ## Why an outbox, not publishing from the request
 
@@ -54,6 +54,19 @@ Neo4j Community has no node keys and no row-level security, so:
   single-property uniqueness constraint (`core/graph.py:SCHEMA_STATEMENTS`);
 * every query goes through `run_read` / `run_write`, which refuse a query without `$workspace_id` and bind it from the
   authenticated context, never from a request parameter. Cypher is parametrised and never built from user input.
+
+## Running the real-service tests
+
+```
+export GRAPH_TEST_NEO4J_PASSWORD=<any local value>
+docker compose -f infra/docker-compose.graph-test.yml up -d --wait     # Neo4j :57687, Redpanda :59092 (loopback)
+# plus the disposable PostgreSQL of docker-compose.security-test.yml with migrations applied,
+# MIGRATION_DATABASE_URL and TEST_GRAPH_RELAY_DATABASE_URL set, then, from apps/api:
+python -m pytest -o addopts='' tests/integration/test_graph_projection_real_services.py   tests/integration/test_graph_outbox_real_db.py tests/integration/test_graph_pipeline_end_to_end.py
+```
+
+The Neo4j tests wipe the database they connect to and refuse anything but the fixed loopback ports. CI does this with
+random per-run credentials and no repository secrets.
 
 ## Local development
 

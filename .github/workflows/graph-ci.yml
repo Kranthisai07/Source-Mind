@@ -1,0 +1,146 @@
+# Graph projection: real PostgreSQL + Neo4j + Redpanda.
+#
+# The graph pipeline (PostgreSQL graph_outbox -> relay -> Redpanda -> projector -> Neo4j, D-058/D-059)
+# is only meaningful against real services: the Cypher in events/graph_mapper.py and the broker path
+# cannot be verified with fakes. This job starts disposable copies of all three and runs, with zero
+# skips allowed, the graph unit tests and the three real-service integration modules.
+#
+# Separate from security-acceptance.yml on purpose: that gate pins an exact 271-node list under an
+# 8-minute limit and needs repository secrets. This job needs no secrets: every service is
+# disposable, bound to loopback, and gets a random password generated (and masked) inside the job.
+# Neo4j and Redpanda run as separate containers only, never linked into this code (D-053/D-054).
+
+name: Graph Projection (PostgreSQL + Neo4j + Redpanda)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apps/api/sourcemind/events/**"
+      - "apps/api/sourcemind/services/graph/**"
+      - "apps/api/sourcemind/core/graph.py"
+      - "apps/api/sourcemind/core/config.py"
+      - "apps/api/alembic/versions/*graph*"
+      - "apps/api/tests/unit/events/**"
+      - "apps/api/tests/integration/test_graph_*"
+      - "infra/docker-compose.graph-test.yml"
+      - "infra/docker-compose.security-test.yml"
+      - ".github/workflows/graph-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/api/sourcemind/events/**"
+      - "apps/api/sourcemind/services/graph/**"
+      - "apps/api/sourcemind/core/graph.py"
+      - "apps/api/alembic/versions/*graph*"
+      - "infra/docker-compose.graph-test.yml"
+      - ".github/workflows/graph-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: graph-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  graph:
+    name: Graph pipeline against real services
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.12 matches the production image and pyproject's requires-python.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/api/pyproject.toml
+
+      # Random, per-run, masked before anything can print them, and handed over only through
+      # the environment (never interpolated into shell source).
+      - name: Generate disposable credentials and service URLs
+        run: |
+          gen() { openssl rand -hex 18; }
+          bootstrap=$(gen); owner=$(gen); runtime=$(gen); relay=$(gen); neo4j=$(gen)
+          for secret in "$bootstrap" "$owner" "$runtime" "$relay" "$neo4j"; do
+            printf '::add-mask::%s\n' "$secret"
+          done
+          {
+            printf 'SECURITY_TEST_BOOTSTRAP_PASSWORD=%s\n' "$bootstrap"
+            printf 'SECURITY_TEST_OWNER_PASSWORD=%s\n' "$owner"
+            printf 'SECURITY_TEST_RUNTIME_PASSWORD=%s\n' "$runtime"
+            printf 'GRAPH_RELAY_PASSWORD=%s\n' "$relay"
+            printf 'GRAPH_TEST_NEO4J_PASSWORD=%s\n' "$neo4j"
+            printf 'MIGRATION_DATABASE_URL=postgresql+asyncpg://sourcemind_owner:%s@127.0.0.1:55432/sourcemind_security_test\n' "$owner"
+            printf 'TEST_DATABASE_URL=postgresql+asyncpg://sourcemind_test:%s@127.0.0.1:55432/sourcemind_security_test\n' "$runtime"
+            printf 'TEST_GRAPH_RELAY_DATABASE_URL=postgresql+asyncpg://sourcemind_graph_relay:%s@127.0.0.1:55432/sourcemind_security_test\n' "$relay"
+            printf 'TEST_REDIS_URL=redis://127.0.0.1:56379/15\n'
+            printf 'SECURITY_TEST_ALLOW_DISPOSABLE=1\n'
+          } >> "$GITHUB_ENV"
+
+      - name: Start PostgreSQL, Redis, Neo4j and Redpanda
+        run: |
+          docker compose -f infra/docker-compose.security-test.yml up -d --wait
+          docker compose -f infra/docker-compose.graph-test.yml up -d --wait --wait-timeout 240
+
+      # The relay must reach graph_outbox without any row-level-security bypass, so it is an
+      # ordinary non-superuser role. Migration 20261029_0015 then grants it SELECT and
+      # UPDATE(published_at) only.
+      - name: Create the relay role
+        run: |
+          docker compose -f infra/docker-compose.security-test.yml exec -T \
+            -e RELAY_PASSWORD="$GRAPH_RELAY_PASSWORD" postgres-security-test \
+            sh -c 'psql -v ON_ERROR_STOP=1 -v relay_password="$RELAY_PASSWORD" \
+              -U sourcemind_bootstrap -d sourcemind_security_test -At <<SQL
+          CREATE ROLE sourcemind_graph_relay LOGIN PASSWORD :'"'"'relay_password'"'"'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+          GRANT CONNECT ON DATABASE sourcemind_security_test TO sourcemind_graph_relay;
+          GRANT USAGE ON SCHEMA public TO sourcemind_graph_relay;
+          SQL'
+
+      - name: Install dependencies
+        working-directory: apps/api
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Apply migrations as the migration-owner role
+        working-directory: apps/api
+        env:
+          ENVIRONMENT: development
+          DEBUG: "false"
+          AUTH_DEV_BYPASS_ENABLED: "true"
+          SOURCEMIND_RUNTIME_ROLE: sourcemind_test
+          SOURCEMIND_GRAPH_RELAY_ROLE: sourcemind_graph_relay
+        run: DATABASE_URL="$MIGRATION_DATABASE_URL" alembic upgrade head
+
+      # Zero skips: a skipped real-service test would silently turn this gate into a unit run,
+      # so the exact module list is asserted and any skip fails the job.
+      - name: Graph unit and real-service tests
+        working-directory: apps/api
+        env:
+          AUTH_DEV_BYPASS_ENABLED: "true"
+        run: |
+          python -m pytest -o addopts='' -p no:cacheprovider -q -rs             tests/unit/events             tests/integration/test_graph_outbox_real_db.py             tests/integration/test_graph_projection_real_services.py             tests/integration/test_graph_pipeline_end_to_end.py | tee graph-results.txt
+          summary=$(tail -n 1 graph-results.txt)
+          echo "summary: $summary"
+          case "$summary" in
+            *skipped*|*failed*|*error*) echo "::error::a graph test was skipped or failed"; exit 1 ;;
+          esac
+          passed=$(printf '%s' "$summary" | grep -Eo '[0-9]+ passed' | cut -d' ' -f1)
+          test "${passed:-0}" -ge 114 || { echo "::error::the graph test selection shrank"; exit 1; }
+
+      - name: Service logs on failure
+        if: failure()
+        run: |
+          docker compose -f infra/docker-compose.graph-test.yml logs --no-color --tail 80 || true
+          docker compose -f infra/docker-compose.security-test.yml logs --no-color --tail 40 || true
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose -f infra/docker-compose.graph-test.yml down -v || true
+          docker compose -f infra/docker-compose.security-test.yml down -v || true

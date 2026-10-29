@@ -29,11 +29,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 
 from sourcemind.core.database import set_rls_user_context, set_rls_workspace_context
 from sourcemind.events import relay
+from sourcemind.events.backfill import backfill_workspace
 from sourcemind.models.attribution import Attribution
 from sourcemind.models.memory import Memory
 from sourcemind.models.memory_relation import MemoryRelation
 from sourcemind.services.graph.outbox import emit_memory_states
-from sourcemind.events.backfill import backfill_workspace
 from tests.integration.test_security_foundation_real_db import _seed_security_tenants
 
 pytestmark = pytest.mark.asyncio
@@ -235,9 +235,7 @@ async def test_relay_publishes_in_seq_order_once_rows_settle(
     try:
         memory = await _new_version(session, data, label="relay")
         with _flag(True):
-            await emit_memory_states(
-                session, [memory.id, data.target_memory_id], reason="edit"
-            )
+            await emit_memory_states(session, [memory.id, data.target_memory_id], reason="edit")
         await session.commit()
     finally:
         await session.close()
@@ -258,9 +256,10 @@ async def test_relay_publishes_in_seq_order_once_rows_settle(
         assert row["published_at"] is not None and row["published_at"] <= datetime.now(UTC)
 
     async with relay_engine.connect() as conn:
-        assert await relay.publish_pending(
-            conn, _Publisher(), batch_size=10_000, settle_seconds=0
-        ) == 0  # already published rows are not sent again
+        assert (
+            await relay.publish_pending(conn, _Publisher(), batch_size=10_000, settle_seconds=0)
+            == 0
+        )  # already published rows are not sent again
 
 
 async def test_a_second_relay_cannot_take_the_advisory_lock(relay_engine: AsyncEngine) -> None:
@@ -296,3 +295,175 @@ async def test_backfill_reemits_every_memory_including_deleted_ones(
     assert event["payload"]["reason"] == "backfill"
     # Nothing from the other workspace leaks into this backfill.
     assert await _rows(owner_engine, data.other_memory_id) == []
+
+
+async def _conflict(session: AsyncSession, data) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """Two memories in the target workspace with an open conflict between them."""
+    memories = []
+    for label in ("a", "b"):
+        memory = Memory(
+            workspace_id=data.target_workspace_id,
+            content=f"conflict side {label}",
+            content_hash=hashlib.sha256(label.encode() + uuid.uuid4().bytes).hexdigest(),
+        )
+        session.add(memory)
+        memories.append(memory)
+    await session.flush()
+    conflict_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO memory_conflicts (id, workspace_id, memory_a_id, memory_b_id, "
+            "conflict_type, status, similarity_score) VALUES (CAST(:id AS uuid), "
+            "CAST(:ws AS uuid), CAST(:a AS uuid), CAST(:b AS uuid), 'contradiction', 'open', 0.9)"
+        ),
+        {
+            "id": str(conflict_id),
+            "ws": str(data.target_workspace_id),
+            "a": str(memories[0].id),
+            "b": str(memories[1].id),
+        },
+    )
+    await session.flush()
+    return conflict_id, memories[0].id, memories[1].id
+
+
+async def test_resolving_a_conflict_projects_both_sides(
+    supabase_engine: AsyncEngine, owner_engine: AsyncEngine
+) -> None:
+    from sourcemind.services.conflict.resolver import resolve_conflict
+
+    data = await _seed_security_tenants(supabase_engine)
+    session = await _as_owner(supabase_engine, data)
+    try:
+        conflict_id, a, b = await _conflict(session, data)
+        with _flag(True):
+            assert await resolve_conflict(session, conflict_id, data.owner_id, "kept_a") is True
+        await session.commit()
+    finally:
+        await session.close()
+
+    (event_a,) = await _rows(owner_engine, a)
+    (event_b,) = await _rows(owner_engine, b)
+    assert event_a["payload"]["reason"] == event_b["payload"]["reason"] == "conflict_kept_a"
+    assert event_a["payload"]["memory"]["current"] is True
+    assert event_b["payload"]["memory"]["current"] is False  # the loser's flip is projected
+
+
+async def test_a_deferred_conflict_changes_no_memory_and_emits_nothing(
+    supabase_engine: AsyncEngine, owner_engine: AsyncEngine
+) -> None:
+    from sourcemind.services.conflict.resolver import resolve_conflict
+
+    data = await _seed_security_tenants(supabase_engine)
+    session = await _as_owner(supabase_engine, data)
+    try:
+        conflict_id, a, b = await _conflict(session, data)
+        with _flag(True):
+            assert (
+                await resolve_conflict(
+                    session,
+                    conflict_id,
+                    data.owner_id,
+                    "deferred",
+                    revisit_at=datetime(2027, 1, 1, tzinfo=UTC),
+                )
+                is True
+            )
+        await session.commit()
+    finally:
+        await session.close()
+    assert await _rows(owner_engine, a) == [] and await _rows(owner_engine, b) == []
+
+
+async def test_a_merge_projects_the_new_memory_with_its_derives_edges(
+    supabase_engine: AsyncEngine, owner_engine: AsyncEngine
+) -> None:
+    from sourcemind.services.conflict.resolver import resolve_conflict
+
+    data = await _seed_security_tenants(supabase_engine)
+    session = await _as_owner(supabase_engine, data)
+    try:
+        conflict_id, a, b = await _conflict(session, data)
+        for memory_id in (a, b):  # a merge needs contributors to credit
+            session.add(
+                Attribution(
+                    memory_id=memory_id,
+                    user_id=data.owner_id,
+                    contribution_weight=1.0,
+                    trigger_action="create",
+                )
+            )
+        await session.flush()
+        with _flag(True):
+            await resolve_conflict(
+                session, conflict_id, data.owner_id, "merged", merged_content="the merged text"
+            )
+        await session.commit()
+    finally:
+        await session.close()
+
+    async with owner_engine.connect() as conn:
+        merged = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT aggregate_id::text AS id, payload FROM graph_outbox "
+                        "WHERE payload->>'reason' = 'conflict_merged' "
+                        "AND payload->'memory'->>'id' NOT IN (:a, :b) "
+                        "AND workspace_id = CAST(:ws AS uuid)"
+                    ),
+                    {"a": str(a), "b": str(b), "ws": str(data.target_workspace_id)},
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert len(merged) == 1
+    payload = merged[0]["payload"]
+    assert sorted(r["target"] for r in payload["relations_out"]) == sorted([str(a), str(b)])
+    assert all(r["type"] == "derives" for r in payload["relations_out"])
+    assert "the merged text" not in json.dumps(payload)
+
+
+async def test_retiring_source_memories_projects_them_as_deleted(
+    supabase_engine: AsyncEngine, owner_engine: AsyncEngine
+) -> None:
+    from sourcemind.models.document import Document
+    from sourcemind.services.memory.retire import retire_document_memories
+
+    data = await _seed_security_tenants(supabase_engine)
+    session = await _as_owner(supabase_engine, data)
+    try:
+        document = Document(
+            workspace_id=data.target_workspace_id,
+            submitter_id=data.owner_id,
+            source_type="text",
+            sha256_hash=hashlib.sha256(uuid.uuid4().bytes).hexdigest(),
+            ingestion_status="completed",
+        )
+        session.add(document)
+        await session.flush()
+        memory = Memory(
+            workspace_id=data.target_workspace_id,
+            document_id=document.id,
+            content="machine-only source memory",
+            content_hash=hashlib.sha256(uuid.uuid4().bytes).hexdigest(),
+        )
+        session.add(memory)
+        await session.flush()
+        with _flag(True):
+            outcome = await retire_document_memories(
+                session,
+                workspace_id=data.target_workspace_id,
+                document_id=document.id,
+                reason="source_deleted",
+            )
+        await session.commit()
+    finally:
+        await session.close()
+
+    assert outcome.retired_ids == [memory.id]
+    (event,) = await _rows(owner_engine, memory.id)
+    assert event["payload"]["reason"] == "retire:source_deleted"
+    assert event["payload"]["memory"]["deleted"] is True
+    assert event["payload"]["memory"]["deleted_reason"] == "source_deleted"
