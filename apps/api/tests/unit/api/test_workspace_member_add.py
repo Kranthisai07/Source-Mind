@@ -92,9 +92,7 @@ def _app(session: AsyncMock, caller_id: uuid.UUID = CALLER_ID):
         patch("sourcemind.main.init_db", new_callable=AsyncMock),
         patch("sourcemind.main.init_redis", new_callable=AsyncMock),
         patch("sourcemind.main._init_neo4j", new_callable=AsyncMock),
-        patch("sourcemind.main._init_kafka", new_callable=AsyncMock),
         patch("sourcemind.main._close_neo4j", new_callable=AsyncMock),
-        patch("sourcemind.main._close_kafka", new_callable=AsyncMock),
         patch("sourcemind.main.close_redis", new_callable=AsyncMock),
         patch("sourcemind.main.close_db", new_callable=AsyncMock),
     ):

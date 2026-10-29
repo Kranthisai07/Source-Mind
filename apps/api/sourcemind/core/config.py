@@ -33,6 +33,8 @@ class LogLevel(StrEnum):
     CRITICAL = "CRITICAL"
 
 
+_DEFAULT_NEO4J_AUTH = "neo4j/sourcemind_dev"
+
 class Settings(BaseSettings):
     """
     SourceMind application settings.
@@ -159,12 +161,30 @@ class Settings(BaseSettings):
     embedding_cache_ttl: int = 60 * 60 * 24 * 30  # 30 days
 
     # ── Neo4j ─────────────────────────────────────────────────────
+    # A read projection of Postgres (see docs/architecture/GRAPH_PROJECTION.md).
     neo4j_uri: str = "bolt://localhost:7687"
-    neo4j_auth: Annotated[str, Field(repr=False)] = "neo4j/sourcemind_dev"
+    neo4j_auth: Annotated[str, Field(repr=False)] = _DEFAULT_NEO4J_AUTH
+    # Per-query ceiling for graph reads on a request path. The driver's own
+    # connection timeout is separate; a degraded graph must not stall requests.
+    neo4j_query_timeout_seconds: float = 2.0
 
     # ── Kafka / Redpanda ──────────────────────────────────────────
     kafka_bootstrap_servers: str = "localhost:9092"
-    kafka_consumer_group: str = "sourcemind-api"
+    kafka_consumer_group: str = "sourcemind-graph-projector"
+    kafka_graph_topic: str = "sourcemind.graph.events"
+    kafka_graph_dlq_topic: str = "sourcemind.graph.events.dlq"
+
+    # ── Graph projection pipeline (outbox -> relay -> Redpanda -> projector) ──
+    # The relay reads graph_outbox with its own database role (SELECT +
+    # UPDATE(published_at) only; the runtime role may only INSERT). Empty means
+    # the relay cannot start.
+    graph_relay_database_url: Annotated[str, Field(repr=False)] = ""
+    graph_relay_batch_size: int = 200
+    graph_relay_poll_seconds: float = 1.0
+    # Outbox seq is assigned at insert, not commit. Rows younger than this are
+    # left for the next poll so a slower concurrent transaction is not skipped.
+    graph_relay_settle_seconds: float = 2.0
+    graph_projector_max_attempts: int = 5
 
     # ── AI / ML ───────────────────────────────────────────────────
     openai_api_key: Annotated[str, Field(repr=False)] = ""
@@ -312,6 +332,36 @@ class Settings(BaseSettings):
                 raise ValueError("SENTRY_DSN is required in production")
             if self.debug:
                 raise ValueError("DEBUG must be false in production")
+
+        if "/" not in self.neo4j_auth:
+            raise ValueError("NEO4J_AUTH must be in the form 'user/password'")
+        if self.neo4j_query_timeout_seconds <= 0:
+            raise ValueError("NEO4J_QUERY_TIMEOUT_SECONDS must be positive")
+        if (
+            self.graph_relay_batch_size < 1
+            or self.graph_relay_poll_seconds <= 0
+            or self.graph_relay_settle_seconds < 0
+            or self.graph_projector_max_attempts < 1
+        ):
+            raise ValueError("Graph relay and projector limits are out of range")
+        if self.environment == Environment.PRODUCTION and (
+            self.ff_neo4j_attribution or self.ff_kafka_events
+        ):
+            # Half a pipeline is the failure mode this guards against: events
+            # written with nothing to project them, or a graph nothing feeds.
+            if not (self.ff_neo4j_attribution and self.ff_kafka_events):
+                raise ValueError(
+                    "FF_NEO4J_ATTRIBUTION and FF_KAFKA_EVENTS must be enabled together "
+                    "in production"
+                )
+            if self.neo4j_auth == _DEFAULT_NEO4J_AUTH:
+                raise ValueError("NEO4J_AUTH must not be the development default in production")
+            for name, value in (
+                ("NEO4J_URI", self.neo4j_uri),
+                ("KAFKA_BOOTSTRAP_SERVERS", self.kafka_bootstrap_servers),
+            ):
+                if any(host in value for host in ("localhost", "127.0.0.1")):
+                    raise ValueError(f"{name} must not point at localhost in production")
 
         if self.url_ingestion_timeout_seconds <= 0:
             raise ValueError("URL_INGESTION_TIMEOUT_SECONDS must be positive")

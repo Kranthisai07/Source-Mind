@@ -220,7 +220,7 @@ apps/api/
       exceptions.py            SM001–SM099 error hierarchy
       middleware.py            CorrelationID, Logging, Timing, SecurityHeaders
       dependencies.py          FastAPI Depends + Clerk JWT verification
-      graph.py                 Neo4j driver (disabled by feature flag)
+      graph.py                 Neo4j driver + workspace-scoped query guard (graph flags off by default)
     models/
       base.py                  Base + TimestampMixin, type_annotation_map (JSONB)
       user.py                  User (clerk_data → column `metadata`)
@@ -278,7 +278,7 @@ apps/api/
 
 apps/web/                      React SPA (see §9)
 evaluation/                    Benchmark harness (see §12)
-infra/docker-compose.yml       Postgres, Redis, Neo4j, Redpanda, api, worker
+infra/docker-compose.yml       Postgres, Redis, api, worker; Neo4j + Redpanda under `--profile graph`
 ```
 
 Note: `handoff_records` and `handoff_assignments` exist in the database but
@@ -730,8 +730,9 @@ that check.
 docker compose -f infra/docker-compose.yml up -d
 ```
 
-Starts Postgres (pgvector), Redis, Neo4j, Redpanda, the API, and a worker.
-Neo4j and Redpanda are disabled by feature flags and can be skipped.
+Starts Postgres (pgvector), Redis, the API, and a worker. Neo4j and Redpanda are opt-in
+(`--profile graph`), the API does not wait for them, and the graph feature flags stay off
+unless you enable them; see docs/architecture/GRAPH_PROJECTION.md.
 
 ---
 

@@ -21,11 +21,18 @@
 
 \getenv owner_password SOURCEMIND_LOCAL_OWNER_PASSWORD
 \getenv runtime_password SOURCEMIND_LOCAL_RUNTIME_PASSWORD
+\getenv relay_password SOURCEMIND_LOCAL_RELAY_PASSWORD
 
 CREATE ROLE sourcemind_owner LOGIN PASSWORD :'owner_password'
     NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
 CREATE ROLE sourcemind_runtime LOGIN PASSWORD :'runtime_password'
     NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+-- The graph outbox relay (docs/architecture/GRAPH_PROJECTION.md). It reads every
+-- workspace's outbox rows, so it gets no policy bypass: migration 20261029_0015
+-- grants it SELECT and UPDATE(published_at) on graph_outbox and nothing else.
+CREATE ROLE sourcemind_graph_relay LOGIN PASSWORD :'relay_password'
+    NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+ALTER ROLE sourcemind_graph_relay SET timezone = 'UTC';
 ALTER ROLE sourcemind_owner SET timezone = 'UTC';
 ALTER ROLE sourcemind_runtime SET timezone = 'UTC';
 
@@ -33,8 +40,8 @@ ALTER ROLE sourcemind_runtime SET timezone = 'UTC';
 ALTER DATABASE sourcemind OWNER TO sourcemind_owner;
 ALTER SCHEMA public OWNER TO sourcemind_owner;
 
-GRANT CONNECT ON DATABASE sourcemind TO sourcemind_runtime;
-GRANT USAGE ON SCHEMA public TO sourcemind_runtime;
+GRANT CONNECT ON DATABASE sourcemind TO sourcemind_runtime, sourcemind_graph_relay;
+GRANT USAGE ON SCHEMA public TO sourcemind_runtime, sourcemind_graph_relay;
 
 -- Applies to tables the OWNER creates during `alembic upgrade head`.
 -- Migrations from 20261005_0010 also grant explicitly to the role named by
