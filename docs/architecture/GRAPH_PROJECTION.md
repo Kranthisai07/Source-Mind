@@ -12,7 +12,7 @@ the pipeline lands, the runbook. It supersedes the graph half of the deleted ADR
 | Settings, production safety checks, `.env.example` | **Done** (this stage) |
 | Neo4j driver with a workspace-scoped query guard (`core/graph.py`) | **Done** |
 | Event envelope (`events/envelope.py`) and the relay's producer (`events/producer.py`) | **Done** |
-| `graph_outbox` table, grants and migration `20261029_0015` | **Done** (unit-tested with a mocked `op`; not yet run against a real PostgreSQL) |
+| `graph_outbox` table, grants and migration `20261029_0015` | **Done** (unit-tested with a mocked `op`, and run for real on PostgreSQL 18: upgrade, grants, downgrade guard, re-upgrade; not run on PostgreSQL 16) |
 | Compose: graph services behind `--profile graph`, pinned images, loopback ports, no APOC | **Done** |
 | Writing outbox rows from the code paths that change memories | Planned (next stage) |
 | Relay, projector, backfill | Planned (next stage) |
