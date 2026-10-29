@@ -641,3 +641,14 @@ async def test_neo4j_enforces_the_query_timeout_instead_of_stalling(
         monkeypatch.delenv("NEO4J_QUERY_TIMEOUT_SECONDS")
         get_settings.cache_clear()
     assert elapsed < 5, f"the query ran for {elapsed:.1f}s: the timeout is not being applied"
+
+
+async def test_an_event_with_a_non_uuid_workspace_is_dead_lettered_not_fatal(stack) -> None:
+    """The projector must survive a message whose workspace cannot be attributed (Codex, #45)."""
+    dlq = _Dlq()
+    odd = _event("not-a-uuid", str(uuid.uuid4()), 5)
+    assert await _process(odd, dlq) == "dead_lettered"
+    assert len(dlq.sent) == 1
+    # And the next good event is still applied.
+    ws, mem = str(uuid.uuid4()), str(uuid.uuid4())
+    assert await _process(_event(ws, mem, 6), dlq) == "applied"

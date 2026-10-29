@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from neo4j.exceptions import ServiceUnavailable, SessionExpired, TransientError
 
-from sourcemind.events import backfill, projector, relay
+from sourcemind.events import backfill, graph_mapper, projector, relay
 from sourcemind.events.envelope import build_envelope, dumps
 from sourcemind.events.graph_mapper import InvalidEventError
 from tests.unit.events.fakes import RoutedSession, Rows
@@ -220,6 +220,60 @@ async def test_if_the_gap_cannot_be_marked_nothing_is_dead_lettered() -> None:
             sleep=_no_sleep,
         )
     assert dlq.sent == [], "an unmarked gap must be redelivered, not silently dropped"
+
+
+@pytest.mark.unit
+async def test_a_non_uuid_workspace_id_still_reaches_the_dead_letter_topic() -> None:
+    # Valid envelope shape, unusable workspace id: the real mark_gap validates the UUID and
+    # raises InvalidEventError. That must not escape (it would crash-loop the projector).
+    calls: list = []
+
+    async def run(query, params):
+        calls.append(query)
+        return []
+
+    async def real_mark_gap(workspace_id, seq):
+        await graph_mapper.mark_gap(run, workspace_id, seq)
+
+    raw = dumps(
+        build_envelope(
+            event_id=uuid.uuid4(),
+            seq=9,
+            occurred_at=datetime(2026, 10, 29, tzinfo=UTC),
+            workspace_id="not-a-uuid",
+            event_type="memory.state",
+            aggregate_id=uuid.uuid4(),
+            payload={"memory": {"id": str(uuid.uuid4())}},
+        )
+    )
+    dlq = DeadLetters()
+    outcome = await projector.process_message(
+        raw,
+        coordinates=COORDS,
+        apply=AsyncMock(side_effect=InvalidEventError("workspace_id is not a UUID")),
+        dead_letters=dlq,
+        max_attempts=1,
+        mark_gap=real_mark_gap,
+        sleep=_no_sleep,
+    )
+    assert outcome == "dead_lettered" and len(dlq.sent) == 1
+    assert calls == [], "nothing may be written to Neo4j for an unattributable message"
+
+
+@pytest.mark.unit
+async def test_a_real_neo4j_failure_while_marking_still_propagates() -> None:
+    dlq = DeadLetters()
+    with pytest.raises(ServiceUnavailable):
+        await projector.process_message(
+            _raw(),
+            coordinates=COORDS,
+            apply=AsyncMock(side_effect=InvalidEventError("bad")),
+            dead_letters=dlq,
+            max_attempts=1,
+            mark_gap=MarkGap(fail=ServiceUnavailable("neo4j down")),
+            sleep=_no_sleep,
+        )
+    assert dlq.sent == []
 
 
 @pytest.mark.unit

@@ -166,11 +166,17 @@ async def _dead_letter(
 ) -> None:
     # The gap is recorded BEFORE the message leaves the stream. If it cannot be recorded this
     # raises, offsets stay uncommitted and the message is delivered again.
-    if event is not None:
-        await mark_gap(event.workspace_id, event.seq)
-    elif (salvaged := _salvage(raw)) is not None:
-        await mark_gap(*salvaged)
-    else:
+    target = (event.workspace_id, event.seq) if event is not None else _salvage(raw)
+    if target is not None:
+        try:
+            await mark_gap(*target)
+        except InvalidEventError:
+            # The envelope parsed but its workspace id is not a UUID, so no workspace can be
+            # marked. It must still reach the dead-letter topic: letting this escape would end
+            # the projector and replay the same poison message on every restart. Genuine Neo4j
+            # failures are not InvalidEventError and still propagate.
+            target = None
+    if target is None:
         log.error("graph.dead_letter_without_workspace", **coordinates)
     log.error(
         "graph.dead_lettered",
