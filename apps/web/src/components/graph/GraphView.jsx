@@ -35,6 +35,17 @@ function SourceChip({ source, testId }) {
     );
 }
 
+// A directed relation reads differently from each end: the newer memory "updates" the older one,
+// the older one is "updated by" it. Undirected types read the same both ways.
+const DIRECTED_WORDS = {
+    updates: { out: "Updates", in: "Updated by" },
+    derives: { out: "Derives from", in: "Source of" },
+};
+const relationWords = (type, outgoing) => {
+    const words = DIRECTED_WORDS[type];
+    return words ? words[outgoing ? "out" : "in"] : edgeLabel(type);
+};
+
 /** The accessible twin of the picture: the same nodes and links as plain table rows. */
 function GraphList({ graph, kind, testId }) {
     const byId = Object.fromEntries(graph.nodes.map((n) => [n.id, n]));
@@ -42,10 +53,11 @@ function GraphList({ graph, kind, testId }) {
         graph.edges
             .filter((e) => e.source === id || e.target === id)
             .map((e) => {
-                const other = byId[e.source === id ? e.target : e.source];
+                const outgoing = e.source === id;
+                const other = byId[outgoing ? e.target : e.source];
                 if (!other) return null;
                 const name = other.kind === "person" ? other.name : `v${other.version}`;
-                return e.type === "shared" ? `${name} (${e.weight})` : `${edgeLabel(e.type)} ${name}`;
+                return e.type === "shared" ? `${name} (${e.weight})` : `${relationWords(e.type, outgoing)} ${name}`;
             })
             .filter(Boolean)
             .join(", ");
@@ -167,6 +179,19 @@ export default function GraphView({
     } else {
         body = (
             <div className={loading ? "opacity-60 transition-opacity" : "transition-opacity"} aria-busy={loading}>
+                {error && (
+                    <div className="mb-4">
+                        <PageLoadError
+                            error={classifyApiError(error)}
+                            onRetry={retry}
+                            compact
+                            testId={`${testId}-error`}
+                        />
+                        <p className="mt-2 text-[12px] text-sm-text-secondary">
+                            The picture below is the previous answer, not the one you asked for.
+                        </p>
+                    </div>
+                )}
                 {view === "graph" ? (
                     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px] items-start">
                         <div className="gv-frame gv-field">

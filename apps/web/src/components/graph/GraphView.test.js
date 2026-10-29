@@ -140,6 +140,26 @@ describe("GraphView", () => {
         expect(screen.queryByTestId("graph-view-empty")).toBeNull();
     });
 
+    test("a failed refetch keeps the old picture but says so, with a retry", () => {
+        const retry = jest.fn();
+        renderView(resourceOf(related(), { error: Object.assign(new Error("boom"), { status: 500 }), retry }));
+        expect(screen.getByTestId("graph-view-canvas")).not.toBeNull();
+        const box = screen.getByTestId("graph-view-error");
+        expect(box.parentElement.textContent).toContain("previous answer");
+        fireEvent.click(within(box).getByRole("button"));
+        expect(retry).toHaveBeenCalled();
+    });
+
+    test("the list says which end of a directed relation each memory is", () => {
+        renderView(resourceOf(related()));
+        fireEvent.click(screen.getByTestId("graph-view-view-list"));
+        const rows = within(screen.getByTestId("graph-view-list")).getAllByRole("row");
+        const text = (i) => rows[i].textContent;
+        expect(text(1)).toContain("Updates v2"); // m1 updates m2
+        expect(text(2)).toContain("Updated by v3"); // m2 is updated by m1 (v3)
+        expect(text(2)).not.toContain("Updates v3");
+    });
+
     test("a memory with no neighbours is an empty state, not a lonely hexagon", () => {
         renderView(resourceOf(related({ nodes: [related().nodes[0]], edges: [] })), { emptyTitle: "No related memories yet" });
         expect(screen.getByTestId("graph-view-empty").textContent).toContain("No related memories yet");
