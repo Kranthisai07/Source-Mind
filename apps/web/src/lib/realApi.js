@@ -339,7 +339,8 @@ async function request(path, { method = "GET", body, params, headers: extraHeade
     const url = new URL(BASE + path, window.location.origin);
     if (params) {
         for (const [k, v] of Object.entries(params)) {
-            if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+            if (Array.isArray(v)) v.forEach((item) => url.searchParams.append(k, String(item)));
+            else if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
         }
     }
     // Every backend route except /health is behind get_current_user, which
@@ -737,6 +738,36 @@ export const realApi = {
     // an empty list — the caller has to tell those apart.
     getMemoryVersions: async (id) =>
         request(`/v1/memories/${encodeURIComponent(id)}/versions`),
+
+    // Graph-backed reads (api/v1/graph.py). All four are enveloped (APIResponse[T]) and say which
+    // backend answered in `source` ("graph" | "postgres"): the graph when it is enabled, fresh and
+    // agrees with PostgreSQL, PostgreSQL otherwise. The shapes are identical either way.
+    //   lineage  -> { memory_id, source, versions: [{id, version, is_current, created_at,
+    //                 contributors: [{user_id, display_name, weight, action}]}] }
+    //   related  -> { memory_id, source, depth_requested, depth_served, truncated,
+    //                 nodes: [{id, version, is_current, importance, hops, preview}],
+    //                 edges: [{id, source, target, type, confidence}] }
+    //   owners   -> { memory_id, source, depth_served,
+    //                 owners: [{user_id, display_name, score, direct_weight, hops, path}] }
+    //   collaboration -> { source, truncated, nodes: [{user_id, display_name, memory_count}],
+    //                 edges: [{source, target, shared_memories}] }
+    // A 404 is "no such memory for you" and rejects, so it is never mistaken for an empty graph.
+    getMemoryLineage: async (id) =>
+        unwrapOne(await request(`/v1/memories/${encodeURIComponent(id)}/lineage`)),
+    getRelatedMemories: async (id, { depth = 1, types, limit } = {}) =>
+        unwrapOne(
+            await request(`/v1/memories/${encodeURIComponent(id)}/related`, {
+                params: { depth, types, limit },
+            })
+        ),
+    getMemoryOwners: async (id) =>
+        unwrapOne(await request(`/v1/memories/${encodeURIComponent(id)}/owners`)),
+    getCollaborationGraph: async (workspace_id) =>
+        unwrapOne(
+            await request(
+                `/v1/workspaces/${await resolveWorkspaceId(workspace_id)}/analytics/collaboration-graph`
+            )
+        ),
 
     createPilotRating: async ({ workspace_id, idempotencyKey, ...payload } = {}) =>
         unwrapOne(

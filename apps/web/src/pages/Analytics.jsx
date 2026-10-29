@@ -6,6 +6,7 @@ import HealthGauge from "../components/widgets/HealthGauge";
 import RiskBadge from "../components/widgets/RiskBadge";
 import { PageLoadError, PageLoading } from "../components/widgets/PageLoadState";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
+import CollaborationGraph from "../components/graph/CollaborationGraph";
 import useApiResource from "../hooks/useApiResource";
 import api, { useMocks } from "../lib/api";
 import { relativeTime } from "../lib/format";
@@ -59,6 +60,7 @@ function AnalyticsContent() {
                         <TabsTrigger value="overview"     data-testid="tab-overview"    className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">Overview</TabsTrigger>
                         <TabsTrigger value="contribution" data-testid="tab-contribution" className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">Contribution Map</TabsTrigger>
                         <TabsTrigger value="gaps"         data-testid="tab-gaps"         className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">Knowledge Gaps</TabsTrigger>
+                        <TabsTrigger value="collaboration" data-testid="tab-collaboration" className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">Collaboration</TabsTrigger>
                     </TabsList>
 
                     {/* OVERVIEW */}
@@ -239,6 +241,9 @@ function AnalyticsContent() {
                             ))}
                         </div>
                         </>}
+                    </TabsContent>
+                    <TabsContent value="collaboration" className="space-y-5 mt-0">
+                        <CollaborationGraph />
                     </TabsContent>
                 </Tabs>
             </div>

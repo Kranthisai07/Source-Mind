@@ -8,6 +8,7 @@ import {
     MEMORIES_OVER_TIME, SEARCH_ACTIVITY, TEAM_MEMBERS,
     CONNECTOR_STATUSES, MEMORY_SOURCES,
 } from "./mockData";
+import { mockCollaboration, mockLineage, mockOwners, mockRelated } from "./mockGraph";
 import GITHUB_INSIGHTS from "../pages/__fixtures__/githubInsights.variants.json";
 import MCP_KEYS from "../pages/__fixtures__/mcpKeys.variants.json";
 
@@ -177,6 +178,13 @@ export const mockApi = {
         }));
         return { versions, total: versions.length };
     }),
+
+    // Graph-backed reads: same shapes as GET /v1/memories/:id/{lineage,related,owners} and
+    // GET /v1/workspaces/:id/analytics/collaboration-graph (see lib/mockGraph.js).
+    getMemoryLineage: (id) => request(() => mockLineage(id)),
+    getRelatedMemories: (id, options = {}) => request(() => mockRelated(id, options)),
+    getMemoryOwners: (id) => request(() => mockOwners(id)),
+    getCollaborationGraph: () => request(() => mockCollaboration()),
 
     // POST /v1/memories (returns job_id). Like the real API: the text is
     // trimmed, and identical text returns the ORIGINAL job with

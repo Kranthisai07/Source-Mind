@@ -1,0 +1,246 @@
+/*
+ * Graph views. Colours come only from the app's theme tokens (index.css), so light and dark are
+ * the theme's job and nothing here carries a raw hex. The look follows the Supermemory reference
+ * the console already uses: a dotted field, hairline frames, mono micro-labels, a quiet neutral
+ * ink, and one strong blue reserved for the focal memory.
+ *
+ * Encoding never rests on colour alone: node shape separates memories (hexagons) from people
+ * (rounded rectangles), and every relation type has its own dash pattern as well as its ink, with
+ * a legend and a text list as the accessible twin.
+ */
+
+.gv-frame {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--sm-border);
+    border-radius: 12px;
+    background-color: var(--sm-surface);
+}
+
+.gv-field {
+    background-image: radial-gradient(var(--sm-grid) 1px, transparent 1px);
+    background-size: 16px 16px;
+}
+
+.gv-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    font-family: "DM Sans", sans-serif;
+}
+
+/* ── nodes ─────────────────────────────────────────────────────────────── */
+
+.gv-node {
+    cursor: pointer;
+    outline: none;
+    transition: opacity 120ms ease;
+}
+
+.gv-hit {
+    fill: transparent;
+}
+
+.gv-hex,
+.gv-person {
+    fill: var(--sm-graph-node-bg);
+    stroke: var(--sm-border-hover);
+    stroke-width: 1.5;
+    transition: stroke 120ms ease, fill 120ms ease;
+}
+
+.gv-person {
+    fill: var(--sm-surface-2);
+}
+
+.gv-node-current .gv-hex {
+    stroke: var(--sm-text);
+}
+
+.gv-node-superseded .gv-hex {
+    stroke-dasharray: 3 3;
+}
+
+.gv-node-focal .gv-hex {
+    fill: var(--sm-blue);
+    stroke: var(--sm-blue);
+}
+
+.gv-node:hover .gv-hex,
+.gv-node:hover .gv-person {
+    stroke: var(--sm-blue);
+}
+
+/* A 2px surface gap, then a blue ring: visible on any fill and never colour-only (it is also a
+   thicker outline). Shown for selection and for keyboard focus. */
+.gv-ring {
+    fill: none;
+    stroke: var(--sm-blue);
+    stroke-width: 2;
+}
+
+.gv-glyph {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    font-weight: 500;
+    fill: var(--sm-graph-node-ink);
+    text-anchor: middle;
+    pointer-events: none;
+}
+
+/* Dark ink on the blue node in both themes: white on this blue is only ~3.6:1, these are ~4.9:1
+   (light, the theme ink) and ~5.4:1 (dark, the dark surface), above the 4.5:1 text minimum. */
+.gv-node-focal .gv-glyph {
+    fill: var(--sm-text);
+}
+
+:root.dark .gv-node-focal .gv-glyph {
+    fill: var(--sm-bg);
+}
+
+.gv-label {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    fill: var(--sm-text-secondary);
+    text-anchor: middle;
+    pointer-events: none;
+}
+
+.gv-person-name {
+    font-size: 12px;
+    font-weight: 500;
+    fill: var(--sm-graph-node-ink);
+    text-anchor: middle;
+    pointer-events: none;
+}
+
+.gv-sub {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    fill: var(--sm-text-secondary);
+    text-anchor: middle;
+    pointer-events: none;
+}
+
+/* ── edges: ink AND dash, so type survives greyscale and colour-blindness ── */
+
+.gv-edge {
+    fill: none;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    transition: opacity 120ms ease;
+}
+
+.gv-edge-updates {
+    stroke: var(--sm-text);
+    stroke-width: 1.75;
+}
+
+.gv-edge-extends {
+    stroke: var(--sm-text-secondary);
+    stroke-width: 1.25;
+}
+
+.gv-edge-derives {
+    stroke: var(--sm-blue);
+    stroke-dasharray: 6 4;
+}
+
+.gv-edge-contradicts {
+    stroke: var(--sm-amber);
+    stroke-width: 1.75;
+    stroke-dasharray: 2 3;
+}
+
+.gv-edge-references {
+    stroke: var(--sm-text-secondary);
+    stroke-width: 1.25;
+    stroke-dasharray: 1 4;
+}
+
+.gv-edge-shared {
+    stroke: var(--sm-text-secondary);
+    opacity: 0.7;
+}
+
+.gv-arrow {
+    stroke: none;
+}
+
+.gv-arrow.gv-edge-updates {
+    fill: var(--sm-text);
+}
+
+.gv-arrow.gv-edge-derives {
+    fill: var(--sm-blue);
+}
+
+.gv-edge-label {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    fill: var(--sm-text);
+    text-anchor: middle;
+    pointer-events: none;
+    /* A surface-coloured halo keeps the label legible where it crosses a line. */
+    paint-order: stroke;
+    stroke: var(--sm-surface);
+    stroke-width: 4px;
+    stroke-linejoin: round;
+}
+
+/* Everything outside the hovered, focused or selected node's neighbourhood recedes. */
+.gv-dim {
+    opacity: 0.25;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .gv-node,
+    .gv-edge,
+    .gv-hex,
+    .gv-person {
+        transition: none;
+    }
+}
+
+/* ── legend and chips ──────────────────────────────────────────────────── */
+
+.gv-legend-swatch {
+    width: 36px;
+    height: 10px;
+    flex-shrink: 0;
+}
+
+.gv-legend-swatch line {
+    fill: none;
+}
+
+.gv-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border: 1px solid var(--sm-border);
+    border-radius: 999px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--sm-text-secondary);
+}
+
+.gv-chip-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--sm-text-muted);
+}
+
+.gv-chip-graph .gv-chip-dot {
+    background: var(--sm-green);
+}
