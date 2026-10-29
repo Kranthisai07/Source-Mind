@@ -20,7 +20,7 @@ the pipeline lands, the runbook. It supersedes the graph half of the deleted ADR
 | Backfill (`python -m sourcemind.events.backfill`) | **Done**; verified on real PostgreSQL |
 | Freshness cursor (`graph_publication_cursor`, migration `20261029_0016`) | **Done**; the relay advances it in the transaction that marks rows published; verified on real PostgreSQL |
 | Graph-backed read endpoints (`api/v1/graph.py`, `services/graph/reads.py`): lineage, related, owners, collaboration graph | **Done**; each answers from Neo4j when enabled, fresh and agreeing with PostgreSQL, otherwise from PostgreSQL; parity-tested against real Neo4j, Redpanda and PostgreSQL |
-| Web views | Planned (next stage) |
+| Web views | Built (`feat/graph-web-claude`); see D-061 |
 
 Verified means: run against disposable real services on a developer machine (Docker Desktop, Windows host with PostgreSQL in WSL) and defined in `.github/workflows/graph-ci.yml`, which has not yet run on GitHub. Not verified: the Neo4j 6.x Python driver against anything but 5.26, Redpanda or Neo4j under load, a production deployment of either, and PostgreSQL 16 (the tests used 18). Do not enable the flags in production.
 
