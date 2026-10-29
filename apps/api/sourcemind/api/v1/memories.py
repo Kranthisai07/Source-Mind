@@ -50,6 +50,7 @@ from sourcemind.schemas.memory import (
     MemoryResponse,
     MemoryUpdate,
 )
+from sourcemind.services.graph.outbox import emit_memory_states
 from sourcemind.services.memory.read import build_memory_response
 
 logger = structlog.get_logger(__name__)
@@ -384,6 +385,11 @@ async def _apply_edit(
 
     await recompute_severity_for_memory(db, new_mem.id)
 
+    # Graph projection (flag-gated): the new head and the version it superseded, written
+    # in this transaction so they commit or roll back with the edit.
+    superseded = [version_result.previous_version_id] if version_result.previous_version_id else []
+    await emit_memory_states(db, [new_mem.id, *superseded], reason="edit")
+
     await db.commit()
 
     return MemoryResponse(
@@ -523,6 +529,7 @@ async def delete_memory(
         ),
         {"id": str(memory_id)},
     )
+    await emit_memory_states(db, [memory_id], reason="user_deleted")
     await db.commit()
 
 

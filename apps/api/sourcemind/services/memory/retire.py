@@ -58,6 +58,8 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sourcemind.services.graph.outbox import emit_memory_states
+
 log = structlog.get_logger(__name__)
 
 RetireReason = Literal["source_superseded", "source_deleted", "connector_removed"]
@@ -208,6 +210,10 @@ async def retire_document_memories(
                 },
             )
         ]
+
+    # Graph projection (flag-gated). Written here so the worker, the connector deletion rule and
+    # connector disconnect, which commit at different places, are all covered by one call.
+    await emit_memory_states(session, [*retired, *flagged], reason=f"retire:{reason}")
 
     log.info(
         "source_memories_retired",

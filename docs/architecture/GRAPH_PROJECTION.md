@@ -14,11 +14,13 @@ the pipeline lands, the runbook. It supersedes the graph half of the deleted ADR
 | Event envelope (`events/envelope.py`) and the relay's producer (`events/producer.py`) | **Done** |
 | `graph_outbox` table, grants and migration `20261029_0015` | **Done** (unit-tested with a mocked `op`, and run for real on PostgreSQL 18: upgrade, grants, downgrade guard, re-upgrade; not run on PostgreSQL 16) |
 | Compose: graph services behind `--profile graph`, pinned images, loopback ports, no APOC | **Done** |
-| Writing outbox rows from the code paths that change memories | Planned (next stage) |
-| Relay, projector, backfill | Planned (next stage) |
-| Graph-backed read endpoints and web views | Planned (later stages) |
+| Outbox rows written from the code paths that change memories (`services/graph/outbox.py`) | **Done**, flag-gated (`FF_KAFKA_EVENTS`). Verified on real PostgreSQL for edits and handoff assignment; ingestion, conflict resolution, source retirement and delete are wired but not exercised by any real-database test yet |
+| Relay (`python -m sourcemind.events.relay`) | **Done**; ordering, settle window, advisory lock and grants verified on real PostgreSQL with a fake publisher; **not run against a broker** |
+| Projector (`python -m sourcemind.events.projector`) and the Cypher mapper | **Done** and unit-tested against a recording runner; **not run against Neo4j or a broker** |
+| Backfill (`python -m sourcemind.events.backfill`) | **Done**; verified on real PostgreSQL |
+| Freshness watermark for reads, graph-backed read endpoints, web views | Planned (later stages) |
 
-Until the next stage lands, enabling the flags writes nothing and projects nothing. Do not enable them in production.
+The Cypher in `events/graph_mapper.py` has never been executed against a Neo4j server, and nothing has run against Redpanda or Kafka. Do not enable the flags in production.
 
 ## Why an outbox, not publishing from the request
 

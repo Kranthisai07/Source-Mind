@@ -41,6 +41,8 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sourcemind.services.graph.outbox import emit_memory_states
+
 log = structlog.get_logger(__name__)
 
 @dataclass
@@ -318,6 +320,7 @@ async def resolve_conflict(
         return False
 
     mem_a_id, mem_b_id, ws_id = row
+    merged_id: uuid.UUID | None = None
 
     if resolution_type == "kept_a":
         await session.execute(
@@ -336,7 +339,7 @@ async def resolve_conflict(
     elif resolution_type == "merged":
         if not merged_content:
             raise ValueError("merged_content required for resolution_type='merged'")
-        await _create_merged_memory(
+        merged_id = await _create_merged_memory(
             session,
             workspace_id=uuid.UUID(ws_id),
             memory_a_id=uuid.UUID(mem_a_id),
@@ -428,6 +431,14 @@ async def resolve_conflict(
 
     await recompute_severity_for_memory(session, uuid.UUID(mem_a_id))
     await recompute_severity_for_memory(session, uuid.UUID(mem_b_id))
+
+    # Graph projection (flag-gated): both sides (current_version flips, tags) and a merged
+    # memory with its derives edges. Not reached for 'deferred', which changes no memory.
+    await emit_memory_states(
+        session,
+        [mem_a_id, mem_b_id, *([merged_id] if merged_id else [])],
+        reason=f"conflict_{resolution_type}",
+    )
 
     log.info(
         "conflict_resolved",

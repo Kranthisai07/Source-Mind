@@ -25,6 +25,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sourcemind.core.exceptions import HandoffNotFoundError, MemoryVersionStaleError
+from sourcemind.services.graph.outbox import emit_memory_states
 
 log = structlog.get_logger(__name__)
 
@@ -449,6 +450,9 @@ async def assign_memory(
     from sourcemind.services.conflict.severity import recompute_severity_for_memory
 
     await recompute_severity_for_memory(session, memory_id)
+
+    # Graph projection (flag-gated). After the importance rescore so the event carries it.
+    await emit_memory_states(session, [memory_id], reason="handoff_assign")
 
     # Return updated attribution breakdown
     updated_result = await session.execute(

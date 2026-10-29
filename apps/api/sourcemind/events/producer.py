@@ -63,16 +63,18 @@ class GraphEventProducer:
     async def __aexit__(self, *exc_info: object) -> None:
         await self.stop()
 
+    async def send(self, value: dict[str, Any], key: str | None = None) -> None:
+        """Send one JSON document to this producer's topic and wait for the acknowledgement."""
+        if self._producer is None:
+            raise RuntimeError("GraphEventProducer is not started")
+        await self._producer.send_and_wait(self.topic, value=value, key=key)
+
     async def publish(self, envelope: dict[str, Any]) -> None:
-        """Send one event and wait for the broker's acknowledgement.
+        """Send one graph event.
 
         Keyed by workspace so one workspace's events stay in order on one partition.
         """
-        if self._producer is None:
-            raise RuntimeError("GraphEventProducer is not started")
-        await self._producer.send_and_wait(
-            self.topic, value=envelope, key=str(envelope["workspace_id"])
-        )
+        await self.send(envelope, key=str(envelope["workspace_id"]))
 
 
 async def ensure_topics(

@@ -222,6 +222,49 @@ services:
     command: celery -A sourcemind.workers.celery_app worker --loglevel=info --concurrency=4
     restart: unless-stopped
 
+  # ─── Graph projection (opt-in: --profile graph; see GRAPH_PROJECTION.md) ───
+  # Relay: graph_outbox -> Redpanda. Reads with its own role (SELECT + UPDATE(published_at)),
+  # which exists only on a volume created after local-roles.sql gained it.
+  graph-relay:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+      target: development
+    container_name: sm_graph_relay
+    profiles: ["graph"]
+    environment:
+      <<: *common-env
+      GRAPH_RELAY_DATABASE_URL: postgresql+asyncpg://sourcemind_graph_relay:${SOURCEMIND_LOCAL_RELAY_PASSWORD:-sourcemind_relay_dev}@postgres:5432/sourcemind
+    volumes:
+      - ../apps/api/sourcemind:/app/sourcemind
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    command: python -m sourcemind.events.relay
+    restart: unless-stopped
+
+  # Projector: Redpanda -> Neo4j (idempotent, seq-guarded, dead-letter topic for poison messages).
+  graph-projector:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+      target: development
+    container_name: sm_graph_projector
+    profiles: ["graph"]
+    environment:
+      <<: *common-env
+    volumes:
+      - ../apps/api/sourcemind:/app/sourcemind
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    command: python -m sourcemind.events.projector
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:
