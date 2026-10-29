@@ -15,12 +15,13 @@ query from user input.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
 
 import structlog
-from neo4j import AsyncDriver, AsyncGraphDatabase, AsyncSession
+from neo4j import AsyncDriver, AsyncGraphDatabase, AsyncSession, Query
 
 from sourcemind.core.config import get_settings
 
@@ -37,6 +38,10 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX memory_workspace IF NOT EXISTS FOR (m:Memory) ON (m.workspace_id)",
     "CREATE INDEX user_workspace IF NOT EXISTS FOR (u:User) ON (u.workspace_id)",
 )
+
+
+# Lets the server's own transaction timeout fire (and report) before the client gives up.
+_TIMEOUT_GRACE_SECONDS = 0.5
 
 
 class GraphQueryError(RuntimeError):
@@ -117,9 +122,21 @@ async def run_read(
     """Run a read query scoped to one workspace, bounded by the configured timeout."""
     bound = _checked(query, params or {}, workspace_id)
     timeout = get_settings().neo4j_query_timeout_seconds
-    async with get_graph_session() as session:
-        result = await session.run(query, bound, timeout=timeout)
-        return [record.data() async for record in result]
+
+    async def execute() -> list[dict[str, Any]]:
+        async with get_graph_session() as session:
+            # The server-side limit must travel on a Query: AsyncSession.run treats stray keyword
+            # arguments as Cypher parameters, so run(..., timeout=n) would silently do nothing.
+            result = await session.run(Query(query, timeout=timeout), bound)
+            return [record.data() async for record in result]
+
+    try:
+        # The outer deadline also covers connection acquisition and reading the result, which the
+        # server-side transaction timeout does not.
+        async with asyncio.timeout(timeout + _TIMEOUT_GRACE_SECONDS):
+            return await execute()
+    except TimeoutError as exc:
+        raise GraphQueryError(f"graph query exceeded {timeout:g}s") from exc
 
 
 async def run_write(

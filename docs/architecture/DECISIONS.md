@@ -4002,3 +4002,13 @@ A developer's local `.env` can therefore fail these suites; run them with CI's e
 **Checked.** 75 new web tests (layout geometry and non-overlap, model, canvas keyboard and hover behaviour, every panel state, tab laziness, pilot mode, wire format of the four calls including repeated `types` parameters and a 404 rejection, mock-versus-real shape parity); the whole web suite 596 passed, 0 failed, 20 skipped (existing skips) with the CI environment; `craco build` with warnings as errors compiles. Looked at in a browser against mock data: light and dark at 1440 and 390 wide, no horizontal scroll, hover, selection, keyboard, depth 3, list view.
 
 **Not checked.** Against the real API (the browser run used mock data, and the app's Clerk sign-in was bypassed with a throwaway harness that is not committed). Screen readers (the accessibility is by construction and tested through roles and labels, not heard). Browsers other than Chromium. A full web run with default parallelism timed out three suites that pass alone and pass together with `--maxWorkers=3`; that is machine load, not this change, but it was not reproduced on `main`.
+
+## D-062 — Codex review findings on the graph pipeline: query timeout, dead-letter gaps, backfill ordering
+
+**Status:** Follow-up to D-059/D-060 after Codex reviewed PR #44. Everything remains behind `FF_NEO4J_ATTRIBUTION` and `FF_KAFKA_EVENTS` (off); the two P1 findings must be fixed before either is enabled.
+
+### 1. The Neo4j query timeout was never applied (P2)
+**What changed.** `core/graph.py::run_read` now sends `Query(text, timeout=...)` and wraps the whole call in `asyncio.timeout(timeout + 0.5 s)`; a timeout raises `GraphQueryError`, which the reads seam already turns into the PostgreSQL fallback.
+**Why.** `AsyncSession.run(query, parameters=None, **kwargs)` (neo4j 6.1.0) treats extra keywords as Cypher parameters, so `run(..., timeout=n)` was a stray parameter and enforced nothing; a slow neighbourhood query could stall a request instead of falling back. The signature was checked in the installed driver. The server-side limit alone does not cover connection acquisition or reading the result, hence the outer deadline.
+**Found by review, not by tests.** `test_scoped_read_binds_workspace_and_applies_the_timeout` asserted `kwargs["timeout"] > 0`, i.e. it pinned the bug. It now asserts a `Query` object carries the limit and that no `timeout` keyword or parameter is sent.
+**Checked.** 152 unit tests in the events package, ruff clean. **Not checked yet:** a real slow query against Neo4j (added with the real-service run below).
