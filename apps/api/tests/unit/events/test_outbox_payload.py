@@ -206,3 +206,53 @@ async def test_insert_does_not_use_returning_because_the_runtime_role_cannot_sel
         await emit_memory_states(session, [M1], reason="edit")
     insert_sql = next(sql for sql, _ in session.statements if sql.startswith("INSERT"))
     assert "RETURNING" not in insert_sql.upper()
+
+
+def _locks(session):
+    return [
+        (sql.split("(")[0].replace("SELECT ", ""), params["key"])
+        for sql, params in session.statements
+        if "pg_advisory_xact_lock" in sql
+    ]
+
+
+@pytest.mark.unit
+async def test_a_normal_emit_takes_the_workspace_lock_shared_before_reading_state() -> None:
+    session = _session([_memory(M1)])
+    with _flag(True):
+        await emit_memory_states(session, [M1], reason="edit")
+    assert _locks(session) == [("pg_advisory_xact_lock_shared", f"graph_emit:{WS}")]
+    order = [sql for sql, _ in session.statements]
+    lock_at = next(i for i, sql in enumerate(order) if "pg_advisory_xact_lock" in sql)
+    state_at = next(i for i, sql in enumerate(order) if "FROM attributions" in sql)
+    assert lock_at < state_at, "state must be read only after the lock is held"
+
+
+@pytest.mark.unit
+async def test_the_backfill_takes_it_exclusive() -> None:
+    session = _session([_memory(M1)])
+    with _flag(False):
+        await emit_memory_states(session, [M1], reason="backfill", force=True)
+    assert _locks(session) == [("pg_advisory_xact_lock", f"graph_emit:{WS}")]
+
+
+@pytest.mark.unit
+async def test_workspaces_are_locked_once_each_in_sorted_order() -> None:
+    other = str(uuid4())
+    session = _session([_memory(M1), _memory(M2, workspace_id=other), _memory(M3)])
+    with _flag(True):
+        await emit_memory_states(session, [M1, M2, M3], reason="edit")
+    keys = [key for _, key in _locks(session)]
+    assert keys == sorted(f"graph_emit:{w}" for w in {WS, other})
+
+
+@pytest.mark.unit
+async def test_flag_off_takes_no_lock_and_unseen_memories_lock_nothing() -> None:
+    session = _session([_memory(M1)])
+    with _flag(False):
+        await emit_memory_states(session, [M1], reason="edit")
+    assert session.statements == []
+    session = _session([])
+    with _flag(True):
+        assert await emit_memory_states(session, [M1], reason="edit") == 0
+    assert _locks(session) == []
