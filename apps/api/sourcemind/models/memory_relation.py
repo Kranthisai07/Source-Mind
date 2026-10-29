@@ -35,7 +35,7 @@ class MemoryRelation(Base, TimestampMixin):
     Relations are detected automatically during Stage 7 of the ingestion pipeline
     when cosine similarity > threshold for different relation types.
     They are not written to Neo4j directly; the graph projection (opt-in, see
-    docs/architecture/GRAPH_PROJECTION.md) is built from PostgreSQL, which stays the source of truth.
+    docs/architecture/GRAPH_PROJECTION.md) is built from PostgreSQL, the source of truth.
 
     Direction: source_memory_id → [relation_type] → target_memory_id
     """
