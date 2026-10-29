@@ -22,6 +22,7 @@ from datetime import UTC, datetime, timedelta
 
 import structlog
 
+from sourcemind.services.graph.outbox import emit_memory_states
 from sourcemind.workers.celery_app import app as celery_app
 
 log = structlog.get_logger(__name__)
@@ -513,6 +514,16 @@ async def _run_pipeline(task: object, document_id: str, workspace_id: str, user_
                     if head is not None:
                         await _mark_published(session, head, doc_uuid)
                     extra["publication"] = "published"
+
+                # Graph projection (flag-gated). One atomic commit follows, so these events
+                # commit together with the memories, attributions and relations they describe.
+                # Neighbours too: new relations change their importance and inbound edges.
+                await emit_memory_states(
+                    session,
+                    [memory.id for memory in memories],
+                    reason="ingest",
+                    include_neighbours=True,
+                )
 
                 await update_document_status(
                     session,

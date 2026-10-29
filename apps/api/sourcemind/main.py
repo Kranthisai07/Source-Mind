@@ -2,7 +2,7 @@
 SourceMind FastAPI application entry point.
 
 Configures:
-  - Lifespan context (startup/shutdown hooks for DB, Redis, Neo4j, Kafka)
+  - Lifespan context (startup/shutdown hooks for DB, Redis, Neo4j)
   - Middleware stack (correlation ID, logging, timing, security headers)
   - Global exception handlers (SourceMindError → SM-coded JSON envelope)
   - API router inclusion (/v1/...)
@@ -45,7 +45,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     Application lifespan manager.
 
-    Startup: initialize all connections (DB, Redis, Neo4j, Kafka).
+    Startup: initialize all connections (DB, Redis, Neo4j). Kafka is not opened here:
+    the API only writes graph_outbox rows; the relay process publishes them.
     Shutdown: gracefully close all connections and drain task queues.
     """
     settings = get_settings()
@@ -65,9 +66,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         if settings.ff_neo4j_attribution:
             await _init_neo4j()
 
-        if settings.ff_kafka_events:
-            await _init_kafka()
-
     except Exception as exc:
         logger.critical("application.startup_failed", error=str(exc), exc_info=True)
         raise
@@ -81,9 +79,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # ── Shutdown ─────────────────────────────────────────────────
     logger.info("application.shutting_down")
-
-    if settings.ff_kafka_events:
-        await _close_kafka()
 
     if settings.ff_neo4j_attribution:
         await _close_neo4j()
@@ -110,24 +105,6 @@ async def _close_neo4j() -> None:
         await close_graph()
     except Exception as exc:
         logger.warning("neo4j.close_error", error=str(exc))
-
-
-async def _init_kafka() -> None:
-    """Initialize Kafka producer."""
-    try:
-        from sourcemind.events.producer import init_producer
-        await init_producer()
-    except Exception as exc:
-        logger.warning("kafka.init_skipped", error=str(exc))
-
-
-async def _close_kafka() -> None:
-    """Close Kafka producer."""
-    try:
-        from sourcemind.events.producer import close_producer
-        await close_producer()
-    except Exception as exc:
-        logger.warning("kafka.close_error", error=str(exc))
 
 
 # ─── Application factory ──────────────────────────────────────────────────────

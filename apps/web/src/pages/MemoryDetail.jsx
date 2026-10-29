@@ -6,6 +6,7 @@ import TopBar from "../components/layout/TopBar";
 import ContributorAvatar from "../components/widgets/ContributorAvatar";
 import Markdown from "../components/widgets/Markdown";
 import SourceInfo from "../components/widgets/SourceInfo";
+import MemoryConnections from "../components/graph/MemoryConnections";
 import { PageLoadError } from "../components/widgets/PageLoadState";
 import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
@@ -586,6 +587,9 @@ function MemoryDetailView({ id }) {
                         <AlertTriangle className="w-3.5 h-3.5" /> View Conflicts
                     </Button>}
                 </aside>
+            </div>
+            <div className="px-8 pb-8" data-testid="memory-connections-section">
+                <MemoryConnections memoryId={memoryId} pilotMode={pilotMode} />
             </div>
             <Dialog open={editOpen} onOpenChange={(open) => { if (!editSaving) setEditOpen(open); }}>
                 <DialogContent className="bg-sm-surface border-sm-border text-sm-text" data-testid="memory-edit-dialog">

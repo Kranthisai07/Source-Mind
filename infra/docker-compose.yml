@@ -2,8 +2,12 @@ version: "3.9"
 
 # ─────────────────────────────────────────────────────────────
 # SourceMind — Local Development Environment
-# Services: PostgreSQL 16 + pgvector, Redis 7.2, Neo4j 5,
-#            Redpanda (Kafka-compatible), SourceMind API
+# Services: PostgreSQL 16 + pgvector, Redis 7.2, SourceMind API and worker.
+# The graph projection stack (Neo4j 5, Redpanda and its console) is opt-in:
+#   docker compose -f infra/docker-compose.yml --profile graph up -d
+# It is off by default, and the API does not wait for it. Enabling it also needs
+# FF_NEO4J_ATTRIBUTION=true and FF_KAFKA_EVENTS=true in your environment (see
+# docs/architecture/GRAPH_PROJECTION.md). Its ports bind to 127.0.0.1 only.
 #
 # Database roles (D-021): the bootstrap superuser `sourcemind` only
 # initializes the container. infra/postgres/local-roles.sql creates
@@ -23,8 +27,10 @@ x-common-env: &common-env
   DATABASE_URL: postgresql+asyncpg://sourcemind_runtime:${SOURCEMIND_LOCAL_RUNTIME_PASSWORD:-sourcemind_runtime_dev}@postgres:5432/sourcemind
   REDIS_URL: redis://redis:6379/0
   NEO4J_URI: bolt://neo4j:7687
-  NEO4J_AUTH: neo4j/sourcemind_dev
+  NEO4J_AUTH: neo4j/${SOURCEMIND_LOCAL_NEO4J_PASSWORD:-sourcemind_dev}
   KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+  FF_NEO4J_ATTRIBUTION: ${FF_NEO4J_ATTRIBUTION:-false}
+  FF_KAFKA_EVENTS: ${FF_KAFKA_EVENTS:-false}
 
 services:
   # ─── PostgreSQL 16 with pgvector ─────────────────────────
@@ -38,6 +44,7 @@ services:
       # Read by 02_local_roles.sql through psql \getenv.
       SOURCEMIND_LOCAL_OWNER_PASSWORD: ${SOURCEMIND_LOCAL_OWNER_PASSWORD:-sourcemind_owner_dev}
       SOURCEMIND_LOCAL_RUNTIME_PASSWORD: ${SOURCEMIND_LOCAL_RUNTIME_PASSWORD:-sourcemind_runtime_dev}
+      SOURCEMIND_LOCAL_RELAY_PASSWORD: ${SOURCEMIND_LOCAL_RELAY_PASSWORD:-sourcemind_relay_dev}
     ports:
       - "5432:5432"
     volumes:
@@ -71,19 +78,19 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # ─── Neo4j 5 with APOC ───────────────────────────────────
+  # ─── Neo4j 5 (graph projection; opt-in via --profile graph) ──
+  # No APOC: nothing uses it, and unrestricted apoc.* is a file-read/SSRF primitive.
   neo4j:
-    image: neo4j:5-community
+    image: neo4j:5.26.24-community
     container_name: sm_neo4j
+    profiles: ["graph"]
     environment:
-      NEO4J_AUTH: neo4j/sourcemind_dev
-      NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_AUTH: neo4j/${SOURCEMIND_LOCAL_NEO4J_PASSWORD:-sourcemind_dev}
       NEO4J_dbms_memory_heap_initial__size: 512m
       NEO4J_dbms_memory_heap_max__size: 1G
     ports:
-      - "7474:7474"   # HTTP browser
-      - "7687:7687"   # Bolt
+      - "127.0.0.1:7474:7474"   # HTTP browser
+      - "127.0.0.1:7687:7687"   # Bolt
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
@@ -96,8 +103,9 @@ services:
 
   # ─── Redpanda (Kafka-compatible, lighter for local dev) ──
   redpanda:
-    image: redpandadata/redpanda:latest
+    image: redpandadata/redpanda:v24.3.14
     container_name: sm_redpanda
+    profiles: ["graph"]
     command:
       - redpanda
       - start
@@ -113,10 +121,10 @@ services:
       - --advertise-rpc-addr=redpanda:33145
       - --mode=dev-container
     ports:
-      - "19092:19092"   # External Kafka
-      - "18082:18082"   # External HTTP proxy
-      - "18081:18081"   # External schema registry
-      - "19644:9644"    # Prometheus metrics
+      - "127.0.0.1:19092:19092"   # External Kafka
+      - "127.0.0.1:18082:18082"   # External HTTP proxy
+      - "127.0.0.1:18081:18081"   # External schema registry
+      - "127.0.0.1:19644:9644"    # Prometheus metrics
     volumes:
       - redpanda_data:/var/lib/redpanda/data
     healthcheck:
@@ -128,8 +136,9 @@ services:
 
   # ─── Redpanda Console (Kafka UI) ─────────────────────────
   redpanda-console:
-    image: redpandadata/console:latest
+    image: redpandadata/console:v2.8.17
     container_name: sm_redpanda_console
+    profiles: ["graph"]
     environment:
       CONFIG_FILEPATH: /tmp/config.yml
       CONFIG: |
@@ -140,7 +149,7 @@ services:
             enabled: true
             urls: ["http://redpanda:9644"]
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
       redpanda:
         condition: service_healthy
@@ -163,6 +172,10 @@ services:
       MIGRATION_DATABASE_URL: postgresql+asyncpg://sourcemind_owner:${SOURCEMIND_LOCAL_OWNER_PASSWORD:-sourcemind_owner_dev}@postgres:5432/sourcemind
       # Read by migration 20261005_0010 (D-021): explicit grants go to this role.
       SOURCEMIND_RUNTIME_ROLE: sourcemind_runtime
+      # Read by migration 20261029_0015: SELECT on graph_outbox goes to this role
+      # (the graph relay). Empty skips the grant. Set it to sourcemind_graph_relay
+      # only on a volume created after local-roles.sql gained that role.
+      SOURCEMIND_GRAPH_RELAY_ROLE: ${SOURCEMIND_GRAPH_RELAY_ROLE:-}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       S3_BUCKET_NAME: ${S3_BUCKET_NAME:-sourcemind-dev}
@@ -176,8 +189,6 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      neo4j:
         condition: service_healthy
     command: >
       sh -c "DATABASE_URL=$$MIGRATION_DATABASE_URL alembic upgrade head
@@ -209,6 +220,49 @@ services:
       redis:
         condition: service_healthy
     command: celery -A sourcemind.workers.celery_app worker --loglevel=info --concurrency=4
+    restart: unless-stopped
+
+  # ─── Graph projection (opt-in: --profile graph; see GRAPH_PROJECTION.md) ───
+  # Relay: graph_outbox -> Redpanda. Reads with its own role (SELECT + UPDATE(published_at)),
+  # which exists only on a volume created after local-roles.sql gained it.
+  graph-relay:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+      target: development
+    container_name: sm_graph_relay
+    profiles: ["graph"]
+    environment:
+      <<: *common-env
+      GRAPH_RELAY_DATABASE_URL: postgresql+asyncpg://sourcemind_graph_relay:${SOURCEMIND_LOCAL_RELAY_PASSWORD:-sourcemind_relay_dev}@postgres:5432/sourcemind
+    volumes:
+      - ../apps/api/sourcemind:/app/sourcemind
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    command: python -m sourcemind.events.relay
+    restart: unless-stopped
+
+  # Projector: Redpanda -> Neo4j (idempotent, seq-guarded, dead-letter topic for poison messages).
+  graph-projector:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+      target: development
+    container_name: sm_graph_projector
+    profiles: ["graph"]
+    environment:
+      <<: *common-env
+    volumes:
+      - ../apps/api/sourcemind:/app/sourcemind
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    command: python -m sourcemind.events.projector
     restart: unless-stopped
 
 volumes:
