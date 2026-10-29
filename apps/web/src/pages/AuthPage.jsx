@@ -15,59 +15,97 @@
 import React from "react";
 import { Link } from "react-router-dom";
 import { SignIn, SignUp } from "@clerk/clerk-react";
-import { Brain } from "lucide-react";
 
 import { appUrl } from "@/lib/appUrl";
+import { SiteHeader, SiteFooter, useSitePage } from "@/components/marketing/SiteChrome";
+import "@/components/marketing/marketing.css";
 
-// Clerk's default theme is light; the rest of the app is dark. These map
-// Clerk's slots onto the existing SourceMind palette so the page does not
-// flash white between routes.
+// Same page chrome and --site-* tokens as the landing page, so Clerk follows
+// the light/dark toggle through CSS variables. Slots are style objects, not
+// Tailwind classes: Clerk's own emotion styles out-rank utility classes.
 const clerkAppearance = {
     variables: {
-        colorPrimary: "#4F7EFF",
-        colorBackground: "var(--sm-surface)",
-        colorText: "var(--sm-text)",
-        colorTextSecondary: "var(--sm-text-secondary)",
-        colorInputBackground: "var(--sm-surface-2)",
-        colorInputText: "var(--sm-text)",
-        borderRadius: "0.75rem",
+        colorPrimary: "var(--site-ink)",
+        // Clerk derives its borders and dividers from this; its default (black) vanishes on dark.
+        colorNeutral: "var(--site-ink)",
+        colorBackground: "var(--site-paper)",
+        colorText: "var(--site-ink)",
+        colorTextSecondary: "var(--site-muted)",
+        colorInputBackground: "var(--site-paper)",
+        colorInputText: "var(--site-ink)",
+        borderRadius: "4px",
         fontFamily: "'DM Sans', sans-serif",
     },
     elements: {
-        rootBox: "w-full",
-        card: "bg-transparent shadow-none border-0 p-0",
-        headerTitle: "text-[22px] font-semibold tracking-tight",
-        headerSubtitle: "text-[12.5px]",
-        footer: "hidden",
+        // Clerk gives cardBox a fixed 25rem width, shadow and border; flatten it
+        // so the form fills our card instead of sitting offset inside it.
+        rootBox: { width: "100%" },
+        cardBox: { width: "100%", boxShadow: "none", border: 0, background: "transparent" },
+        // 2px side padding: Clerk's inner wrappers clip overflow, which shaved the
+        // outer 1px border off the first and last controls in each row.
+        card: { width: "100%", boxShadow: "none", border: 0, background: "transparent", padding: "0 2px", gap: 24 },
+        headerTitle: { fontFamily: "'Newsreader', Georgia, serif", fontWeight: 400, fontSize: 28, lineHeight: 1.17 },
+        headerSubtitle: { fontSize: 14, color: "var(--site-muted)" },
+        socialButtonsBlockButton: {
+            minHeight: 44,
+            border: "1px solid color-mix(in srgb, var(--site-ink) 24%, transparent)",
+            boxShadow: "none",
+            background: "var(--site-paper)",
+            backgroundImage: "none",
+            "&:hover": { background: "var(--site-wash)" },
+        },
+        socialButtonsBlockButtonText: { color: "var(--site-ink)" },
+        // Provider glyphs such as GitHub's are black; lighten them on the dark theme only.
+        providerIcon__github: { ".dark &": { filter: "invert(1)" } },
+        dividerLine: { background: "var(--site-line)" },
+        dividerText: { color: "var(--site-muted)" },
+        formFieldLabel: { color: "var(--site-ink)" },
+        formFieldInput: {
+            minHeight: 44,
+            border: "1px solid color-mix(in srgb, var(--site-ink) 24%, transparent)",
+            boxShadow: "none",
+            background: "var(--site-paper)",
+            color: "var(--site-ink)",
+            "&:focus": { borderColor: "var(--site-accent)", boxShadow: "0 0 0 1px var(--site-accent)" },
+        },
+        // Mirrors .develop-button on the landing page.
+        formButtonPrimary: {
+            minHeight: 47,
+            borderRadius: 4,
+            background: "var(--site-ink)",
+            backgroundImage: "none",
+            color: "var(--site-bg)",
+            boxShadow: "none",
+            textTransform: "none",
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: 12,
+            fontWeight: 400,
+            // Clerk paints a gradient sheen over the button with a pseudo-element.
+            "&::after, &::before": { display: "none" },
+            "&:hover, &:focus": { background: "var(--site-accent)", color: "var(--site-paper)" },
+        },
+        footerActionLink: { color: "var(--site-accent)" },
+        footer: { display: "none" },
     },
 };
 
 export default function AuthPage({ mode = "sign-in" }) {
     const isSignUp = mode === "sign-up";
+    useSitePage(isSignUp ? "Sign up — SourceMind" : "Sign in — SourceMind");
 
     return (
-        <div className="min-h-screen bg-sm-bg relative flex items-center justify-center p-6 overflow-hidden">
-            <div className="absolute inset-0 bg-grid bg-grid-fade opacity-30" />
-            <div className="absolute inset-x-0 top-0 h-[520px] bg-[radial-gradient(ellipse_60%_40%_at_50%_0%,rgba(79,126,255,0.15),transparent_70%)] pointer-events-none" />
-
-            <div className="relative w-full max-w-[420px]">
-                <Link
-                    to="/"
-                    className="flex items-center justify-center gap-2.5 mb-8 group"
-                    data-testid="auth-logo-link"
-                >
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-sm-blue to-sm-purple flex items-center justify-center shadow-[0_8px_24px_-8px_rgba(79,126,255,0.6)] group-hover:scale-105 transition-transform">
-                        <Brain className="w-5 h-5 text-white" strokeWidth={2.5} />
-                    </div>
-                    <span className="text-[18px] font-semibold tracking-tight text-sm-text">
-                        SourceMind
-                    </span>
-                </Link>
-                <p className="text-center text-sm-text-secondary text-[13px] mb-10">
-                    Your team's collective memory
+        <div className="source-site" data-testid="auth-page">
+            <SiteHeader />
+            <main id="main-content" className="site-container" style={{ maxWidth: 480, padding: "64px 0 96px" }}>
+                <p className="eyebrow" style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--site-muted)", marginBottom: 21 }}>
+                    <span className="tiny-square" aria-hidden="true" />
+                    SourceMind / {isSignUp ? "Sign up" : "Sign in"}
                 </p>
 
-                <div className="glass rounded-2xl p-8" data-testid="clerk-auth-card">
+                <div
+                    data-testid="clerk-auth-card"
+                    style={{ background: "var(--site-paper)", border: "1px solid var(--site-line)", borderRadius: 4, padding: 32 }}
+                >
                     {isSignUp ? (
                         <SignUp
                             routing="virtual"
@@ -84,18 +122,18 @@ export default function AuthPage({ mode = "sign-in" }) {
                         />
                     )}
 
-                    <div className="mt-6 text-center text-[12px] text-sm-text-secondary">
+                    <div style={{ marginTop: 24, textAlign: "center", fontSize: 13, color: "var(--site-muted)" }}>
                         {isSignUp ? (
                             <>
                                 Already have an account?{" "}
-                                <Link to="/sign-in" className="text-sm-blue hover:underline" data-testid="switch-to-signin">
+                                <Link to="/sign-in" style={{ color: "var(--site-accent)" }} data-testid="switch-to-signin">
                                     Sign in
                                 </Link>
                             </>
                         ) : (
                             <>
                                 Don't have an account?{" "}
-                                <Link to="/sign-up" className="text-sm-blue hover:underline" data-testid="switch-to-signup">
+                                <Link to="/sign-up" style={{ color: "var(--site-accent)" }} data-testid="switch-to-signup">
                                     Sign up
                                 </Link>
                             </>
@@ -103,10 +141,11 @@ export default function AuthPage({ mode = "sign-in" }) {
                     </div>
                 </div>
 
-                <p className="text-center text-[11px] font-mono text-sm-text-muted mt-6 tracking-wider">
-                    PROTECTED BY CLERK
+                <p className="eyebrow" style={{ textAlign: "center", color: "var(--site-muted)", marginTop: 24 }}>
+                    Protected by Clerk
                 </p>
-            </div>
+            </main>
+            <SiteFooter />
         </div>
     );
 }

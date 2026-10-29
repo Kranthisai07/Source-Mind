@@ -3897,3 +3897,22 @@ until identities are linked.
 because the connect flow returned "not configured"; not verified in the database). (2) Worker logs showed 49 `RuntimeError: Event loop is closed` messages in 63 tasks: the OpenAI and Anthropic async clients are created per
 ingestion task and never closed before the loop ends (`workers/ingestion.py`); harmless to results, a resource-hygiene bug. (3) GitHub imports create no `attributions` rows by design (authors are not workspace members).
 (4) The end-to-end re-import after the fix, on a clean database, was not done when this was written.
+
+## D-056 — Sign-in and sign-up reuse the landing page's chrome and tokens; Clerk is themed with style objects and CSS variables
+
+**What changed.** `apps/web/src/pages/AuthPage.jsx` now renders inside the landing page's `.source-site` wrapper with `SiteHeader` and `SiteFooter` and the `--site-*` tokens from `marketing.css`, instead of its own dark card
+on a grid background. The live site's sign-in page had two defects: it looked like a different product from the landing page, and Clerk's inner card sat offset inside our outer card, with its right edge spilling past the
+card border (Clerk's `cardBox` has a fixed width, border and shadow that our wrapper padding stacked on top of).
+
+**Why this approach.** Reusing `SiteHeader`, `SiteFooter` and the token file keeps one source of truth for the brand (logo, fonts, light/dark), so the sign-in page cannot drift again when the landing page changes. Clerk's
+`appearance` takes CSS variables as colours, so the form follows the existing `.dark` class with no JavaScript. Clerk's slots are style objects rather than Tailwind classes because Clerk's own emotion styles out-rank
+utility classes; the first attempt used classes and the borders and button colours did not apply. `colorNeutral` is set because Clerk derives its borders and dividers from it, and its default (black) is invisible on dark.
+
+**Alternatives not taken.** A split-screen brand panel (rejected: not part of the landing page's design language). Replacing Clerk's component with a hand-built form (rejected: the page used to do this and checked no
+credentials; see the header comment in the file).
+
+**Checked.** Light and dark at 1440 and 390 px, sign-in and sign-up, in a fresh browser context: no horizontal scroll, form 32 px inside the card on both sides. `routeAuthSmoke.test.js` passes (7/7); `craco build` succeeds.
+`src/lib/apiContract.test.js`, `workspaceApi.test.js`, `identityCache.test.js` and `components/workspace/workspaceUi.test.js` failed (50 tests) identically with this change stashed, so this change did not cause them.
+Cause: a local, gitignored `apps/web/.env` that sets `REACT_APP_DEFAULT_WORKSPACE_ID`. That pins one workspace, so the client skips the workspace lookup the tests expect (they assert two fetches, lookup then create;
+failing URLs carried the pinned id). CI sets only `REACT_APP_USE_MOCKS=false` and `REACT_APP_BACKEND_URL`. With those two set and the pin blanked, the full suite passes: 521 passed, 20 skipped, 0 failed. No code change was needed.
+A developer's local `.env` can therefore fail these suites; run them with CI's environment.
