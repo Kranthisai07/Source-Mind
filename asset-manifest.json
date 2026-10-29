@@ -1,0 +1,13 @@
+{
+  "files": {
+    "main.css": "/Source-Mind/static/css/main.818927a9.css",
+    "main.js": "/Source-Mind/static/js/main.dcdc5219.js",
+    "index.html": "/Source-Mind/index.html",
+    "main.818927a9.css.map": "/Source-Mind/static/css/main.818927a9.css.map",
+    "main.dcdc5219.js.map": "/Source-Mind/static/js/main.dcdc5219.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.818927a9.css",
+    "static/js/main.dcdc5219.js"
+  ]
+}
