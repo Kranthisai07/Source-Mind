@@ -1,0 +1,178 @@
+# Graph projection: production rollout runbook
+
+Status: written 2026-10-30 for D-063. Nothing here has been executed in production. Read it with
+[GRAPH_PROJECTION.md](GRAPH_PROJECTION.md) (design) and
+[SECURITY_FOUNDATION_ROLLOUT.md](SECURITY_FOUNDATION_ROLLOUT.md) (the conventions this follows).
+
+## What is being rolled out
+
+Production is the Railway project `welcoming-motivation`, environment `production`: `Source-Mind` (API),
+`Source-Mind-Worker`, `Postgres`, `Redis`. Both application services build from `main` with root `/apps/api` and are
+pinned to a commit with autodeploy **off** (D-052). This rollout adds four services and two flags:
+
+| New | What | Image / command |
+| --- | --- | --- |
+| `neo4j` | the graph | `neo4j:5.26.24-community`, volume on `/data`, private network only |
+| `redpanda` | the event transport | `redpandadata/redpanda:v24.3.14`, single node, volume, private network only |
+| `graph-relay` | outbox to Redpanda | `apps/api/railway.relay.json` (`python -m sourcemind.events.relay`) |
+| `graph-projector` | Redpanda to Neo4j | `apps/api/railway.projector.json` (`python -m sourcemind.events.projector`) |
+
+Flags: `FF_KAFKA_EVENTS` and `FF_NEO4J_ATTRIBUTION`, always set together (the boot guard in `core/config.py` refuses one
+without the other in production, a non-default `NEO4J_AUTH`, and any localhost URI).
+
+**This is a release, not just a flag.** The running revision is `468d7b8`. Shipping the graph ships everything merged
+since: two migrations (`20261029_0015`, `20261029_0016`), the dependency swap PyMuPDF to pypdfium2 and
+python-Levenshtein to rapidfuzz (D-054), the co-authored-commit fix (D-055), and the graph code itself with the flags
+off. Review the commit list for the pinned SHA before you start and smoke-test PDF ingestion and connector sync (step 5).
+
+Why the order is safe: with both flags on, a workspace is answered from PostgreSQL until it has a published cursor, the
+projector has caught up to it, and it has no dead-letter gap (`_graph_fresh`). Turning the flags on before any backfill
+therefore changes nothing a user can see; the graph takes over workspace by workspace as each is backfilled.
+
+## Rollback (valid at every step)
+
+1. Set `FF_KAFKA_EVENTS=false` and `FF_NEO4J_ATTRIBUTION=false` on the API and worker and redeploy. Reads are PostgreSQL
+   from the next request; no events are written.
+2. Stop `graph-relay` and `graph-projector`. Nothing is lost: unpublished outbox rows wait in PostgreSQL.
+3. Neo4j and Redpanda data are disposable: the graph is rebuilt from PostgreSQL by the backfill.
+4. If the release itself misbehaves, re-pin the API and worker to `468d7b8`. The two migrations are additive (new tables
+   only), so the old code runs against the new schema.
+5. Downgrading the migrations is a separate, deliberate act. `0015` refuses while the outbox holds rows.
+
+## Steps
+
+Each step names who acts, what to check before moving on, and what undoes it.
+
+### 0. Agree the release and the window
+- Pick one `main` commit SHA and record it here. Read `git log 468d7b8..<sha>`.
+- Record the current state read-only: deployed commit, start commands, variable **names** (never values), regions.
+- Keep autodeploy off. Independent services cannot enforce migration order.
+
+### 1. Back up PostgreSQL
+Take a fresh encrypted logical backup (and a Railway volume snapshot) as in the D-021 rollout; confirm it restores
+somewhere disposable. Do not continue without one: step 4 changes the production schema.
+
+### 2. Provision the storage tier (flags still off, nothing connected yet)
+Create both as **image services** in the same environment, region `us-west2` (next to the API; the database is in `sfo`),
+with **no public domain and no TCP proxy**. Neo4j Community has no database-enforced tenant isolation; its only
+protection is that nothing but the API, worker and projector can reach it.
+
+`neo4j`
+- image `neo4j:5.26.24-community` (pin the digest when you create it), volume mounted at `/data`
+- `NEO4J_AUTH=neo4j/<random 32+ characters>`: generate it, store it only as a Railway variable, reference it from other
+  services (`${{neo4j.NEO4J_AUTH}}`); never paste it anywhere
+- memory sized to the plan: `NEO4J_server_memory_heap_initial__size`, `NEO4J_server_memory_heap_max__size`,
+  `NEO4J_server_memory_pagecache_size` (the local default was heap 512m-1G). Confirm the setting names in the first boot log.
+- no APOC (unrestricted `apoc.*` is a file-read and SSRF primitive and nothing here uses it)
+
+`redpanda`
+- image `redpandadata/redpanda:v24.3.14`, volume mounted at `/var/lib/redpanda/data`
+- the start flags used in `infra/docker-compose.yml`, with the Kafka listener advertised as
+  `redpanda.railway.internal:9092` so clients reconnect through the private name
+- **Durability decision (open):** the local compose uses `--mode=dev-container`, which relaxes fsync. The pipeline
+  tolerates a lost *unpublished* event (PostgreSQL still has it) but not a lost *published* one: the cursor has already
+  moved past it and nothing would show the graph is missing state until a backfill. For production prefer the default
+  (non-dev) mode, validate it starts and serves on Railway first, and treat any Redpanda data loss as "backfill every
+  workspace". The full pipeline test suite ran on `dev-container` mode only.
+
+Verify: both deployments healthy; from the API service, a TCP connect to `neo4j.railway.internal:7687` and
+`redpanda.railway.internal:9092` succeeds; neither has a public address.
+Undo: delete the two services and their volumes.
+
+### 3. Create the relay database role (the owner runs this)
+As the PostgreSQL owner role, in the production database:
+
+```sql
+CREATE ROLE sourcemind_graph_relay LOGIN PASSWORD '<generated, not printed>'
+    NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+ALTER ROLE sourcemind_graph_relay SET timezone = 'UTC';
+GRANT CONNECT ON DATABASE <database> TO sourcemind_graph_relay;
+GRANT USAGE ON SCHEMA public TO sourcemind_graph_relay;
+```
+
+The role gets no policy bypass. The migration in step 4 grants it `SELECT` and `UPDATE (published_at)` on `graph_outbox`
+and `SELECT` plus `INSERT`/`UPDATE (published_seq, updated_at)` on `graph_publication_cursor`, and nothing else.
+Undo: `DROP ROLE sourcemind_graph_relay` (after step 4 is undone).
+
+### 4. Migrate (the owner runs this, as the table-owner role, never as the runtime role)
+With the owner connection string and these two variables set:
+
+```
+SOURCEMIND_RUNTIME_ROLE=<the production runtime role>
+SOURCEMIND_GRAPH_RELAY_ROLE=sourcemind_graph_relay
+alembic current            # expect 20261016_0014 (confirm before continuing)
+alembic upgrade head        # applies 20261029_0015 and 20261029_0016
+```
+
+Verify the grants exactly (nothing wider than listed):
+
+```sql
+SELECT grantee, privilege_type FROM information_schema.role_table_grants
+WHERE table_name IN ('graph_outbox', 'graph_publication_cursor') ORDER BY 1, 2;
+SELECT grantee, privilege_type, column_name FROM information_schema.column_privileges
+WHERE table_name IN ('graph_outbox', 'graph_publication_cursor')
+  AND grantee = 'sourcemind_graph_relay' AND privilege_type = 'UPDATE';
+```
+
+Expected: the runtime role has `INSERT` on `graph_outbox` and `SELECT` on `graph_publication_cursor`, nothing more; the relay
+role has `SELECT` on both, `UPDATE (published_at)` on the outbox, `INSERT` on the cursor and `UPDATE (published_seq, updated_at)`.
+Undo: the downgrade (separate, deliberate; see Rollback).
+
+### 5. Ship the release with the flags off
+1. Re-pin the API and worker to the agreed SHA and redeploy, worker first, then API, as in the security rollout.
+2. Verify `/health`, a normal authenticated request, and the authorization matrix are unchanged.
+3. Exercise what the dependency swap touched: ingest a PDF, run one connector sync.
+4. Create `graph-relay` and `graph-projector` from the same SHA using `railway.relay.json` / `railway.projector.json`.
+   Give each the worker's production variable set (they load the same settings, so the production validators apply to
+   them too) plus:
+   - `NEO4J_URI=bolt://neo4j.railway.internal:7687`, `NEO4J_AUTH=${{neo4j.NEO4J_AUTH}}`
+   - `KAFKA_BOOTSTRAP_SERVERS=redpanda.railway.internal:9092`
+   - relay only: `GRAPH_RELAY_DATABASE_URL` (the relay role; a secret)
+5. Verify from their logs: `graph.topic_created` (or already existing), `graph.relay_started`, `graph.projector_started`,
+   `neo4j.connected`, then `graph.relay_lag pending=0`. With the flags still off they idle.
+Undo: re-pin to `468d7b8`; delete the two new services.
+
+### 6. Enable
+Set `FF_KAFKA_EVENTS=true` and `FF_NEO4J_ATTRIBUTION=true` together, plus `NEO4J_URI`, `NEO4J_AUTH` and
+`KAFKA_BOOTSTRAP_SERVERS` on the API and the worker (the worker's ingestion path emits events too), and redeploy both.
+Behaviour is unchanged for users until a workspace is backfilled. New writes now appear in `graph_outbox`.
+Undo: Rollback step 1.
+
+### 7. Backfill, one workspace at a time, smallest first
+```
+python -m sourcemind.events.backfill --workspace-id <uuid> [--as-user <uuid of an active member>]
+```
+It reads PostgreSQL through normal row-level security as an active owner, so it needs no bypass role. After each:
+
+```
+python -m sourcemind.events.status --workspace-id <uuid>
+```
+Proceed only when the state is `trusted` (published equals applied, no gap, nothing pending; exit code 0). Then call the four
+endpoints for that workspace and confirm `source: "graph"`, and that lineage, one-hop related and the collaboration graph
+equal their PostgreSQL answers (the parity the tests assert).
+A state of `gap: run the backfill` means an event was dead-lettered: run the backfill again for that workspace.
+
+### 8. Observe for 24 hours
+Watch `graph.relay_lag` (pending and oldest seconds), the projector batch lines and any `graph.dead_lettered`, Neo4j memory,
+the share of graph versus PostgreSQL answers, and endpoint latency (the graph read ceiling is `NEO4J_QUERY_TIMEOUT_SECONDS`,
+default 2 s; on timeout the API falls back and the client sees nothing). `python -m sourcemind.events.status` with no
+workspace lists every workspace and exits non-zero if any is not trusted, so it works as a periodic check.
+
+## Operating notes (observed in the local live run, 2026-10-30)
+
+- **Neo4j down:** the API answers from PostgreSQL at once; depth is reported honestly (`depth_served` 1 of 3) and owners are
+  direct contributors only. No client-visible error.
+- **Neo4j rebuilt empty** (volume lost): reads stay on PostgreSQL (no watermark, so not fresh). Restart the projector (it
+  creates the schema at start) and backfill each workspace.
+- **A poison event** is dead-lettered and its workspace marked gapped; a later good event does not hide it. Backfill clears it.
+  While Neo4j is unreachable the projector retries instead of dead-lettering, so an outage alone never creates a gap.
+- **One relay at a time** (a PostgreSQL advisory lock). A second instance exits with code 3 and Railway restarts it, so a
+  rolling deploy briefly shows `graph.relay_already_running`. That is expected.
+- **Redpanda data loss** means published events vanished: backfill every workspace.
+- Licences: Neo4j Community is GPLv3 and Redpanda is BSL 1.1. Running the unmodified images as separate services is the
+  intended use; confirm that fits your obligations (this document is not legal advice).
+
+## Not verified here
+
+Railway-specific behaviour (private DNS names, variable references, volume sizing, restart behaviour), PostgreSQL 16 (the
+tests ran on 18, which production uses), load, multi-partition topics, and Redpanda outside `dev-container` mode.

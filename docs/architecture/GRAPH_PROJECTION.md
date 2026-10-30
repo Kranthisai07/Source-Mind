@@ -111,7 +111,7 @@ volume; to use it on an existing volume recreate it (`down -v` deletes local dat
 
 With either graph flag on in production: both flags must be on together, `NEO4J_AUTH` must not be the development
 default, and neither `NEO4J_URI` nor `KAFKA_BOOTSTRAP_SERVERS` may point at localhost. Production hosting of Neo4j and a
-broker is **not** decided or provisioned; the flags stay off.
+broker is decided but not yet provisioned: Railway image services over the private network, as in [GRAPH_ROLLOUT.md](GRAPH_ROLLOUT.md) (D-063). The flags stay off until that runbook is executed.
 
 ## Known limits
 

@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from sourcemind.core import graph
 from sourcemind.core.graph import run_read
-from sourcemind.events import projector, relay
+from sourcemind.events import projector, relay, status
 from sourcemind.services.graph.outbox import emit_memory_states
 from tests.integration.test_graph_outbox_real_db import (  # noqa: F401  (fixtures)
     _as_owner,
@@ -223,12 +223,19 @@ async def test_a_dead_lettered_event_gaps_the_workspace_until_a_backfill_complet
         )
         # Caught up, yet not trusted: this is exactly the case the watermark used to get wrong.
         assert await fresh() is False
+        # ...and the rollout status tool says so in words an operator can act on.
+        async with relay_engine.connect() as conn:
+            (report,) = await status.collect(conn, workspace_id=data.target_workspace_id)
+        assert report.state == status.GAP and report.gap_seq is not None
 
         # The backfill CLI builds its own pool from settings; point it at the disposable database.
         monkeypatch.setenv("DATABASE_URL", os.environ["TEST_DATABASE_URL"])
         get_settings.cache_clear()
         assert await backfill.run(data.target_workspace_id, data.owner_id) == 0
         await _wait_for(repaired, timeout=90, what="the completed backfill to clear the gap")
+        async with relay_engine.connect() as conn:
+            (report,) = await status.collect(conn, workspace_id=data.target_workspace_id)
+        assert report.state == status.TRUSTED and report.gap_seq is None
     finally:
         stop.set()
         assert await asyncio.wait_for(relay_task, timeout=30) == 0
