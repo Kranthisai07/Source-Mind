@@ -494,7 +494,7 @@ async def test_a_poison_message_goes_to_the_dead_letter_topic_and_does_not_block
 
 WATERMARK_AND_GAP = (
     "MATCH (w:Workspace {key: $workspace_id}) "
-    "RETURN w.applied_seq AS applied, w.gap_seq AS gap"
+    "RETURN w.applied_seq AS applied, w.gap_seq AS gap, w.baseline_seq AS baseline"
 )
 
 
@@ -606,10 +606,13 @@ async def test_a_gap_in_one_workspace_does_not_affect_another(stack) -> None:
     bad = _event(ws_a, str(uuid.uuid4()), 5)
     bad["payload"]["memory"]["id"] = "not-a-uuid"
     await _process(bad, dlq)
-    await _process(_event(ws_b, str(uuid.uuid4()), 6), dlq)
+    # ws_b is baselined by a completed backfill, then keeps receiving ordinary events.
+    await _process(_marker(ws_b, 5, "workspace.backfill_started"), dlq)
+    await _process(_marker(ws_b, 6, "workspace.backfill_complete", {"started_seq": 5}), dlq)
+    await _process(_event(ws_b, str(uuid.uuid4()), 7), dlq)
     assert (await _state(ws_a))["gap"] == 5
     assert (await _state(ws_b)).get("gap") is None
-    assert await _fresh(ws_b, published=6) is True
+    assert await _fresh(ws_b, published=7) is True
 
 
 async def test_neo4j_enforces_the_query_timeout_instead_of_stalling(
@@ -652,3 +655,23 @@ async def test_an_event_with_a_non_uuid_workspace_is_dead_lettered_not_fatal(sta
     # And the next good event is still applied.
     ws, mem = str(uuid.uuid4()), str(uuid.uuid4())
     assert await _process(_event(ws, mem, 6), dlq) == "applied"
+
+
+async def test_caught_up_without_a_completed_backfill_is_not_trusted(stack) -> None:
+    """Codex, #46: a workspace that already had data when the pipeline was switched on looks
+    caught up after its first new event while missing everything older."""
+    ws = str(uuid.uuid4())
+    dlq = _Dlq()
+    assert await _process(_event(ws, str(uuid.uuid4()), 10), dlq) == "applied"
+    state = await _state(ws)
+    assert state["applied"] == 10 and state["gap"] is None and state["baseline"] is None
+    assert await _fresh(ws, published=10) is False  # caught up, no gap, still not trusted
+
+    await _process(_marker(ws, 11, "workspace.backfill_started"), dlq)
+    # A started marker alone is not a baseline: the re-emit might still be in flight.
+    assert (await _state(ws))["baseline"] is None
+    await _process(_event(ws, str(uuid.uuid4()), 12), dlq)
+    await _process(_marker(ws, 13, "workspace.backfill_complete", {"started_seq": 11}), dlq)
+    state = await _state(ws)
+    assert state["baseline"] == 11
+    assert await _fresh(ws, published=13) is True

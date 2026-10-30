@@ -225,7 +225,9 @@ async def test_a_dead_lettered_event_gaps_the_workspace_until_a_backfill_complet
         assert await fresh() is False
         # ...and the rollout status tool says so in words an operator can act on.
         async with relay_engine.connect() as conn:
-            (report,) = await status.collect(conn, workspace_id=data.target_workspace_id)
+            (report,) = (
+                await status.collect(conn, workspace_id=data.target_workspace_id)
+            ).workspaces
         assert report.state == status.GAP and report.gap_seq is not None
 
         # The backfill CLI builds its own pool from settings; point it at the disposable database.
@@ -234,7 +236,9 @@ async def test_a_dead_lettered_event_gaps_the_workspace_until_a_backfill_complet
         assert await backfill.run(data.target_workspace_id, data.owner_id) == 0
         await _wait_for(repaired, timeout=90, what="the completed backfill to clear the gap")
         async with relay_engine.connect() as conn:
-            (report,) = await status.collect(conn, workspace_id=data.target_workspace_id)
+            (report,) = (
+                await status.collect(conn, workspace_id=data.target_workspace_id)
+            ).workspaces
         assert report.state == status.TRUSTED and report.gap_seq is None
     finally:
         stop.set()

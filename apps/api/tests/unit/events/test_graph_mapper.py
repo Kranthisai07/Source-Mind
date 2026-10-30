@@ -256,8 +256,11 @@ async def test_the_complete_marker_clears_only_older_gaps_then_advances_the_wate
     run = Recorder()
     event = _marker("workspace.backfill_complete", {"started_seq": 80, "emitted": 3}, seq=95)
     assert await gm.apply_event(run, event) is True
-    assert [q for q, _ in run.calls] == [gm.CLEAR_GAP, gm.ADVANCE_WATERMARK]
-    assert run.calls[0][1] == {"workspace_id": WS, "seq": 95, "started_seq": 80}
+    # The watermark first (it creates the workspace node the next two statements match), then the
+    # repair, then the baseline that tells reads this workspace is complete.
+    assert [q for q, _ in run.calls] == [gm.ADVANCE_WATERMARK, gm.CLEAR_GAP, gm.BASELINE]
+    assert run.calls[1][1] == {"workspace_id": WS, "seq": 95, "started_seq": 80}
+    assert run.calls[2][1] == {"workspace_id": WS, "seq": 95, "started_seq": 80}
     # The clause that makes the repair provable: a newer gap (a backfill event that itself
     # dead-lettered) is left alone.
     assert "w.gap_seq < $started_seq" in gm.CLEAR_GAP
@@ -276,5 +279,19 @@ async def test_a_complete_marker_without_a_usable_started_seq_is_invalid(payload
 
 @pytest.mark.unit
 def test_every_statement_including_the_gap_ones_is_scoped_to_a_workspace() -> None:
-    assert gm.MARK_GAP in gm.ALL_STATEMENTS and gm.CLEAR_GAP in gm.ALL_STATEMENTS
+    assert {gm.MARK_GAP, gm.CLEAR_GAP, gm.BASELINE} <= set(gm.ALL_STATEMENTS)
     assert all("$workspace_id" in statement for statement in gm.ALL_STATEMENTS)
+
+
+@pytest.mark.unit
+async def test_the_started_marker_sets_no_baseline() -> None:
+    run = Recorder()
+    await gm.apply_event(run, _marker("workspace.backfill_started", seq=90))
+    assert gm.BASELINE not in [q for q, _ in run.calls], "only a COMPLETED backfill is a baseline"
+
+
+@pytest.mark.unit
+async def test_a_memory_event_never_sets_a_baseline() -> None:
+    run = Recorder()
+    await gm.apply_event(run, _event())
+    assert gm.BASELINE not in [q for q, _ in run.calls]

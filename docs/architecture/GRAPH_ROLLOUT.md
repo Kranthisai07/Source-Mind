@@ -25,9 +25,16 @@ since: two migrations (`20261029_0015`, `20261029_0016`), the dependency swap Py
 python-Levenshtein to rapidfuzz (D-054), the co-authored-commit fix (D-055), and the graph code itself with the flags
 off. Review the commit list for the pinned SHA before you start and smoke-test PDF ingestion and connector sync (step 5).
 
-Why the order is safe: with both flags on, a workspace is answered from PostgreSQL until it has a published cursor, the
-projector has caught up to it, and it has no dead-letter gap (`_graph_fresh`). Turning the flags on before any backfill
-therefore changes nothing a user can see; the graph takes over workspace by workspace as each is backfilled.
+Why the order is safe: with both flags on, a workspace is answered from PostgreSQL until **all** of these hold
+(`_graph_fresh`): it has a published cursor, the projector has applied up to it, it has no dead-letter gap, and **a
+completed backfill has been applied to it** (its baseline). The last condition matters because each event carries one
+memory: a workspace that already had data when the pipeline was switched on would look caught up after its first new
+event while missing everything older. Turning the flags on before any backfill therefore changes nothing a user can see;
+the graph takes over workspace by workspace as each is backfilled.
+
+**Workspaces created after enablement** are not baselined either (nothing backfills them), so they stay on PostgreSQL until
+someone runs the backfill for them. `status` lists them as `not baselined: run the backfill`. Automating that (a backfill
+when a workspace is created, or a periodic job) is a follow-up; until then include it in the periodic check in step 8.
 
 ## Rollback (valid at every step)
 
@@ -147,16 +154,21 @@ It reads PostgreSQL through normal row-level security as an active owner, so it 
 ```
 python -m sourcemind.events.status --workspace-id <uuid>
 ```
-Proceed only when the state is `trusted` (published equals applied, no gap, nothing pending; exit code 0). Then call the four
+Proceed only when the state is `trusted` (applied has reached published, a baseline from the completed backfill, no gap,
+nothing pending; exit code 0). Then call the four
 endpoints for that workspace and confirm `source: "graph"`, and that lineage, one-hop related and the collaboration graph
 equal their PostgreSQL answers (the parity the tests assert).
-A state of `gap: run the backfill` means an event was dead-lettered: run the backfill again for that workspace.
+A state of `gap: run the backfill` means an event was dead-lettered; `not baselined: run the backfill` means no completed
+backfill has been applied yet. Either way, run the backfill again for that workspace. Nothing is wrong in the meantime:
+that workspace is simply answered from PostgreSQL.
 
 ### 8. Observe for 24 hours
 Watch `graph.relay_lag` (pending and oldest seconds), the projector batch lines and any `graph.dead_lettered`, Neo4j memory,
 the share of graph versus PostgreSQL answers, and endpoint latency (the graph read ceiling is `NEO4J_QUERY_TIMEOUT_SECONDS`,
 default 2 s; on timeout the API falls back and the client sees nothing). `python -m sourcemind.events.status` with no
-workspace lists every workspace and exits non-zero if any is not trusted, so it works as a periodic check.
+arguments checks **every** workspace and exits non-zero if any is not trusted (a `--limit` below the total is a partial
+check and also exits non-zero), so it works as a periodic check; with `--workspace-id` an id nothing is known about is
+reported as `not in the graph yet`, never as success.
 
 ## Operating notes (observed in the local live run, 2026-10-30)
 

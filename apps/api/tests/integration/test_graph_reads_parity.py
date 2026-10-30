@@ -28,10 +28,11 @@ from sourcemind.core import graph
 from sourcemind.core.config import get_settings
 from sourcemind.core.graph import run_read
 from sourcemind.events import projector, relay
+from sourcemind.events.envelope import EVENT_BACKFILL_COMPLETE, EVENT_BACKFILL_STARTED
 from sourcemind.models.attribution import Attribution
 from sourcemind.models.memory import Memory
 from sourcemind.services.graph import reads
-from sourcemind.services.graph.outbox import emit_memory_states
+from sourcemind.services.graph.outbox import emit_memory_states, emit_workspace_marker
 from tests.integration.test_graph_outbox_real_db import (  # noqa: F401  (fixtures)
     _as_owner,
     _flag,
@@ -94,12 +95,23 @@ async def projected(
             )
         )
         await session.flush()
+        # Like the real backfill: bracket the full state with the two markers, because a
+        # workspace is trusted only once a completed backfill has been applied.
+        started = await emit_workspace_marker(
+            session, data.target_workspace_id, EVENT_BACKFILL_STARTED, {}
+        )
         with _flag(True):
             await emit_memory_states(
                 session,
                 [v2.id, c.id, isolated.id, data.target_memory_id],
                 reason="edit",
             )
+        await emit_workspace_marker(
+            session,
+            data.target_workspace_id,
+            EVENT_BACKFILL_COMPLETE,
+            {"started_seq": started},
+        )
         await session.commit()
     finally:
         await session.close()

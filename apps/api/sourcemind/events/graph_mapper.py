@@ -129,6 +129,15 @@ WHERE w.gap_seq IS NOT NULL AND w.gap_seq < $started_seq
 REMOVE w.gap_seq
 """
 
+# A workspace's graph is complete only once a full re-emit of it has been applied. Events carry
+# one memory each, so a workspace that already had data when the pipeline was switched on would
+# otherwise look caught up after its first new event while missing everything older.
+BASELINE = """
+MATCH (w:Workspace {key: $workspace_id})
+SET w.baseline_seq = CASE
+  WHEN coalesce(w.baseline_seq, 0) < $started_seq THEN $started_seq ELSE w.baseline_seq END
+"""
+
 ALL_STATEMENTS = (
     CLAIM_MEMORY,
     DELETE_PARENT,
@@ -141,6 +150,7 @@ ALL_STATEMENTS = (
     ADVANCE_WATERMARK,
     MARK_GAP,
     CLEAR_GAP,
+    BASELINE,
 )
 
 
@@ -163,15 +173,19 @@ async def mark_gap(run: Run, workspace_id: str, seq: int) -> None:
 async def _apply_backfill_marker(run: Run, event: GraphEvent) -> bool:
     workspace_id = _uuid(event.workspace_id, "workspace_id")
     base = {"workspace_id": workspace_id, "seq": event.seq}
+    started = None
     if event.type == EVENT_BACKFILL_COMPLETE:
         started = event.payload.get("started_seq")
         if not isinstance(started, int) or isinstance(started, bool) or started < 1:
             raise InvalidEventError("payload.started_seq must be a positive integer")
+    # The marker is an ordinary published event, so the watermark accounts for it too (this also
+    # creates the workspace node the statements below match).
+    await run(ADVANCE_WATERMARK, base)
+    if started is not None:
         # Only gaps older than the backfill's own start are repaired by it. A backfill event that
         # was itself dead-lettered recorded a newer gap, which this leaves in place.
         await run(CLEAR_GAP, {**base, "started_seq": started})
-    # The marker is an ordinary published event, so the watermark must account for it too.
-    await run(ADVANCE_WATERMARK, base)
+        await run(BASELINE, {**base, "started_seq": started})
     return True
 
 
