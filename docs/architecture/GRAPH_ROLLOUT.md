@@ -65,22 +65,34 @@ with **no public domain and no TCP proxy**. Neo4j Community has no database-enfo
 protection is that nothing but the API, worker and projector can reach it.
 
 `neo4j`
-- image `neo4j:5.26.24-community` (pin the digest when you create it), volume mounted at `/data`
-- `NEO4J_AUTH=neo4j/<random 32+ characters>`: generate it, store it only as a Railway variable, reference it from other
-  services (`${{neo4j.NEO4J_AUTH}}`); never paste it anywhere
+- image `neo4j@sha256:f66304b9511c60d33555a2c451f88e03d82d1ebc893f32d84c98a6b326096435` (tag `5.26.24-community`), volume
+  mounted at `/data`, ~2 GB memory
+- `NEO4J_AUTH=neo4j/${{shared.NEO4J_PASSWORD}}`. The password is a **shared variable the owner creates in the Railway
+  dashboard** (random, 32+ characters, sealed if offered). Railway hides variable values from tooling, so nobody but the
+  owner ever sees it and it never passes through a terminal or chat. Other services reference it the same way.
 - memory sized to the plan: `NEO4J_server_memory_heap_initial__size`, `NEO4J_server_memory_heap_max__size`,
   `NEO4J_server_memory_pagecache_size` (the local default was heap 512m-1G). Confirm the setting names in the first boot log.
 - no APOC (unrestricted `apoc.*` is a file-read and SSRF primitive and nothing here uses it)
 
 `redpanda`
-- image `redpandadata/redpanda:v24.3.14`, volume mounted at `/var/lib/redpanda/data`
-- the start flags used in `infra/docker-compose.yml`, with the Kafka listener advertised as
-  `redpanda.railway.internal:9092` so clients reconnect through the private name
-- **Durability decision (open):** the local compose uses `--mode=dev-container`, which relaxes fsync. The pipeline
-  tolerates a lost *unpublished* event (PostgreSQL still has it) but not a lost *published* one: the cursor has already
-  moved past it and nothing would show the graph is missing state until a backfill. For production prefer the default
-  (non-dev) mode, validate it starts and serves on Railway first, and treat any Redpanda data loss as "backfill every
-  workspace". The full pipeline test suite ran on `dev-container` mode only.
+- image `redpandadata/redpanda@sha256:3b68cc8a7fca4f03c6aa65dc6bd8d86a10644b282fcbad43edd12636ff2ef6fc` (tag `v24.3.14`),
+  volume mounted at `/var/lib/redpanda/data`, **memory limit 2 GB** (see below), start command:
+
+```
+redpanda start --smp=1 --memory=1G --reserve-memory=0M --overprovisioned --node-id=0 --check=false
+  --set redpanda.developer_mode=false --set redpanda.write_caching_default=false
+  --kafka-addr=internal://0.0.0.0:9092 --advertise-kafka-addr=internal://redpanda.railway.internal:9092
+  --rpc-addr=0.0.0.0:33145 --advertise-rpc-addr=redpanda.railway.internal:33145
+```
+
+- **Why these flags (checked locally with the pinned image, 2026-10-30).** The image's shipped config has
+  `developer_mode: true` and write caching on, i.e. relaxed fsync, even without `--mode`; `--mode` accepts only
+  `dev-container`. A published event lost by the broker would not be visible (the cursor has already moved past it), so
+  production overrides both with `--set`. With `developer_mode` off Redpanda refuses to start below 1 GiB per core
+  (`Memory below recommended`), hence `--memory=1G` and a 2 GB container. Verified: it starts healthy, serves a message,
+  keeps it across a restart, and the whole real-service pipeline suite (33 tests: projection, end to end, parity, reads)
+  passes against this exact configuration with both images pinned by digest.
+- Any Redpanda data loss still means "backfill every workspace".
 
 Verify: both deployments healthy; from the API service, a TCP connect to `neo4j.railway.internal:7687` and
 `redpanda.railway.internal:9092` succeeds; neither has a public address.
@@ -187,4 +199,4 @@ reported as `not in the graph yet`, never as success.
 ## Not verified here
 
 Railway-specific behaviour (private DNS names, variable references, volume sizing, restart behaviour), PostgreSQL 16 (the
-tests ran on 18, which production uses), load, multi-partition topics, and Redpanda outside `dev-container` mode.
+tests ran on 18, which production uses), load, multi-partition topics, and anything about the Redpanda flags beyond the local run above.
