@@ -169,7 +169,7 @@ jobs:
       # pyproject so the collected count is the raw test count. Asserting the
       # exact node IDs means a rename cannot silently shrink the gate, which a
       # bare count would not catch.
-      - name: Verify exact test selection (271 nodes)
+      - name: Verify exact test selection (282 nodes)
         working-directory: apps/api
         # SECURITY_TEST_ALLOW_DISPOSABLE / TEST_DATABASE_URL / TEST_REDIS_URL
         # are already in the environment via GITHUB_ENV.
@@ -448,6 +448,17 @@ jobs:
           tests/unit/test_netguard.py::test_openai_embeddings_call_is_blocked_before_any_byte_is_sent
           tests/unit/test_netguard.py::test_plain_httpx_to_a_provider_host_is_blocked
           tests/unit/test_netguard_check.py::test_a_test_that_swallows_an_external_attempt_fails_the_run
+          tests/integration/test_role_management_real_db.py::test_a_demoted_admin_immediately_loses_the_right_to_change_roles
+          tests/integration/test_role_management_real_db.py::test_a_founder_can_promote_a_teammate_to_admin_and_a_viewer_to_founder
+          tests/integration/test_role_management_real_db.py::test_an_admin_can_move_people_between_teammate_and_viewer_and_it_stops_queued_work
+          tests/integration/test_role_management_real_db.py::test_an_admin_cannot_escalate_anyone_including_themselves
+          tests/integration/test_role_management_real_db.py::test_outsiders_find_nothing
+          tests/integration/test_role_management_real_db.py::test_setting_the_role_a_member_already_has_is_a_harmless_no_op
+          tests/integration/test_role_management_real_db.py::test_teammates_and_viewers_cannot_change_roles
+          tests/integration/test_role_management_real_db.py::test_the_last_founder_cannot_step_down_until_another_is_named
+          tests/integration/test_role_management_real_db.py::test_two_founders_demoting_each_other_at_once_leave_exactly_one
+          tests/integration/test_role_management_real_db.py::test_unknown_and_departed_targets_are_not_found
+          tests/integration/test_role_management_real_db.py::test_a_caller_demoted_between_the_check_and_the_lock_is_denied_not_told_nothing_exists
           NODES
           python -m pytest -o addopts='' -q --collect-only \
             tests/integration/test_attribution_history_real_db.py \
@@ -477,12 +488,14 @@ jobs:
             tests/integration/test_source_retirement_real_db.py \
             tests/integration/test_ingest_schema_real_db.py \
             tests/integration/test_source_provenance_real_db.py \
+            tests/integration/test_role_management_real_db.py \
             tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable \
             tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs \
             | grep '::' | sort > "$actual"
           echo "collected $(wc -l < "$actual") node(s)"
+          sort -o "$expected" "$expected"
           diff -u "$expected" "$actual" || {
-            echo "::error::collected node IDs differ from the expected 271"
+            echo "::error::collected node IDs differ from the expected 282"
             exit 1
           }
 
@@ -492,7 +505,7 @@ jobs:
       # never reported as an acceptance timeout.
       #
       # A JUnit report is emitted so the next step can prove the tests RAN.
-      # `pytest` exits 0 on "271 skipped", and every one of these is guarded by
+      # `pytest` exits 0 on "282 skipped", and every one of these is guarded by
       # the disposable-DB check — so a silent skip is the realistic failure and
       # exit status alone cannot detect it.
       - name: Security acceptance tests
@@ -534,10 +547,11 @@ jobs:
             tests/integration/test_source_retirement_real_db.py \
             tests/integration/test_ingest_schema_real_db.py \
             tests/integration/test_source_provenance_real_db.py \
+            tests/integration/test_role_management_real_db.py \
             tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable \
             tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs
 
-      - name: Assert all 271 tests executed and passed
+      - name: Assert all 282 tests executed and passed
         if: always() && steps.acceptance.outcome != 'skipped'
         working-directory: apps/api
         run: |
@@ -565,11 +579,11 @@ jobs:
               else:
                   bad.append(f"{node} -> {state}")
           print(f"executed {total}, passed {passed}")
-          if total != 271:
-              print(f"::error::expected 271 test cases, report contains {total}")
+          if total != 282:
+              print(f"::error::expected 282 test cases, report contains {total}")
           for b in bad:
               print(f"::error::{b}")
-          sys.exit(0 if (total == 271 and passed == 271) else 1)
+          sys.exit(0 if (total == 282 and passed == 282) else 1)
           PY
 
       - name: Upload acceptance report

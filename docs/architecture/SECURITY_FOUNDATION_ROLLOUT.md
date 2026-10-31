@@ -39,8 +39,11 @@ immediately.
 | Initiate, assign, complete, or list handoffs | no | no | yes | yes |
 | Revoke a member or admin | no | no | yes | yes |
 | Revoke an owner | no | no | no | yes |
+| Move a teammate to viewer or back | no | no | yes | yes |
+| Grant admin or founder (owner) to anyone | no | no | no | yes |
+| Change the role of an admin or a founder | no | no | no | yes |
 
-The final active owner cannot be revoked. Resource-ID routes return the
+The final active owner cannot be revoked or demoted. Resource-ID routes return the
 resource's 404 to outsiders; workspace-ID routes return SM022/404. A real
 member with an insufficient role receives SM005/403.
 Although admins can manage ordinary handoffs, only an owner can initiate
@@ -52,8 +55,10 @@ gets an internal lifecycle row even when creator provenance is unknown; the
 creator remains `NULL`, active members retain their existing role-based access,
 and the owner-bootstrap predicate remains unavailable without a known creator.
 This compatibility migration does not assign owners or define an ownership
-policy. Organization administration, invitations, and ownership transfer remain
-deferred product work.
+policy. Changing roles, promoting co-founders and handing ownership over are
+available through `PATCH /v1/workspaces/{id}/members/{user_id}` (D-064; shown as
+Founder, Admin, Teammate and Viewer); organization administration and invitations
+remain deferred product work.
 
 Workers repeat authorization at execution time. A queued ingestion or connector
 sync accepted before revocation must not run after that membership is revoked.

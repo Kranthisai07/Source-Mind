@@ -6,6 +6,7 @@ POST /v1/workspaces              → create workspace (auto-creates org if neede
 GET  /v1/workspaces/:id          → get workspace details
 GET  /v1/workspaces/:id/members  → list members with roles
 POST /v1/workspaces/:id/members  → owner/admin adds an ordinary member by email
+PATCH /v1/workspaces/:id/members/:user_id → change a role (founder: any; admin: teammate/viewer)
 GET  /v1/workspaces/:id/analytics → contribution map + knowledge gaps
 """
 
@@ -16,7 +17,7 @@ from uuid import UUID
 
 import structlog
 from fastapi import APIRouter, status
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from sourcemind.core.config import get_settings
@@ -54,11 +55,21 @@ from sourcemind.schemas.workspace import (
     WorkspaceCreate,
     WorkspaceMemberAdd,
     WorkspaceMemberResponse,
+    WorkspaceMemberRoleUpdate,
     WorkspaceResponse,
 )
 from sourcemind.services.ingestion.lifecycle import (
     REVOCATION_INGESTION_ERROR,
+    ROLE_CHANGE_INGESTION_ERROR,
     terminalize_member_ingestion_documents,
+)
+from sourcemind.services.workspace.roles import (
+    ADMIN_CEILING,
+    ADMIN_REQUIRED,
+    LAST_FOUNDER,
+    ROLE_CHANGED,
+    authorize_role_change,
+    loses_contribution,
 )
 
 logger = structlog.get_logger(__name__)
@@ -657,3 +668,158 @@ async def revoke_workspace_member(
     membership.status = WorkspaceMembershipStatus.DEPARTED.value
     membership.departed_at = datetime.now(UTC)
     await db.commit()
+
+
+@router.patch(
+    "/{workspace_id}/members/{user_id}",
+    response_model=APIResponse[WorkspaceMemberResponse],
+    summary="Change a member's role",
+)
+async def change_workspace_member_role(
+    workspace_id: UUID,
+    user_id: UUID,
+    body: WorkspaceMemberRoleUpdate,
+    db: DBSession,
+    current_user: CurrentUser,
+    request_id: RequestID,
+    idempotency_key: IdempotencyKey,
+) -> APIResponse[WorkspaceMemberResponse]:
+    """
+    Change an active member's role (D-064).
+
+    Founders (owners) may set any role on anyone and may promote other founders. Admins may
+    only move people between teammate (member) and viewer; they can never grant admin or
+    founder and never change an admin or a founder. The last active founder cannot be demoted.
+    A change is a no-op (200, nothing written) when the member already has that role.
+
+    Concurrency: the caller, the target and every active owner are locked in ascending
+    user-id order (the order add/revoke use), and the owner count is taken from the locked
+    rows, so two founders demoting each other at once cannot leave the workspace with none.
+    The row-level-security policies and the last-owner trigger remain as a backstop.
+    Idempotency-Key is validated, not de-duplicated; setting the same role twice is a no-op.
+    """
+    start = time.perf_counter()
+    caller_id = current_user.user_id
+
+    await enforce_rate_limit(RateLimitedOperation.ROLE_CHANGE, caller_id)
+    caller_role = await require_workspace_permission(
+        db, caller_id, workspace_id, WorkspacePermission.ADMINISTER
+    )
+
+    # Unlocked read first so an admin pointing at a founder gets a clear 403, not a 404
+    # (the update policy hides owner rows from non-owners, so they cannot be locked).
+    preview = (
+        await db.execute(
+            select(WorkspaceMember.role).where(
+                WorkspaceMember.workspace_id == workspace_id,
+                WorkspaceMember.user_id == user_id,
+                WorkspaceMember.status == WorkspaceMembershipStatus.ACTIVE,
+                WorkspaceMember.departed_at.is_(None),
+            )
+        )
+    ).first()
+    if preview is None:
+        raise UserNotFoundError("Active workspace member not found.")
+    authorize_role_change(
+        caller_role=caller_role,
+        target_role=str(preview.role),
+        new_role=body.role,
+        # Cannot decide the founder count without the locks; this first pass only applies the
+        # role ceilings, so assume "not the last" and let the locked pass decide.
+        active_owner_count=2,
+    )
+
+    try:
+        locked = (
+            (
+                await db.execute(
+                    select(WorkspaceMember)
+                    .where(
+                        WorkspaceMember.workspace_id == workspace_id,
+                        WorkspaceMember.status == WorkspaceMembershipStatus.ACTIVE,
+                        WorkspaceMember.departed_at.is_(None),
+                        or_(
+                            WorkspaceMember.user_id.in_([caller_id, user_id]),
+                            WorkspaceMember.role == WorkspaceRole.OWNER,
+                        ),
+                    )
+                    .order_by(WorkspaceMember.user_id)
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        by_user = {member.user_id: member for member in locked}
+        caller = by_user.get(caller_id)
+        target = by_user.get(user_id)
+        if caller is None or str(caller.role) not in {
+            WorkspaceRole.OWNER.value,
+            WorkspaceRole.ADMIN.value,
+        }:
+            raise WorkspaceAccessDeniedError(ADMIN_REQUIRED)
+        if str(caller.role) != caller_role:
+            # Demoted (or promoted) between the permission check and the lock. Checked before
+            # the target, because the update policy hides founder rows from a caller who is
+            # no longer a founder, so a missing target here can mean exactly this.
+            raise WorkspaceAccessDeniedError(ROLE_CHANGED)
+        if target is None:
+            raise UserNotFoundError("Active workspace member not found.")
+
+        previous_role = str(target.role)
+        if previous_role != body.role:
+            authorize_role_change(
+                caller_role=str(caller.role),
+                target_role=previous_role,
+                new_role=body.role,
+                active_owner_count=sum(
+                    1 for member in locked if str(member.role) == WorkspaceRole.OWNER.value
+                ),
+            )
+            if loses_contribution(previous_role, body.role):
+                # Same reason as revocation: queued work from a user who may no longer
+                # contribute must not run later and look like it was allowed.
+                await terminalize_member_ingestion_documents(
+                    db,
+                    workspace_id,
+                    user_id,
+                    error_message=ROLE_CHANGE_INGESTION_ERROR,
+                )
+            target.role = body.role
+            await db.flush()
+
+        user = await db.get(User, user_id)
+        if user is None:
+            raise UserNotFoundError("Active workspace member not found.")
+        response = WorkspaceMemberResponse(
+            user=UserSummary.model_validate(user),
+            role=WorkspaceRole(str(target.role)),
+            joined_at=target.created_at,
+        )
+        await db.commit()
+    except DBAPIError as exc:
+        await db.rollback()
+        if _pg_sqlstate(exc) in _RETRYABLE_SQLSTATES or "deadlock detected" in str(exc):
+            logger.bind(workspace_id=str(workspace_id), actor_id=str(caller_id)).warning(
+                "workspace.member_role_retryable_conflict", sqlstate=_pg_sqlstate(exc)
+            )
+            raise ServiceUnavailableError(
+                "The membership changed concurrently. Please retry.",
+                details={"reason": "concurrent_update_retry"},
+            ) from exc
+        if "last active workspace owner" in str(exc):
+            raise WorkspaceAccessDeniedError(LAST_FOUNDER) from exc
+        if _is_rls_denial(exc):
+            raise WorkspaceAccessDeniedError(ADMIN_CEILING) from exc
+        raise
+
+    if previous_role != body.role:
+        logger.info(
+            "workspace.member_role_changed",
+            workspace_id=str(workspace_id),
+            target_user_id=str(user_id),
+            actor_id=str(caller_id),
+            from_role=previous_role,
+            to_role=body.role,
+        )
+    return APIResponse(data=response, meta=_make_meta(request_id, start))

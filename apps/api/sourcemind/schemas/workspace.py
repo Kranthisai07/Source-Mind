@@ -80,6 +80,18 @@ class WorkspaceMemberAdd(BaseModel):
         return value
 
 
+class WorkspaceMemberRoleUpdate(BaseModel):
+    """Input for changing an existing member's role.
+
+    Whether the caller may make this particular change depends on their own role and the
+    target's (services/workspace/roles.py); the schema only checks the value.
+    """
+
+    role: Literal["owner", "admin", "member", "viewer"]
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class WorkspaceMemberResponse(BaseModel):
     """Workspace member with role information."""
 
