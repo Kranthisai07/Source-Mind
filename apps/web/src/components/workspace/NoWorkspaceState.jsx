@@ -62,7 +62,7 @@ export default function NoWorkspaceState() {
                         <p className="mt-1 mb-4 text-[12.5px] text-sm-text-secondary">
                             Create a workspace and add people to it yourself.
                         </p>
-                        <CreateWorkspaceForm idPrefix="nw" onCreated={adopt} />
+                        <CreateWorkspaceForm idPrefix="nw" teamSetup onCreated={adopt} />
                     </section>}
                 </div>
             </main>

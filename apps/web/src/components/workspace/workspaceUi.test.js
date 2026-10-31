@@ -217,6 +217,8 @@ describe("zero-workspace state", () => {
         expect(screen.getByTestId("create-workspace-slug").value).toBe("our-friends");
         S.workspaces = [wsObj(NEW_WS, "Our Friends", "our-friends")];
         fireEvent.click(screen.getByTestId("create-workspace-submit"));
+        // Creation is followed by the team-setup step; skipping it adopts the workspace.
+        fireEvent.click(await screen.findByTestId("team-setup-skip"));
 
         expect(await screen.findByTestId("workspace-switcher")).toBeTruthy();
         await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/memories"));
@@ -315,6 +317,7 @@ describe("workspace picker", () => {
 
         S.workspaces = [...S.workspaces, wsObj(NEW_WS, "Gamma", "gamma")];
         gate.release(reply({ data: wsObj(NEW_WS, "Gamma", "gamma") }, 201));
+        fireEvent.click(await within(dialog).findByTestId("team-setup-skip"));
         await waitFor(() => expect(mockToastSuccess).toHaveBeenCalledTimes(1));
         await waitFor(() => expect(screen.getByTestId("workspace-switcher").textContent).toMatch(/Gamma/));
     });

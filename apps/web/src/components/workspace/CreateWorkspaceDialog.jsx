@@ -11,13 +11,14 @@ export default function CreateWorkspaceDialog({ open, onOpenChange }) {
                 <DialogHeader>
                     <DialogTitle>Create workspace</DialogTitle>
                     <DialogDescription className="text-sm-text-secondary">
-                        A separate space for a team's memories. You will be its owner and can add people afterwards.
+                        A separate space for a team's memories. You will be a founder, and you can set up the rest of the team next.
                     </DialogDescription>
                 </DialogHeader>
                 {/* Remounted per open so a closed dialog never keeps a draft. */}
                 {open && (
                     <CreateWorkspaceForm
                         idPrefix="cwd"
+                        teamSetup
                         onCancel={() => onOpenChange(false)}
                         onCreated={(workspace, { dismissed } = {}) => {
                             // Dismissed while the request was pending: the

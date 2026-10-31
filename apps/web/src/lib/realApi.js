@@ -584,6 +584,52 @@ export const realApi = {
                 body: { email, role },
             })
         ),
+    // Founder or admin. 200 with the member; setting the role they already
+    // hold is a no-op on the server.
+    changeMemberRole: async (workspaceId, userId, role) =>
+        unwrapOne(
+            await request(
+                `/v1/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`,
+                {
+                    method: "PATCH",
+                    scoped: false,
+                    headers: { "Idempotency-Key": newIdempotencyKey() },
+                    body: { role },
+                }
+            )
+        ),
+    // Invitations (D-065). The token is in the create response only; it cannot
+    // be read again, so the caller must show it then.
+    listInvitations: async (workspaceId) => {
+        const r = unwrapList(
+            await request(`/v1/workspaces/${encodeURIComponent(workspaceId)}/invitations`, { scoped: false })
+        );
+        return { items: r.items, __latency_ms: r.__latency_ms };
+    },
+    createInvitation: async (workspaceId, { email, role = "member" } = {}) =>
+        unwrapOne(
+            await request(`/v1/workspaces/${encodeURIComponent(workspaceId)}/invitations`, {
+                method: "POST",
+                scoped: false,
+                headers: { "Idempotency-Key": newIdempotencyKey() },
+                body: { email, role },
+            })
+        ),
+    // 204 No Content.
+    revokeInvitation: async (workspaceId, invitationId) =>
+        request(
+            `/v1/workspaces/${encodeURIComponent(workspaceId)}/invitations/${encodeURIComponent(invitationId)}`,
+            { method: "DELETE", scoped: false, headers: { "Idempotency-Key": newIdempotencyKey() } }
+        ),
+    acceptInvitation: async (token) =>
+        unwrapOne(
+            await request(`/v1/invitations/accept`, {
+                method: "POST",
+                scoped: false,
+                headers: { "Idempotency-Key": newIdempotencyKey() },
+                body: { token },
+            })
+        ),
     getWorkspace: async (wsId) =>
         unwrapOne(await request(`/v1/workspaces/${await resolveWorkspaceId(wsId)}`)),
 

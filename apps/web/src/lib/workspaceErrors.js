@@ -66,5 +66,31 @@ export function mapWorkspaceError(err, action) {
         }
     }
 
+    if (action === "invite" || action === "revokeInvite" || action === "changeRole" || action === "acceptInvite") {
+        if (status === 405 || (status === 404 && !code && action !== "acceptInvite")) {
+            return { kind: "unsupported", message: "This server does not support that yet. Nothing was changed." };
+        }
+        if (action === "acceptInvite" && (code === "SM056" || status === 404)) {
+            // One answer for every reason on purpose: the server does not say which.
+            return { kind: "invitation_unusable", message: "This invitation can't be used. It may have expired, been withdrawn, or been sent to a different email address. Ask the person who invited you for a new link." };
+        }
+        if (action === "invite" && reason === "already_member") {
+            return { kind: "already_member", message: "That person is already a member of this workspace." };
+        }
+        if (code === "SM005" || status === 403) {
+            // The server's sentence says exactly which rule applied (founder only, last founder...).
+            return { kind: "forbidden", message: e.message || "You do not have permission to do that." };
+        }
+        if (code === "SM055" || status === 503) {
+            return { kind: "unavailable", message: "Could not verify the email with the sign-in provider right now. Nothing was changed; try again shortly." };
+        }
+        if (code === "SM010" || status === 422) {
+            return { kind: "validation", message: e.message || "Check the details and try again." };
+        }
+        if (action === "revokeInvite" && status === 404) {
+            return { kind: "gone", message: "That invitation no longer exists. Refresh the list." };
+        }
+    }
+
     return { kind: "generic", message: "Something went wrong and the result is unconfirmed. Check the list before trying again." };
 }

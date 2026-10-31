@@ -13,10 +13,11 @@
 // exactly one of the two deployments.
 
 import React from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { SignIn, SignUp } from "@clerk/clerk-react";
 
 import { appUrl } from "@/lib/appUrl";
+import { safeNextPath } from "@/lib/inviteToken";
 import { SiteHeader, SiteFooter, useSitePage } from "@/components/marketing/SiteChrome";
 import "@/components/marketing/marketing.css";
 
@@ -92,6 +93,11 @@ const clerkAppearance = {
 export default function AuthPage({ mode = "sign-in" }) {
     const isSignUp = mode === "sign-up";
     useSitePage(isSignUp ? "Sign up — SourceMind" : "Sign in — SourceMind");
+    // Only an invitation page may be returned to; anything else goes to the dashboard.
+    const [params] = useSearchParams();
+    const next = safeNextPath(params.get("next"));
+    const after = appUrl(next || "/dashboard");
+    const suffix = next ? `?next=${encodeURIComponent(next)}` : "";
 
     return (
         <div className="source-site" data-testid="auth-page">
@@ -110,15 +116,15 @@ export default function AuthPage({ mode = "sign-in" }) {
                         <SignUp
                             routing="virtual"
                             appearance={clerkAppearance}
-                            signInUrl={appUrl("/sign-in")}
-                            forceRedirectUrl={appUrl("/dashboard")}
+                            signInUrl={appUrl("/sign-in") + suffix}
+                            forceRedirectUrl={after}
                         />
                     ) : (
                         <SignIn
                             routing="virtual"
                             appearance={clerkAppearance}
-                            signUpUrl={appUrl("/sign-up")}
-                            forceRedirectUrl={appUrl("/dashboard")}
+                            signUpUrl={appUrl("/sign-up") + suffix}
+                            forceRedirectUrl={after}
                         />
                     )}
 

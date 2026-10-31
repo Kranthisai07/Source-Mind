@@ -1,5 +1,6 @@
 import React, { useState } from "react";
-import { Trash2, UserPlus } from "lucide-react";
+import { Link2, Trash2, UserPlus } from "lucide-react";
+import { toast } from "sonner";
 import TopBar from "../components/layout/TopBar";
 import ContributorAvatar from "../components/widgets/ContributorAvatar";
 import { PageLoadError, PageLoading } from "../components/widgets/PageLoadState";
@@ -13,11 +14,15 @@ import { formatDate } from "../lib/format";
 import { isPilotOperatorRole } from "../lib/pilotMode";
 import AddMemberDialog from "../components/workspace/AddMemberDialog";
 import McpKeysSection from "../components/settings/McpKeysSection";
+import InviteDialog from "../components/team/InviteDialog";
+import PendingInvitations from "../components/team/PendingInvitations";
+import { assignableRoles, roleLabel, ROLE_SUMMARIES } from "../lib/roles";
+import { mapWorkspaceError } from "../lib/workspaceErrors";
 
 const ACCESS_BY_ROLE = {
     owner: "Full",
     admin: "Manage",
-    member: "Edit",
+    member: "Add & read",
     viewer: "Read-only",
 };
 
@@ -42,6 +47,27 @@ export default function Settings() {
         ? "Checking your permissions..."
         : "Only workspace owners and admins can add members.";
     const [addOpen, setAddOpen] = useState(false);
+    const [inviteOpen, setInviteOpen] = useState(false);
+    const [invitesKey, setInvitesKey] = useState(0);
+    const [roleBusy, setRoleBusy] = useState(null);
+    const [roleError, setRoleError] = useState(null);
+    const myRole = myMembership?.role;
+
+    const changeRole = async (member, role) => {
+        if (roleBusy) return;
+        setRoleBusy(member.id);
+        setRoleError(null);
+        try {
+            await api.changeMemberRole(workspace.id, member.id, role);
+            toast.success(`${member.display_name || member.name || "Member"} is now ${roleLabel(role)}`);
+            membersResource.retry();
+        } catch (err) {
+            setRoleError(mapWorkspaceError(err, "changeRole").message);
+            membersResource.retry();
+        } finally {
+            setRoleBusy(null);
+        }
+    };
 
     return (
         <>
@@ -99,7 +125,17 @@ export default function Settings() {
                                         {membersResource.loading ? "Loading members…" : `${members.length} member${members.length === 1 ? "" : "s"} in this workspace`}
                                     </p>
                                 </div>
-                                <span title={canAdd ? undefined : addMemberHint}>
+                                <span title={canAdd ? undefined : addMemberHint} className="flex gap-2">
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        disabled={!canAdd}
+                                        onClick={() => setInviteOpen(true)}
+                                        data-testid="invite-btn"
+                                        className="h-9 border-sm-border text-sm-text disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                        <Link2 className="w-4 h-4" /> Invite by link
+                                    </Button>
                                     <Button
                                         type="button"
                                         disabled={!canAdd}
@@ -124,6 +160,14 @@ export default function Settings() {
                                 workspaceName={workspace?.name}
                                 onAdded={membersResource.retry}
                             />
+                            <InviteDialog
+                                open={inviteOpen}
+                                onOpenChange={setInviteOpen}
+                                workspaceId={workspace?.id}
+                                callerRole={myRole}
+                                onInvited={() => setInvitesKey((k) => k + 1)}
+                            />
+                            {roleError && <p role="alert" data-testid="role-error" className="mb-3 text-[12.5px] text-sm-red">{roleError}</p>}
                             {membersResource.error ? (
                                 <PageLoadError error={membersResource.error} onRetry={membersResource.retry} testId="members-error" compact />
                             ) : membersResource.loading ? (
@@ -143,7 +187,13 @@ export default function Settings() {
                                                     <div className="text-[13px] text-sm-text font-medium truncate">{displayName}</div>
                                                     <div className="font-mono text-[11px] text-sm-text-secondary truncate">{member.id}</div>
                                                 </div>
-                                                <span className="font-mono text-[10.5px] uppercase text-sm-text">{role}</span>
+                                                <RoleCell
+                                                    member={member}
+                                                    role={role}
+                                                    options={canAdd && member.id !== me?.id ? assignableRoles(myRole, role) : []}
+                                                    busy={roleBusy === member.id}
+                                                    onChange={(next) => changeRole(member, next)}
+                                                />
                                                 <span className="text-[12px] text-sm-text-secondary">{ACCESS_BY_ROLE[role] || "—"}</span>
                                                 <span className="font-mono text-[10.5px] text-sm-text-secondary text-right">{membership.joined_at ? formatDate(membership.joined_at) : "—"}</span>
                                             </div>
@@ -152,6 +202,7 @@ export default function Settings() {
                                 </div>
                             )}
                         </section>
+                        {canAdd && <PendingInvitations workspaceId={workspace?.id} refreshKey={invitesKey} />}
                     </TabsContent>
 
                     <TabsContent value="api" className="mt-0">
@@ -172,6 +223,25 @@ export default function Settings() {
                 </Tabs>
             </div>
         </>
+    );
+}
+
+function RoleCell({ member, role, options, busy, onChange }) {
+    if (options.length === 0) {
+        return <span title={ROLE_SUMMARIES[role]} className="font-mono text-[10.5px] uppercase text-sm-text">{roleLabel(role)}</span>;
+    }
+    return (
+        <select
+            aria-label={`Role for ${member.display_name || member.name || member.id}`}
+            data-testid={`role-select-${member.id}`}
+            value=""
+            disabled={busy}
+            onChange={(e) => e.target.value && onChange(e.target.value)}
+            className="h-8 rounded-md bg-sm-bg/60 border border-sm-border text-sm-text text-[11px] px-1"
+        >
+            <option value="">{roleLabel(role)} ▾</option>
+            {options.map((r) => <option key={r} value={r}>Make {roleLabel(r)}</option>)}
+        </select>
     );
 }
 
