@@ -238,6 +238,9 @@ class Settings(BaseSettings):
     rate_limit_member_add_per_hour: int = 20
     rate_limit_member_add_workspace_per_hour: int = 40
     rate_limit_role_change_per_hour: int = 60
+    rate_limit_invite_create_per_hour: int = 30
+    rate_limit_invite_create_workspace_per_hour: int = 60
+    rate_limit_invite_accept_per_hour: int = 30
 
     # ── Sentry ────────────────────────────────────────────────────
     sentry_dsn: Annotated[str, Field(repr=False)] = ""
@@ -401,6 +404,9 @@ class Settings(BaseSettings):
                 self.rate_limit_member_add_per_hour,
                 self.rate_limit_member_add_workspace_per_hour,
                 self.rate_limit_role_change_per_hour,
+                self.rate_limit_invite_create_per_hour,
+                self.rate_limit_invite_create_workspace_per_hour,
+                self.rate_limit_invite_accept_per_hour,
             )
         ):
             raise ValueError("Operation-specific rate limits must be positive")

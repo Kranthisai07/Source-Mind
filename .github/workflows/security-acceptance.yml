@@ -169,7 +169,7 @@ jobs:
       # pyproject so the collected count is the raw test count. Asserting the
       # exact node IDs means a rename cannot silently shrink the gate, which a
       # bare count would not catch.
-      - name: Verify exact test selection (282 nodes)
+      - name: Verify exact test selection (304 nodes)
         working-directory: apps/api
         # SECURITY_TEST_ALLOW_DISPOSABLE / TEST_DATABASE_URL / TEST_REDIS_URL
         # are already in the environment via GITHUB_ENV.
@@ -459,6 +459,28 @@ jobs:
           tests/integration/test_role_management_real_db.py::test_two_founders_demoting_each_other_at_once_leave_exactly_one
           tests/integration/test_role_management_real_db.py::test_unknown_and_departed_targets_are_not_found
           tests/integration/test_role_management_real_db.py::test_a_caller_demoted_between_the_check_and_the_lock_is_denied_not_told_nothing_exists
+          tests/integration/test_workspace_invitations_real_db.py::test_the_token_is_shown_once_and_only_its_hash_is_stored
+          tests/integration/test_workspace_invitations_real_db.py::test_a_founder_invites_as_any_role_and_an_admin_only_as_teammate_or_viewer
+          tests/integration/test_workspace_invitations_real_db.py::test_teammates_viewers_and_outsiders_cannot_invite
+          tests/integration/test_workspace_invitations_real_db.py::test_inviting_an_existing_member_is_refused
+          tests/integration/test_workspace_invitations_real_db.py::test_a_new_invitation_replaces_the_old_one
+          tests/integration/test_workspace_invitations_real_db.py::test_an_admin_cannot_replace_a_founders_pending_invitation
+          tests/integration/test_workspace_invitations_real_db.py::test_accepting_creates_a_membership_with_the_invited_role_once
+          tests/integration/test_workspace_invitations_real_db.py::test_accepting_a_founder_invitation_makes_a_co_founder
+          tests/integration/test_workspace_invitations_real_db.py::test_the_wrong_person_cannot_accept_and_the_invitation_survives
+          tests/integration/test_workspace_invitations_real_db.py::test_an_unverified_or_changed_email_cannot_accept
+          tests/integration/test_workspace_invitations_real_db.py::test_expired_unknown_and_revoked_invitations_all_look_the_same
+          tests/integration/test_workspace_invitations_real_db.py::test_admins_revoke_teammate_invitations_but_only_founders_revoke_admin_ones
+          tests/integration/test_workspace_invitations_real_db.py::test_an_invitation_dies_when_its_inviter_loses_the_authority_it_needed
+          tests/integration/test_workspace_invitations_real_db.py::test_an_admins_teammate_invitation_dies_if_the_admin_is_demoted
+          tests/integration/test_workspace_invitations_real_db.py::test_a_returning_member_can_be_invited_back_in_a_new_role
+          tests/integration/test_workspace_invitations_real_db.py::test_an_invitation_never_reactivates_a_member_mid_handoff
+          tests/integration/test_workspace_invitations_real_db.py::test_an_active_member_cannot_use_an_invitation_to_change_their_role
+          tests/integration/test_workspace_invitations_real_db.py::test_two_simultaneous_accepts_make_exactly_one_membership
+          tests/integration/test_workspace_invitations_real_db.py::test_the_database_refuses_an_admin_inviting_as_admin_even_if_the_app_did_not
+          tests/integration/test_workspace_invitations_real_db.py::test_the_runtime_role_cannot_delete_or_rewrite_invitations
+          tests/integration/test_workspace_invitations_real_db.py::test_a_token_unlocks_exactly_one_invitation_and_nobody_else_sees_any
+          tests/integration/test_workspace_invitations_real_db.py::test_a_member_token_cannot_create_a_founder_row_or_a_row_for_someone_else
           NODES
           python -m pytest -o addopts='' -q --collect-only \
             tests/integration/test_attribution_history_real_db.py \
@@ -489,13 +511,14 @@ jobs:
             tests/integration/test_ingest_schema_real_db.py \
             tests/integration/test_source_provenance_real_db.py \
             tests/integration/test_role_management_real_db.py \
+            tests/integration/test_workspace_invitations_real_db.py \
             tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable \
             tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs \
             | grep '::' | sort > "$actual"
           echo "collected $(wc -l < "$actual") node(s)"
           sort -o "$expected" "$expected"
           diff -u "$expected" "$actual" || {
-            echo "::error::collected node IDs differ from the expected 282"
+            echo "::error::collected node IDs differ from the expected 304"
             exit 1
           }
 
@@ -505,7 +528,7 @@ jobs:
       # never reported as an acceptance timeout.
       #
       # A JUnit report is emitted so the next step can prove the tests RAN.
-      # `pytest` exits 0 on "282 skipped", and every one of these is guarded by
+      # `pytest` exits 0 on "304 skipped", and every one of these is guarded by
       # the disposable-DB check — so a silent skip is the realistic failure and
       # exit status alone cannot detect it.
       - name: Security acceptance tests
@@ -548,10 +571,11 @@ jobs:
             tests/integration/test_ingest_schema_real_db.py \
             tests/integration/test_source_provenance_real_db.py \
             tests/integration/test_role_management_real_db.py \
+            tests/integration/test_workspace_invitations_real_db.py \
             tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable \
             tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs
 
-      - name: Assert all 282 tests executed and passed
+      - name: Assert all 304 tests executed and passed
         if: always() && steps.acceptance.outcome != 'skipped'
         working-directory: apps/api
         run: |
@@ -579,11 +603,11 @@ jobs:
               else:
                   bad.append(f"{node} -> {state}")
           print(f"executed {total}, passed {passed}")
-          if total != 282:
-              print(f"::error::expected 282 test cases, report contains {total}")
+          if total != 304:
+              print(f"::error::expected 304 test cases, report contains {total}")
           for b in bad:
               print(f"::error::{b}")
-          sys.exit(0 if (total == 282 and passed == 282) else 1)
+          sys.exit(0 if (total == 304 and passed == 304) else 1)
           PY
 
       - name: Upload acceptance report

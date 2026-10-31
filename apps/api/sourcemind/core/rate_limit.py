@@ -41,6 +41,9 @@ class RateLimitedOperation(StrEnum):
     MEMBER_ADD = "member-add"
     MEMBER_ADD_WORKSPACE = "member-add-workspace"
     ROLE_CHANGE = "role-change"
+    INVITE_CREATE = "invite-create"
+    INVITE_CREATE_WORKSPACE = "invite-create-workspace"
+    INVITE_ACCEPT = "invite-accept"
 
 
 def _operation_limit(operation: RateLimitedOperation) -> tuple[int, int]:
@@ -72,6 +75,12 @@ def _operation_limit(operation: RateLimitedOperation) -> tuple[int, int]:
             3600,
         ),
         RateLimitedOperation.ROLE_CHANGE: (settings.rate_limit_role_change_per_hour, 3600),
+        RateLimitedOperation.INVITE_CREATE: (settings.rate_limit_invite_create_per_hour, 3600),
+        RateLimitedOperation.INVITE_CREATE_WORKSPACE: (
+            settings.rate_limit_invite_create_workspace_per_hour,
+            3600,
+        ),
+        RateLimitedOperation.INVITE_ACCEPT: (settings.rate_limit_invite_accept_per_hour, 3600),
     }
     return limits[operation]
 
