@@ -21,7 +21,7 @@ Flags: `FF_KAFKA_EVENTS` and `FF_NEO4J_ATTRIBUTION`, always set together (the bo
 without the other in production, a non-default `NEO4J_AUTH`, and any localhost URI).
 
 **This is a release, not just a flag.** The running revision is `468d7b8`. Shipping the graph ships everything merged
-since: three migrations (`20261029_0015`, `20261029_0016` and, from the team-setup work, `20261031_0017` workspace invitations), the dependency swap PyMuPDF to pypdfium2 and
+since: four migrations (`20261029_0015`, `20261029_0016` and, from the team-setup work, `20261031_0017` workspace invitations and `20261031_0018` the audit trail), the dependency swap PyMuPDF to pypdfium2 and
 python-Levenshtein to rapidfuzz (D-054), the co-authored-commit fix (D-055), and the graph code itself with the flags
 off. Review the commit list for the pinned SHA before you start and smoke-test PDF ingestion and connector sync (step 5).
 
@@ -150,7 +150,7 @@ With the owner connection string and these two variables set:
 SOURCEMIND_RUNTIME_ROLE=<the production runtime role>
 SOURCEMIND_GRAPH_RELAY_ROLE=sourcemind_graph_relay
 alembic current            # expect 20261016_0014 (confirm before continuing)
-alembic upgrade head        # applies 20261029_0015, 20261029_0016 and 20261031_0017
+alembic upgrade head        # applies 20261029_0015, 20261029_0016, 20261031_0017 and 20261031_0018
 ```
 
 Verify the grants exactly (nothing wider than listed):

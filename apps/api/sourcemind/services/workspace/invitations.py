@@ -32,6 +32,7 @@ from sourcemind.core.exceptions import (
 from sourcemind.models.user import User
 from sourcemind.models.workspace import WorkspaceMember, WorkspaceMembershipStatus, WorkspaceRole
 from sourcemind.models.workspace_invitation import WorkspaceInvitation
+from sourcemind.services.workspace import audit
 from sourcemind.services.workspace.roles import ADMIN_REQUIRED, ORDINARY_ROLES
 
 logger = structlog.get_logger(__name__)
@@ -151,6 +152,14 @@ async def create_invitation(
         if _is_rls_denial(exc):
             raise WorkspaceAccessDeniedError(FOUNDER_ONLY) from exc
         raise
+    await audit.record(
+        db,
+        workspace_id=workspace_id,
+        actor_id=caller_id,
+        event="invitation_created",
+        target_email=email,
+        role_after=role,
+    )
     await db.commit()
     logger.info(
         "workspace.invitation_created",
@@ -209,6 +218,14 @@ async def revoke_invitation(
         if _is_rls_denial(exc):
             raise WorkspaceAccessDeniedError(FOUNDER_ONLY) from exc
         raise
+    await audit.record(
+        db,
+        workspace_id=workspace_id,
+        actor_id=caller_id,
+        event="invitation_revoked",
+        target_email=invitation.email,
+        role_after=invited_role,
+    )
     await db.commit()
     logger.info(
         "workspace.invitation_revoked",
@@ -286,6 +303,16 @@ async def accept_invitation(
         invitation.accepted_at = now
         invitation.accepted_by = user_id
         await db.flush()
+        # After the flush: the policy admits an acceptance only for the user who accepted it.
+        await audit.record(
+            db,
+            workspace_id=workspace_id,
+            actor_id=user_id,
+            event="invitation_accepted",
+            target_user_id=user_id,
+            target_email=invitation.email,
+            role_after=role,
+        )
         await db.commit()
     except InvitationNotFoundError:
         await db.rollback()
