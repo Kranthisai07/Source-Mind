@@ -21,6 +21,7 @@ from sourcemind.api.v1 import (
     search,
     slack,
     team,
+    workspace_admin,
     workspaces,
 )
 
@@ -37,6 +38,7 @@ api_router.include_router(pilot.router, prefix=_v1_prefix)
 api_router.include_router(search.router, prefix=_v1_prefix)
 api_router.include_router(workspaces.router, prefix=_v1_prefix)
 api_router.include_router(invitations.router, prefix=_v1_prefix)
+api_router.include_router(workspace_admin.router, prefix=_v1_prefix)
 api_router.include_router(team.router, prefix=_v1_prefix)
 api_router.include_router(team.handoff_router, prefix=_v1_prefix)
 api_router.include_router(conflicts.router, prefix=_v1_prefix)

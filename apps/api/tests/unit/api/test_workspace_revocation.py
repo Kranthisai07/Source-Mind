@@ -41,6 +41,8 @@ async def test_revocation_fails_pending_ingestion_in_same_transaction(
         "require_workspace_permission",
         AsyncMock(return_value="admin"),
     )
+    record = AsyncMock()
+    monkeypatch.setattr(workspaces.audit, "record", record)
 
     await workspaces.revoke_workspace_member(
         workspace_id=workspace_id,
@@ -61,4 +63,8 @@ async def test_revocation_fails_pending_ingestion_in_same_transaction(
         "raw_content": "unprocessed",
     }
     assert membership.status == "departed"
+    # The audit event is written before the status change, in the same transaction.
+    record.assert_awaited_once()
+    assert record.await_args.kwargs["event"] == "member_removed"
+    assert record.await_args.kwargs["target_user_id"] == revoked_user_id
     session.commit.assert_awaited_once()

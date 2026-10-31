@@ -44,6 +44,7 @@ class RateLimitedOperation(StrEnum):
     INVITE_CREATE = "invite-create"
     INVITE_CREATE_WORKSPACE = "invite-create-workspace"
     INVITE_ACCEPT = "invite-accept"
+    EXPORT = "export"
 
 
 def _operation_limit(operation: RateLimitedOperation) -> tuple[int, int]:
@@ -81,6 +82,7 @@ def _operation_limit(operation: RateLimitedOperation) -> tuple[int, int]:
             3600,
         ),
         RateLimitedOperation.INVITE_ACCEPT: (settings.rate_limit_invite_accept_per_hour, 3600),
+        RateLimitedOperation.EXPORT: (settings.rate_limit_export_per_hour, 3600),
     }
     return limits[operation]
 

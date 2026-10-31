@@ -63,6 +63,7 @@ from sourcemind.services.ingestion.lifecycle import (
     ROLE_CHANGE_INGESTION_ERROR,
     terminalize_member_ingestion_documents,
 )
+from sourcemind.services.workspace import audit
 from sourcemind.services.workspace.roles import (
     ADMIN_CEILING,
     ADMIN_REQUIRED,
@@ -584,6 +585,14 @@ async def add_workspace_member(
             role=WorkspaceRole(stored.role),
             joined_at=stored.created_at,
         )
+        await audit.record(
+            db,
+            workspace_id=workspace_id,
+            actor_id=caller_id,
+            event="member_added",
+            target_user_id=target_id,
+            role_after=body.role,
+        )
         await db.commit()
     except DBAPIError as exc:
         if _pg_sqlstate(exc) in _RETRYABLE_SQLSTATES or "deadlock detected" in str(exc):
@@ -658,6 +667,16 @@ async def revoke_workspace_member(
                 "The last active workspace owner cannot be revoked."
             )
 
+    # Before the status change: the caller may be revoking themselves, and the audit insert
+    # needs them to still be a current founder or admin.
+    await audit.record(
+        db,
+        workspace_id=workspace_id,
+        actor_id=current_user.user_id,
+        event="member_removed",
+        target_user_id=user_id,
+        role_before=str(membership.role),
+    )
     await terminalize_member_ingestion_documents(
         db,
         workspace_id,
@@ -785,6 +804,17 @@ async def change_workspace_member_role(
                     user_id,
                     error_message=ROLE_CHANGE_INGESTION_ERROR,
                 )
+            # Before the change: a founder demoting themselves would otherwise no longer be
+            # allowed to write the audit row.
+            await audit.record(
+                db,
+                workspace_id=workspace_id,
+                actor_id=caller_id,
+                event="role_changed",
+                target_user_id=user_id,
+                role_before=previous_role,
+                role_after=body.role,
+            )
             target.role = body.role
             await db.flush()
 

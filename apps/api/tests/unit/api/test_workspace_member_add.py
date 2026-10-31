@@ -121,9 +121,12 @@ def _app(session: AsyncMock, caller_id: uuid.UUID = CALLER_ID):
 @pytest.fixture(autouse=True)
 def _patches():
     get_settings.cache_clear()
-    with patch(
-        "sourcemind.api.v1.workspaces.enforce_rate_limit", new_callable=AsyncMock
-    ) as limiter:
+    # The audit insert is covered against a real database; these tests script a fake session
+    # result by result, so an extra statement would exhaust it.
+    with (
+        patch("sourcemind.api.v1.workspaces.enforce_rate_limit", new_callable=AsyncMock) as limiter,
+        patch("sourcemind.api.v1.workspaces.audit.record", new_callable=AsyncMock),
+    ):
         yield limiter
     get_settings.cache_clear()
 

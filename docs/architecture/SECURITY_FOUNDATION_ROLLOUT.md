@@ -45,6 +45,8 @@ immediately.
 | Invite someone as teammate or viewer, or revoke such an invitation | no | no | yes | yes |
 | Invite someone as admin or founder, or revoke such an invitation | no | no | no | yes |
 | List pending invitations | no | no | yes | yes |
+| Read the audit trail | no | no | yes | yes |
+| Export the workspace's data | no | no | yes | yes |
 
 The final active owner cannot be revoked or demoted. Resource-ID routes return the
 resource's 404 to outsiders; workspace-ID routes return SM022/404. A real
