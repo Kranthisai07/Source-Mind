@@ -141,7 +141,7 @@ jobs:
             *skipped*|*failed*|*error*) echo "::error::a graph test was skipped or failed"; exit 1 ;;
           esac
           passed=$(printf '%s' "$summary" | grep -Eo '[0-9]+ passed' | cut -d' ' -f1)
-          test "${passed:-0}" -ge 218 || { echo "::error::the graph test selection shrank"; exit 1; }
+          test "${passed:-0}" -ge 245 || { echo "::error::the graph test selection shrank"; exit 1; }
 
       - name: Service logs on failure
         if: failure()
