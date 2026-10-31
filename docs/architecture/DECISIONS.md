@@ -4116,4 +4116,6 @@ A developer's local `.env` can therefore fail these suites; run them with CI's e
 
 **Checked.** Full web suite in a single process: 629 passed, 20 skipped (skips are existing), 51 suites; `craco build` with `CI=true` compiled without warnings. New tests cover the role and setup rules, the wire format of the five calls, the setup step (roles sent, partial failure, bad addresses, double submit, copy success and failure), the invite dialog, and the accept page (no accept on load, one answer for every refusal, double click once, signed-out path, malformed link). Two existing tests were updated to pass through the new step.
 
+**Review follow-up (Codex, P2).** The setup dialog could grow past the viewport with many invitation links while background scrolling is locked, hiding one-time links and the Continue button. The dialog is now capped at 90% of the viewport height and scrolls (`CreateWorkspaceDialog.jsx`); a test checks the classes, not the rendered layout.
+
 **Not checked.** Anything against the real API from the browser: the Settings role menu and pending list have no component test of their own, and I did not take screenshots (light/dark, 1440 and 390) or run the page against the local live API, because the machine had under 1 GB of free memory. Clerk's sign-in redirect with `next` is untested against real Clerk.
