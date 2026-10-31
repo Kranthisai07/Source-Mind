@@ -159,7 +159,10 @@ def upgrade() -> None:
     )
     op.execute(f"CREATE INDEX ix_workspace_invitations_workspace ON {TABLE} (workspace_id)")
 
-    # An accepted or revoked invitation is finished: nothing about it may change afterwards.
+    # An accepted or revoked invitation is finished: nothing about it may change afterwards,
+    # except that accepted_by / revoked_by may be CLEARED. Those are ON DELETE SET NULL, so
+    # without this exception keeping a finished invitation would block deleting the user who
+    # accepted or revoked it (the same allowance mcp_api_keys makes for revoked_by).
     op.execute(
         """
         CREATE FUNCTION protect_workspace_invitation_terminal() RETURNS trigger
@@ -167,7 +170,14 @@ def upgrade() -> None:
         SET search_path = pg_catalog, public
         AS $$
         BEGIN
-            IF OLD.accepted_at IS NOT NULL OR OLD.revoked_at IS NOT NULL THEN
+            IF (OLD.accepted_at IS NOT NULL OR OLD.revoked_at IS NOT NULL) AND (
+                (to_jsonb(NEW) - 'accepted_by' - 'revoked_by')
+                    IS DISTINCT FROM (to_jsonb(OLD) - 'accepted_by' - 'revoked_by')
+                OR (NEW.accepted_by IS NOT NULL
+                    AND NEW.accepted_by IS DISTINCT FROM OLD.accepted_by)
+                OR (NEW.revoked_by IS NOT NULL
+                    AND NEW.revoked_by IS DISTINCT FROM OLD.revoked_by)
+            ) THEN
                 RAISE EXCEPTION 'a finished workspace invitation cannot change'
                     USING ERRCODE = 'check_violation';
             END IF;

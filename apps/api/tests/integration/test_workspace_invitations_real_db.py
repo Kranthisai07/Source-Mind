@@ -39,6 +39,7 @@ from sourcemind.models.workspace_invitation import WorkspaceInvitation
 from sourcemind.schemas.invitation import InvitationAccept, InvitationCreate
 from sourcemind.schemas.workspace import WorkspaceMemberRoleUpdate
 from sourcemind.services.workspace.invitations import FOUNDER_ONLY, generate_token, hash_token
+from tests.integration.test_graph_outbox_real_db import owner_engine  # noqa: F401  (fixture)
 from tests.integration.test_security_foundation_real_db import (
     _actor,
     _email,
@@ -631,3 +632,77 @@ async def test_a_member_token_cannot_create_a_founder_row_or_a_row_for_someone_e
     with pytest.raises(DBAPIError, match="row-level security"):
         await try_insert(zero, "member", hash_value=hash_token("smi_" + "E" * 43), email=mine)
     await try_insert(zero, "member", hash_value=good, email=mine)  # the one thing it does allow
+
+
+async def test_deleting_a_user_keeps_their_finished_invitations_with_the_reference_cleared(
+    supabase_engine, owner_engine
+) -> None:
+    """Codex, #48: the finished-invitations trigger must not block ON DELETE SET NULL.
+
+    Run as the table owner, as an erasure job or a migration would. The invitation row stays,
+    its accepted_by reference is cleared, and nothing else about it changes.
+    """
+    data = await _seed_security_tenants(supabase_engine)
+    zero = data.zero_membership_id
+    email = _email(data, zero)
+    token = _ok(await _invite(supabase_engine, data, data.owner_id, email, "viewer")).data.token
+    _ok(await _accept(supabase_engine, data, zero, token))
+    revoked_email = _fresh_email()
+    _ok(await _invite(supabase_engine, data, data.owner_id, revoked_email, "member"))
+    (to_revoke,) = await _rows(supabase_engine, data, revoked_email)
+    assert await _revoke_invite(supabase_engine, data, data.backup_owner_id, to_revoke.id) is None
+
+    async with owner_engine.begin() as conn:
+        await conn.execute(text("DELETE FROM users WHERE id = :u"), {"u": zero})
+        await conn.execute(text("DELETE FROM users WHERE id = :u"), {"u": data.backup_owner_id})
+
+    (accepted,) = await _rows(supabase_engine, data, email)
+    assert accepted.accepted_at is not None and accepted.accepted_by is None
+    assert accepted.role == "viewer" and accepted.token_hash == hash_token(token)
+    (revoked,) = await _rows(supabase_engine, data, revoked_email)
+    assert revoked.revoked_at is not None and revoked.revoked_by is None
+
+
+async def test_a_finished_invitation_still_cannot_be_rewritten_even_with_row_security_lifted(
+    supabase_engine, owner_engine
+) -> None:
+    """The trigger is the second layer: policies make a finished row unreachable for updates, and
+    this proves that if a path ever bypassed them the row still could not change.
+
+    Row security is lifted for the owner role inside a transaction that is rolled back, so the
+    update reaches the trigger. Only clearing the two *_by references may pass.
+    """
+    data = await _seed_security_tenants(supabase_engine)
+    zero = data.zero_membership_id
+    token = _ok(
+        await _invite(supabase_engine, data, data.owner_id, _email(data, zero), "viewer")
+    ).data.token
+    _ok(await _accept(supabase_engine, data, zero, token))
+
+    async def attempt(change: str) -> None:
+        async with owner_engine.begin() as conn:
+            await conn.execute(
+                text("ALTER TABLE workspace_invitations NO FORCE ROW LEVEL SECURITY")
+            )
+            result = await conn.execute(
+                text(f"UPDATE workspace_invitations SET {change} WHERE token_hash = :h"),
+                {"h": hash_token(token)},
+            )
+            assert result.rowcount == 1, "the update must actually reach the row and the trigger"
+            raise _Rollback
+
+    for forbidden in (
+        "role = 'owner'",
+        "expires_at = expires_at + interval '1 year'",
+        "accepted_at = now()",
+        "accepted_by = invited_by",  # re-pointing is not the same as clearing
+        "revoked_at = now()",
+    ):
+        with pytest.raises(DBAPIError, match="finished workspace invitation"):
+            await attempt(forbidden)
+    with pytest.raises(_Rollback):  # clearing the reference is the one allowed change
+        await attempt("accepted_by = NULL")
+
+
+class _Rollback(Exception):
+    """Raised inside a transaction to roll it back after a check."""
