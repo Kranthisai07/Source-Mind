@@ -688,6 +688,11 @@ async def test_all_workspace_policies_require_active_user_access(
                     "sm_can_bootstrap_workspace_owner",
                     "sm_is_workspace_creator_without_owner",
                     "created_by_user_id",
+                    # Invitations (D-065): the only other way a membership row can come into
+                    # being. Both predicates admit only the signed-in user's own row, while the
+                    # request presents the matching invitation token hash and verified email.
+                    "sm_invitation_matches_workspace",
+                    "sm_invitation_grants_membership",
                 )
             )
         else:

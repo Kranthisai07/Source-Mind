@@ -62,6 +62,7 @@ class ErrorCode(StrEnum):
     ATTRIBUTION_STATE_CONFLICT = "SM034"
     MEMORY_VERSION_STALE = "SM035"
     WORKSPACE_MEMBER_EXISTS = "SM036"
+    INVITATION_NOT_FOUND = "SM056"
     # Source refresh retired the memory an edit targeted (contract C10). These
     # two use their descriptive code, not an SM number, because clients branch
     # on them to offer a re-apply of the draft.
@@ -266,6 +267,28 @@ class AttributionStateConflictError(SourceMindError):
     """
     code = ErrorCode.ATTRIBUTION_STATE_CONFLICT
     http_status = HTTPStatus.CONFLICT
+
+
+class InvitationNotFoundError(SourceMindError):
+    """
+    The invitation cannot be used: unknown, expired, revoked, already used, issued to someone
+    else, or its inviter no longer holds the authority it needs. One answer for all of them, so
+    the endpoint cannot be used to tell them apart.
+    """
+
+    code = ErrorCode.INVITATION_NOT_FOUND
+    http_status = HTTPStatus.NOT_FOUND
+
+    def __init__(
+        self,
+        message: str = (
+            "This invitation is not valid. It may have expired, been revoked or already "
+            "been used."
+        ),
+        details: Any = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(message, details, **kwargs)
 
 
 class WorkspaceMemberExistsError(SourceMindError):

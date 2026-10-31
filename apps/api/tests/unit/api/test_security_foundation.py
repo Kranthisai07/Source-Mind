@@ -441,6 +441,9 @@ def _rate_settings(*, fail_closed: bool = True) -> SimpleNamespace:
         rate_limit_member_add_per_hour=1,
         rate_limit_member_add_workspace_per_hour=1,
         rate_limit_role_change_per_hour=1,
+        rate_limit_invite_create_per_hour=1,
+        rate_limit_invite_create_workspace_per_hour=1,
+        rate_limit_invite_accept_per_hour=1,
         rate_limit_fail_closed=fail_closed,
     )
 

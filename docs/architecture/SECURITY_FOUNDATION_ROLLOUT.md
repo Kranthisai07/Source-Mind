@@ -42,6 +42,9 @@ immediately.
 | Move a teammate to viewer or back | no | no | yes | yes |
 | Grant admin or founder (owner) to anyone | no | no | no | yes |
 | Change the role of an admin or a founder | no | no | no | yes |
+| Invite someone as teammate or viewer, or revoke such an invitation | no | no | yes | yes |
+| Invite someone as admin or founder, or revoke such an invitation | no | no | no | yes |
+| List pending invitations | no | no | yes | yes |
 
 The final active owner cannot be revoked or demoted. Resource-ID routes return the
 resource's 404 to outsiders; workspace-ID routes return SM022/404. A real
@@ -57,8 +60,9 @@ and the owner-bootstrap predicate remains unavailable without a known creator.
 This compatibility migration does not assign owners or define an ownership
 policy. Changing roles, promoting co-founders and handing ownership over are
 available through `PATCH /v1/workspaces/{id}/members/{user_id}` (D-064; shown as
-Founder, Admin, Teammate and Viewer); organization administration and invitations
-remain deferred product work.
+Founder, Admin, Teammate and Viewer); invitations (D-065) let founders and admins invite people who have no account yet with a
+one-time link, and the invited person's Clerk-verified email must match; organization
+administration remains deferred product work.
 
 Workers repeat authorization at execution time. A queued ingestion or connector
 sync accepted before revocation must not run after that membership is revoked.

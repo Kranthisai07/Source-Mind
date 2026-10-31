@@ -14,6 +14,7 @@ from sourcemind.api.v1 import (
     github_author_links,
     graph,
     health,
+    invitations,
     mcp_keys,
     memories,
     pilot,
@@ -35,6 +36,7 @@ api_router.include_router(memories.router, prefix=_v1_prefix)
 api_router.include_router(pilot.router, prefix=_v1_prefix)
 api_router.include_router(search.router, prefix=_v1_prefix)
 api_router.include_router(workspaces.router, prefix=_v1_prefix)
+api_router.include_router(invitations.router, prefix=_v1_prefix)
 api_router.include_router(team.router, prefix=_v1_prefix)
 api_router.include_router(team.handoff_router, prefix=_v1_prefix)
 api_router.include_router(conflicts.router, prefix=_v1_prefix)

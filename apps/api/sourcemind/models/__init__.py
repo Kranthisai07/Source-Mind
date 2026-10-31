@@ -37,6 +37,7 @@ from sourcemind.models.workspace import (
     WorkspaceMembershipStatus,
     WorkspaceRole,
 )
+from sourcemind.models.workspace_invitation import WorkspaceInvitation
 
 __all__ = [
     "Base",
@@ -48,6 +49,7 @@ __all__ = [
     "WorkspaceMembershipStatus",
     "WorkspaceRole",
     "WorkspaceMember",
+    "WorkspaceInvitation",
     "User",
     "Document",
     "DocumentSourceType",
