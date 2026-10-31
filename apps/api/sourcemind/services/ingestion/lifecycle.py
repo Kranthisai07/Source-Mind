@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sourcemind.models.document import Document, IngestionStatus
 
 REVOCATION_INGESTION_ERROR = "Workspace access revoked before ingestion."
+ROLE_CHANGE_INGESTION_ERROR = "Role changed to read-only before ingestion."
 DEPARTURE_INGESTION_ERROR = (
     "Workspace access ended before ingestion because the submitter began departure."
 )

@@ -40,6 +40,7 @@ class RateLimitedOperation(StrEnum):
     SLACK = "slack"
     MEMBER_ADD = "member-add"
     MEMBER_ADD_WORKSPACE = "member-add-workspace"
+    ROLE_CHANGE = "role-change"
 
 
 def _operation_limit(operation: RateLimitedOperation) -> tuple[int, int]:
@@ -70,6 +71,7 @@ def _operation_limit(operation: RateLimitedOperation) -> tuple[int, int]:
             settings.rate_limit_member_add_workspace_per_hour,
             3600,
         ),
+        RateLimitedOperation.ROLE_CHANGE: (settings.rate_limit_role_change_per_hour, 3600),
     }
     return limits[operation]
 
