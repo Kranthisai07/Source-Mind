@@ -111,7 +111,7 @@ volume; to use it on an existing volume recreate it (`down -v` deletes local dat
 
 With either graph flag on in production: both flags must be on together, `NEO4J_AUTH` must not be the development
 default, and neither `NEO4J_URI` nor `KAFKA_BOOTSTRAP_SERVERS` may point at localhost. Production hosting of Neo4j and a
-broker is **not** decided or provisioned; the flags stay off.
+broker is decided but not yet provisioned: Railway image services over the private network, as in [GRAPH_ROLLOUT.md](GRAPH_ROLLOUT.md) (D-063). The flags stay off until that runbook is executed.
 
 ## Known limits
 
@@ -121,6 +121,13 @@ broker is **not** decided or provisioned; the flags stay off.
 * `graph_outbox.seq` is assigned at insert, not commit. The relay will leave rows younger than a settle window for the
   next poll; this is a documented shortcut, to be upgraded if reconciliation finds drift.
 * Neo4j Community is GPLv3 and Redpanda is BSL; they run as separate processes in development and CI only.
+
+## Baseline (D-063)
+
+A workspace's graph answers only after a completed backfill has been applied to it (`Workspace.baseline_seq`, set by the
+`workspace.backfill_complete` marker). One event carries one memory, so without this a workspace that already had data when
+the pipeline was enabled would look caught up after its first new event while missing everything older. Workspaces created
+after enablement are not baselined automatically; they are answered from PostgreSQL until the backfill is run for them.
 
 ## Dead letters and repair (D-062)
 

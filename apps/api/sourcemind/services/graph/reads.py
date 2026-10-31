@@ -74,7 +74,7 @@ def _key(workspace_id: uuid.UUID | str, item_id: uuid.UUID | str) -> str:
 
 WORKSPACE_WATERMARK = (
     "MATCH (w:Workspace {key: $workspace_id}) "
-    "RETURN w.applied_seq AS seq, w.gap_seq AS gap_seq"
+    "RETURN w.applied_seq AS seq, w.gap_seq AS gap_seq, w.baseline_seq AS baseline_seq"
 )
 
 MEMORY_NODE_CYPHER = (
@@ -200,6 +200,10 @@ async def _graph_fresh(session: AsyncSession, workspace_id: uuid.UUID) -> bool:
         return False  # nothing has been published for this workspace, so nothing is projected
     rows = await run_read(WORKSPACE_WATERMARK, str(workspace_id))
     applied = rows[0]["seq"] if rows else None
+    if rows and rows[0].get("baseline_seq") is None:
+        # Events are one memory each, so a workspace that already had data when the pipeline was
+        # switched on is incomplete until a backfill has been applied. Caught up proves nothing.
+        return False
     if rows and rows[0].get("gap_seq") is not None:
         # An event was dead-lettered and no backfill has repaired it since: the watermark can be
         # past it, so "caught up" proves nothing. PostgreSQL answers until the backfill completes.

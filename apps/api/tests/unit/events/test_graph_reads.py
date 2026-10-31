@@ -22,8 +22,8 @@ def _graph(on: bool = True):
     return patch.object(reads, "graph_usable", return_value=on)
 
 
-def _watermark(applied):
-    return [{"seq": applied}] if applied is not None else []
+def _watermark(applied, baseline=1):
+    return [{"seq": applied, "baseline_seq": baseline}] if applied is not None else []
 
 
 def _pg_session(*, cursor: int | None = 10, memories=None, contributions=()):
@@ -437,9 +437,26 @@ async def test_a_workspace_with_a_dead_letter_gap_is_never_fresh_even_when_caugh
         with patch.object(reads, "run_read", fake):
             return await reads._graph_fresh(_pg_session(cursor=10), WS)
 
-    # Caught up (applied 12 >= published 10) and no gap: trusted.
-    assert await run_with([{"seq": 12, "gap_seq": None}]) is True
+    # Caught up (applied 12 >= published 10), baselined, no gap: trusted.
+    assert await run_with([{"seq": 12, "gap_seq": None, "baseline_seq": 5}]) is True
     # Same watermark, but an event was dead-lettered and not repaired: not trusted.
-    assert await run_with([{"seq": 12, "gap_seq": 7}]) is False
-    # Rows from before the gap field existed behave as "no gap".
-    assert await run_with([{"seq": 12}]) is True
+    assert await run_with([{"seq": 12, "gap_seq": 7, "baseline_seq": 5}]) is False
+    # A row from before the gap field existed behaves as "no gap".
+    assert await run_with([{"seq": 12, "baseline_seq": 5}]) is True
+
+
+@pytest.mark.unit
+async def test_caught_up_without_a_completed_backfill_is_not_trusted() -> None:
+    """Codex, #46: events are one memory each, so a workspace that already had data when the
+    pipeline was switched on looks caught up after its first new event while missing the rest."""
+
+    async def run_with(rows):
+        async def fake(query, workspace_id, params=None):
+            return rows
+
+        with patch.object(reads, "run_read", fake):
+            return await reads._graph_fresh(_pg_session(cursor=10), WS)
+
+    assert await run_with([{"seq": 12, "gap_seq": None, "baseline_seq": None}]) is False
+    assert await run_with([{"seq": 12, "gap_seq": None}]) is False  # key absent: same thing
+    assert await run_with([{"seq": 12, "gap_seq": None, "baseline_seq": 5}]) is True
