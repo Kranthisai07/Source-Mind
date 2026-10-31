@@ -18,6 +18,7 @@ import Contributors  from "@/pages/Contributors";
 import GithubCallbackRoute from "@/components/connectors/GithubCallbackRoute";
 import Settings      from "@/pages/Settings";
 import PilotTools    from "@/pages/PilotTools";
+import InviteAccept  from "@/pages/InviteAccept";
 import { ClerkTokenBridge, RequireAuth } from "@/components/auth/ClerkAuthBridge";
 import { isPilotMode } from "@/lib/pilotMode";
 
@@ -33,6 +34,8 @@ export default function App() {
                     <Route path="/develop" element={<Develop />} />
                     <Route path="/sign-in" element={<AuthPage mode="sign-in" />} />
                     <Route path="/sign-up" element={<AuthPage mode="sign-up" />} />
+
+                    <Route path="/invite/:token" element={<InviteAccept />} />
 
                     <Route element={<RequireAuth><AppLayout /></RequireAuth>}>
                         <Route path="/dashboard"          element={pilotRestricted(<Dashboard />)} />

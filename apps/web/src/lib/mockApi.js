@@ -72,6 +72,8 @@ let mockMcpKeys = MCP_KEYS.populated.keys.map((k) => ({ ...k }));
 
 // The demo has one workspace; ones created in the UI live for the page session.
 const mockWorkspaces = [WORKSPACE];
+// Page-session pending invitations (never persisted).
+let mockInvitations = [];
 // Set by realApi.selectWorkspace so mock reads follow the picker.
 let mockSelectedId = null;
 
@@ -99,6 +101,30 @@ export const mockApi = {
             role,
             joined_at: new Date().toISOString(),
         })),
+
+    changeMemberRole: async (_workspaceId, userId, role) =>
+        request(() => ({ user: { id: userId }, role, joined_at: new Date().toISOString() })),
+    listInvitations: () => request(() => ({ items: [...mockInvitations] })),
+    createInvitation: async (_workspaceId, { email, role = "member" } = {}) =>
+        request(() => {
+            const token = `smi_${"x".repeat(43)}`;
+            const invitation = {
+                id: `inv_${mockInvitations.length + 1}`,
+                email: String(email).toLowerCase(),
+                role,
+                created_at: new Date().toISOString(),
+                expires_at: new Date(Date.now() + 7 * 86400000).toISOString(),
+                invited_by: CURRENT_USER.id,
+            };
+            mockInvitations = [...mockInvitations.filter((i) => i.email !== invitation.email), invitation];
+            return { ...invitation, token, accept_path: `/invite/${token}` };
+        }),
+    revokeInvitation: async (_workspaceId, invitationId) =>
+        request(() => {
+            mockInvitations = mockInvitations.filter((i) => i.id !== invitationId);
+            return {};
+        }),
+    acceptInvitation: async () => request(() => ({ workspace_id: WORKSPACE.id, role: "member" })),
 
     // GET /v1/workspaces/:id/analytics/overview
     getAnalyticsOverview: (_wsId) => request(() => ({

@@ -5,6 +5,7 @@ import { Textarea } from "../ui/textarea";
 import api from "../../lib/api";
 import { slugify, validateWorkspaceForm } from "../../lib/slug";
 import { mapWorkspaceError } from "../../lib/workspaceErrors";
+import TeamSetupStep from "../team/TeamSetupStep";
 
 /**
  * Name + URL name (+ optional description) for a new workspace.
@@ -14,7 +15,7 @@ import { mapWorkspaceError } from "../../lib/workspaceErrors";
  * not state: two clicks in the same tick both see the stale `submitting`
  * value from the last render.
  */
-export default function CreateWorkspaceForm({ onCreated, onCancel, idPrefix = "cw" }) {
+export default function CreateWorkspaceForm({ onCreated, onCancel, idPrefix = "cw", teamSetup = false }) {
     const [name, setName] = useState("");
     const [slug, setSlug] = useState("");
     const [slugEdited, setSlugEdited] = useState(false);
@@ -22,14 +23,35 @@ export default function CreateWorkspaceForm({ onCreated, onCancel, idPrefix = "c
     const [fieldErrors, setFieldErrors] = useState({});
     const [serverError, setServerError] = useState(null);
     const [submitting, setSubmitting] = useState(false);
+    // With teamSetup, a created workspace waits here while the founders choose
+    // who else joins; onCreated runs when they finish or skip.
+    const [created, setCreated] = useState(null);
+    const settled = useRef(false);
+    const onCreatedRef = useRef(onCreated);
+    onCreatedRef.current = onCreated;
+    const createdRef = useRef(null);
+    createdRef.current = created;
     const inFlight = useRef(false);
     const mounted = useRef(true);
     // Re-armed on setup: StrictMode runs setup, cleanup, setup, and a flag that
     // is only ever cleared would stay false for the component's real lifetime.
     useEffect(() => {
         mounted.current = true;
-        return () => { mounted.current = false; };
+        return () => {
+            mounted.current = false;
+            // Closed mid-setup: the workspace exists, so register it without switching.
+            if (createdRef.current && !settled.current) {
+                settled.current = true;
+                onCreatedRef.current(createdRef.current, { dismissed: true });
+            }
+        };
     }, []);
+
+    const finishSetup = async () => {
+        if (settled.current) return;
+        settled.current = true;
+        await onCreated(created, { dismissed: false });
+    };
 
     const onName = (value) => {
         setName(value);
@@ -52,6 +74,10 @@ export default function CreateWorkspaceForm({ onCreated, onCancel, idPrefix = "c
                 slug,
                 description: description.trim() || undefined,
             });
+            if (teamSetup && mounted.current) {
+                setCreated(workspace);
+                return;
+            }
             await onCreated(workspace, { dismissed: !mounted.current });
         } catch (err) {
             if (!mounted.current) return;
@@ -63,6 +89,8 @@ export default function CreateWorkspaceForm({ onCreated, onCancel, idPrefix = "c
             if (mounted.current) setSubmitting(false);
         }
     };
+
+    if (created) return <TeamSetupStep workspace={created} onFinish={finishSetup} />;
 
     const label = "block text-[12px] text-sm-text-secondary mb-1.5 font-medium";
     const input = "bg-sm-bg/60 border-sm-border text-sm-text h-10";
