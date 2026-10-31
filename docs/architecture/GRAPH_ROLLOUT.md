@@ -98,22 +98,52 @@ Verify: both deployments healthy; from the API service, a TCP connect to `neo4j.
 `redpanda.railway.internal:9092` succeeds; neither has a public address.
 Undo: delete the two services and their volumes.
 
+**Provisioned so far (2026-10-31, production project `welcoming-motivation`, flags off, nothing running against it):**
+`neo4j` and `redpanda` are running (private network only); `graph-relay` and `graph-projector` exist with their settings and
+variables but **no source attached, so they are not running**; `NEO4J_URI`, `NEO4J_AUTH` and `KAFKA_BOOTSTRAP_SERVERS` are set
+on the API and worker without a redeploy. Attach the relay and projector sources only after steps 3, 4 and 5.
+
 ### 3. Create the relay database role (the owner runs this)
-As the PostgreSQL owner role, in the production database:
+Postgres has no public address (no TCP proxy), so do this from inside Railway's network; do not open one. The password is
+a shared variable the owner creates, so it never passes through tooling:
+
+1. Dashboard, project `welcoming-motivation`, Settings, Shared Variables, `production`: add `GRAPH_RELAY_PASSWORD` (random,
+   32+ letters and digits) and apply it. `graph-relay` already references it in `GRAPH_RELAY_DATABASE_URL`.
+2. Open a shell in the Postgres container and run the SQL (the `\password` meta-command prompts for the value and hashes it
+   locally, so it does not land in shell history; type the same value as the shared variable):
+
+```
+railway ssh -p 06c35f15-133d-41d3-95c6-6e33ed1927c2 -e production -s Postgres
+psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+```
 
 ```sql
-CREATE ROLE sourcemind_graph_relay LOGIN PASSWORD '<generated, not printed>'
+CREATE ROLE sourcemind_graph_relay LOGIN
     NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+\password sourcemind_graph_relay
 ALTER ROLE sourcemind_graph_relay SET timezone = 'UTC';
-GRANT CONNECT ON DATABASE <database> TO sourcemind_graph_relay;
+GRANT CONNECT ON DATABASE <the database name> TO sourcemind_graph_relay;
 GRANT USAGE ON SCHEMA public TO sourcemind_graph_relay;
 ```
+
 
 The role gets no policy bypass. The migration in step 4 grants it `SELECT` and `UPDATE (published_at)` on `graph_outbox`
 and `SELECT` plus `INSERT`/`UPDATE (published_seq, updated_at)` on `graph_publication_cursor`, and nothing else.
 Undo: `DROP ROLE sourcemind_graph_relay` (after step 4 is undone).
 
-### 4. Migrate (the owner runs this, as the table-owner role, never as the runtime role)
+### 4. Migrate (as the table-owner role, never as the runtime role)
+`alembic/env.py` takes its connection from `DATABASE_URL`, so the owner URL goes in that variable for this one process only.
+Do not put the owner credential on the API or worker. Two ways, both keep it inside Railway's network:
+
+- **Recommended: a temporary one-shot service `graph-migrate`**, built from the pinned `main` SHA (root `/apps/api`,
+  Dockerfile `Dockerfile.worker`), with `DATABASE_URL=${{Postgres.DATABASE_URL}}` (a reference, so nobody reads it) or the
+  dedicated owner role's URL, the two role variables below, restart policy NEVER, and the start command
+  `sh -c 'alembic current && alembic upgrade head && alembic current'`. It runs once; read its deploy log for the two
+  `alembic current` lines and the new head; then delete the service. It also needs the settings-validation variables
+  (copied from the worker by reference, as `graph-relay` has).
+- **Or by hand** from a shell inside a service container (`railway ssh -p ... -e production -s <service>`) with
+  `DATABASE_URL` set to the owner URL for the single command.
+
 With the owner connection string and these two variables set:
 
 ```
