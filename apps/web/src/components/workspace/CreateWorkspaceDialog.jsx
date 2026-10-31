@@ -7,7 +7,7 @@ export default function CreateWorkspaceDialog({ open, onOpenChange }) {
     const { adopt, noteCreated } = useWorkspaces();
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="bg-sm-surface border-sm-border text-sm-text" data-testid="create-workspace-dialog">
+            <DialogContent className="bg-sm-surface border-sm-border text-sm-text max-h-[90vh] overflow-y-auto" data-testid="create-workspace-dialog">
                 <DialogHeader>
                     <DialogTitle>Create workspace</DialogTitle>
                     <DialogDescription className="text-sm-text-secondary">

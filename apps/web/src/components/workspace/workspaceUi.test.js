@@ -270,6 +270,8 @@ describe("workspace picker", () => {
         await openPicker();
         fireEvent.click(screen.getByTestId("workspace-create-item"));
         const dialog = await screen.findByTestId("create-workspace-dialog");
+        // The setup step can list up to 20 one-time links; the dialog must scroll, not clip them.
+        expect(dialog.className).toMatch(/max-h-\[90vh\].*overflow-y-auto/);
         fireEvent.change(within(dialog).getByTestId("create-workspace-name"), { target: { value: "Friends" } });
         fireEvent.change(within(dialog).getByTestId("create-workspace-slug"), { target: { value: "Bad Slug" } });
         fireEvent.click(within(dialog).getByTestId("create-workspace-submit"));
