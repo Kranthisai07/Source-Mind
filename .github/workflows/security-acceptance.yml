@@ -169,7 +169,7 @@ jobs:
       # pyproject so the collected count is the raw test count. Asserting the
       # exact node IDs means a rename cannot silently shrink the gate, which a
       # bare count would not catch.
-      - name: Verify exact test selection (281 nodes)
+      - name: Verify exact test selection (282 nodes)
         working-directory: apps/api
         # SECURITY_TEST_ALLOW_DISPOSABLE / TEST_DATABASE_URL / TEST_REDIS_URL
         # are already in the environment via GITHUB_ENV.
@@ -458,6 +458,7 @@ jobs:
           tests/integration/test_role_management_real_db.py::test_the_last_founder_cannot_step_down_until_another_is_named
           tests/integration/test_role_management_real_db.py::test_two_founders_demoting_each_other_at_once_leave_exactly_one
           tests/integration/test_role_management_real_db.py::test_unknown_and_departed_targets_are_not_found
+          tests/integration/test_role_management_real_db.py::test_a_caller_demoted_between_the_check_and_the_lock_is_denied_not_told_nothing_exists
           NODES
           python -m pytest -o addopts='' -q --collect-only \
             tests/integration/test_attribution_history_real_db.py \
@@ -494,7 +495,7 @@ jobs:
           echo "collected $(wc -l < "$actual") node(s)"
           sort -o "$expected" "$expected"
           diff -u "$expected" "$actual" || {
-            echo "::error::collected node IDs differ from the expected 281"
+            echo "::error::collected node IDs differ from the expected 282"
             exit 1
           }
 
@@ -504,7 +505,7 @@ jobs:
       # never reported as an acceptance timeout.
       #
       # A JUnit report is emitted so the next step can prove the tests RAN.
-      # `pytest` exits 0 on "281 skipped", and every one of these is guarded by
+      # `pytest` exits 0 on "282 skipped", and every one of these is guarded by
       # the disposable-DB check — so a silent skip is the realistic failure and
       # exit status alone cannot detect it.
       - name: Security acceptance tests
@@ -550,7 +551,7 @@ jobs:
             tests/integration/test_severity_real_path.py::test_an_updates_verdict_keeps_the_disputed_memory_searchable \
             tests/integration/test_severity_real_path.py::test_clustering_keeps_update_targets_visible_across_runs
 
-      - name: Assert all 281 tests executed and passed
+      - name: Assert all 282 tests executed and passed
         if: always() && steps.acceptance.outcome != 'skipped'
         working-directory: apps/api
         run: |
@@ -578,11 +579,11 @@ jobs:
               else:
                   bad.append(f"{node} -> {state}")
           print(f"executed {total}, passed {passed}")
-          if total != 281:
-              print(f"::error::expected 281 test cases, report contains {total}")
+          if total != 282:
+              print(f"::error::expected 282 test cases, report contains {total}")
           for b in bad:
               print(f"::error::{b}")
-          sys.exit(0 if (total == 281 and passed == 281) else 1)
+          sys.exit(0 if (total == 282 and passed == 282) else 1)
           PY
 
       - name: Upload acceptance report

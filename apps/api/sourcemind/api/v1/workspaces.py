@@ -67,6 +67,7 @@ from sourcemind.services.workspace.roles import (
     ADMIN_CEILING,
     ADMIN_REQUIRED,
     LAST_FOUNDER,
+    ROLE_CHANGED,
     authorize_role_change,
     loses_contribution,
 )
@@ -757,6 +758,11 @@ async def change_workspace_member_role(
             WorkspaceRole.ADMIN.value,
         }:
             raise WorkspaceAccessDeniedError(ADMIN_REQUIRED)
+        if str(caller.role) != caller_role:
+            # Demoted (or promoted) between the permission check and the lock. Checked before
+            # the target, because the update policy hides founder rows from a caller who is
+            # no longer a founder, so a missing target here can mean exactly this.
+            raise WorkspaceAccessDeniedError(ROLE_CHANGED)
         if target is None:
             raise UserNotFoundError("Active workspace member not found.")
 

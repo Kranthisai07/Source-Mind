@@ -27,7 +27,7 @@ from sourcemind.models.document import Document
 from sourcemind.models.workspace import WorkspaceMember
 from sourcemind.schemas.workspace import WorkspaceMemberRoleUpdate
 from sourcemind.services.ingestion.lifecycle import ROLE_CHANGE_INGESTION_ERROR
-from sourcemind.services.workspace.roles import ADMIN_CEILING, LAST_FOUNDER
+from sourcemind.services.workspace.roles import ADMIN_CEILING, LAST_FOUNDER, ROLE_CHANGED
 from tests.integration.test_security_foundation_real_db import (
     _actor,
     _seed_security_tenants,
@@ -268,9 +268,32 @@ async def test_two_founders_demoting_each_other_at_once_leave_exactly_one(
     failed = [o for o in outcomes if isinstance(o, Exception)]
     assert len(succeeded) == 1, outcomes
     assert len(failed) == 1 and isinstance(failed[0], WorkspaceAccessDeniedError), outcomes
-    # Which message the loser gets depends on timing: if it re-read its own role after the
-    # winner's commit it is already an admin (the admin ceiling applies); if not, the
-    # last-founder guard stops it. Either way it is denied and a founder remains.
-    assert LAST_FOUNDER in str(failed[0]) or ADMIN_CEILING in str(failed[0])
+    # Which message the loser gets depends on timing (CI found all three): the last-founder
+    # guard stops it; or it was already demoted when it re-read its own role and the admin
+    # ceiling applies; or the update policy already hides the founder row from it and the
+    # "your role changed" check fires first. Always a denial, and a founder remains.
+    assert any(m in str(failed[0]) for m in (LAST_FOUNDER, ADMIN_CEILING, ROLE_CHANGED))
     survivor = data.owner_id if not isinstance(outcomes[0], Exception) else data.backup_owner_id
     assert await _active_owner_count(owner_race_engine, data, survivor) == 1
+
+
+async def test_a_caller_demoted_between_the_check_and_the_lock_is_denied_not_told_nothing_exists(
+    supabase_engine,
+) -> None:
+    """The deterministic form of the race CI found.
+
+    The caller is really an admin, but the permission check is made to report the stale answer
+    "owner" (as it would if the winner's demotion committed just after it ran). The update
+    policy then hides the founder's row from this now-admin caller, so the locked read finds
+    no target. That must be a denial, never a 404, and nothing may change.
+    """
+    data = await _seed_security_tenants(supabase_engine)
+    with patch(
+        "sourcemind.api.v1.workspaces.require_workspace_permission",
+        new=AsyncMock(return_value="owner"),
+    ):
+        outcome = await _change(supabase_engine, data, data.admin_id, data.owner_id, "member")
+    assert isinstance(outcome, WorkspaceAccessDeniedError), outcome
+    assert ROLE_CHANGED in str(outcome)
+    assert await _role_of(supabase_engine, data, data.owner_id) == "owner"
+    assert await _role_of(supabase_engine, data, data.admin_id) == "admin"

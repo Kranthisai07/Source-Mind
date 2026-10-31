@@ -34,6 +34,7 @@ ADMIN_CEILING = (
     "A founder is needed to grant admin or founder, or to change an admin or a founder."
 )
 ADMIN_REQUIRED = "Administrator access is required."
+ROLE_CHANGED = "Your role changed while this request was in flight. Reload and try again."
 
 
 def authorize_role_change(
