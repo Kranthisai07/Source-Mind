@@ -621,6 +621,19 @@ export const realApi = {
             `/v1/workspaces/${encodeURIComponent(workspaceId)}/invitations/${encodeURIComponent(invitationId)}`,
             { method: "DELETE", scoped: false, headers: { "Idempotency-Key": newIdempotencyKey() } }
         ),
+    // Admin audit trail and data export (D-067). Both are founder/admin only.
+    listWorkspaceAudit: async (workspaceId, { beforeId, limit = 50 } = {}) =>
+        unwrapList(
+            await request(`/v1/workspaces/${encodeURIComponent(workspaceId)}/audit`, {
+                scoped: false,
+                params: { limit, before_id: beforeId },
+            })
+        ),
+    exportWorkspace: async (workspaceId) => {
+        const r = await request(`/v1/workspaces/${encodeURIComponent(workspaceId)}/export`, { scoped: false });
+        const { __latency_ms, ...rest } = r;
+        return rest.data;
+    },
     acceptInvitation: async (token) =>
         unwrapOne(
             await request(`/v1/invitations/accept`, {

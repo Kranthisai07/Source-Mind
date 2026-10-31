@@ -124,6 +124,9 @@ export const mockApi = {
             mockInvitations = mockInvitations.filter((i) => i.id !== invitationId);
             return {};
         }),
+    listWorkspaceAudit: async () => request(() => ({ items: [] })),
+    exportWorkspace: async (workspaceId) =>
+        request(() => ({ export_schema_version: 1, workspace_id: workspaceId, documents: [], memories: [] })),
     acceptInvitation: async () => request(() => ({ workspace_id: WORKSPACE.id, role: "member" })),
 
     // GET /v1/workspaces/:id/analytics/overview

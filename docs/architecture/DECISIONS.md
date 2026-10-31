@@ -4136,3 +4136,17 @@ A developer's local `.env` can therefore fail these suites; run them with CI's e
 **Checked.** 11 real-PostgreSQL tests on the restricted runtime role: each action leaves exactly one correct event (full ordered list); a no-op role change, a refused role change and a refused invitation leave none; self-demotion and self-removal are recorded; members, viewers, outsiders and another workspace's founder are refused on both routes; paging has no gaps or repeats and resolves names; the runtime role cannot update, delete or forge events (teammate, wrong actor, accepted-without-invitation); the owner role with row security lifted still hits the trigger; the export holds this workspace only and none of the forbidden fields; an export is recorded and a refused one is not. Run together with the invitation, role, foundation, handoff and pilot-export suites: 67 passed, twice (a third run died of out-of-memory in WSL). Mutation check: writing the wrong event name for role changes fails exactly the two tests that cover it. The migration was upgraded, inspected, downgraded and re-upgraded on PostgreSQL 18. The security-acceptance selection grows to 317.
 
 **Not checked.** GitHub CI on this branch, PostgreSQL 16, export on a large workspace, the rate-limit setting end to end (the tests replace the limiter), and the web screens.
+
+## D-068 — Activity tab and data export in Settings
+
+**Status:** Step 4b of the team-setup work (web only), on `feat/team-audit-export-web-claude`. Uses the endpoints from D-067; no API change.
+
+**What changed.** Settings gets an "Activity" tab, shown only to founders and admins (the same check as the Add member button). It lists the audit trail newest first, 50 at a time, with "Load more" that pages by the last event id, and has an "Export data" button that downloads the workspace JSON through a Blob. Real and mock adapters, one sentence per event type (`lib/auditEvents.js`), and plain error wording for export (too large, rate limited, forbidden, generic).
+
+**Why this approach.** The export is fetched through the normal API client so it carries the sign-in token; a plain link to the URL would not. The tab is hidden for others only as a convenience: the server already returns 403 to anyone but founders and admins. A completed export reloads the list so the new "exported" entry shows.
+
+**Not taken.** Streaming the download (the API builds the export in memory and caps it; a larger workspace gets a clear refusal). Filtering or searching the log.
+
+**Checked.** Full web suite in one process: 642 passed, 20 skipped (existing skips), 54 suites. New tests cover the request shape, paging from the last id, the download, and a failed export that downloads nothing. `craco build` with `CI=true` compiled successfully.
+
+**Not checked.** Anything against the real API from a browser, screenshots (light/dark, 1440 and 390), and the role-gated tab visibility in a rendered Settings page (no test renders Settings with each role).

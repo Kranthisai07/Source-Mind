@@ -92,5 +92,18 @@ export function mapWorkspaceError(err, action) {
         }
     }
 
+    if (action === "export" || action === "audit") {
+        if (status === 413 || code === "SM012") {
+            return { kind: "too_large", message: "This workspace is too large to export in one file. Nothing was downloaded." };
+        }
+        if (code === "SM005" || status === 403) {
+            return { kind: "forbidden", message: "Only founders and admins can do that." };
+        }
+        if (status === 405 || (status === 404 && !code)) {
+            return { kind: "unsupported", message: "This server does not support that yet." };
+        }
+        return { kind: "generic", message: action === "export" ? "The export failed and nothing was downloaded. Try again." : "Could not load the activity log. Try again." };
+    }
+
     return { kind: "generic", message: "Something went wrong and the result is unconfirmed. Check the list before trying again." };
 }
