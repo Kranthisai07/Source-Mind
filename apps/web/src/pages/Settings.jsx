@@ -16,6 +16,7 @@ import AddMemberDialog from "../components/workspace/AddMemberDialog";
 import McpKeysSection from "../components/settings/McpKeysSection";
 import InviteDialog from "../components/team/InviteDialog";
 import PendingInvitations from "../components/team/PendingInvitations";
+import ActivityTab from "../components/team/ActivityTab";
 import { assignableRoles, roleLabel, ROLE_SUMMARIES } from "../lib/roles";
 import { mapWorkspaceError } from "../lib/workspaceErrors";
 
@@ -80,6 +81,7 @@ export default function Settings() {
                     <TabsList className="bg-sm-surface border border-sm-border p-1 h-10 mb-6" data-testid="settings-tabs">
                         <TabsTrigger value="workspace" data-testid="tab-workspace" className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">Workspace</TabsTrigger>
                         <TabsTrigger value="team" data-testid="tab-team" className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">Team</TabsTrigger>
+                        {canAdd && <TabsTrigger value="activity" data-testid="tab-activity" className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">Activity</TabsTrigger>}
                         <TabsTrigger value="api" data-testid="tab-api" className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">API Keys</TabsTrigger>
                         <TabsTrigger value="danger" data-testid="tab-danger" className="data-[state=active]:bg-sm-red/15 data-[state=active]:text-sm-red text-sm-text-secondary">Danger Zone</TabsTrigger>
                     </TabsList>
@@ -204,6 +206,12 @@ export default function Settings() {
                         </section>
                         {canAdd && <PendingInvitations workspaceId={workspace?.id} refreshKey={invitesKey} />}
                     </TabsContent>
+
+                    {canAdd && (
+                        <TabsContent value="activity" className="mt-0">
+                            <ActivityTab workspaceId={workspace.id} />
+                        </TabsContent>
+                    )}
 
                     <TabsContent value="api" className="mt-0">
                         <McpKeysSection />
