@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Download } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../ui/button";
@@ -31,18 +31,24 @@ export default function ActivityTab({ workspaceId }) {
     const [exporting, setExporting] = useState(false);
     const [exportError, setExportError] = useState(null);
 
+    // Only the newest request may update the list: a slow "Load more" must not
+    // append to a list that a refresh has since replaced.
+    const latest = useRef(0);
+
     const load = useCallback(
         async (beforeId) => {
+            const mine = ++latest.current;
             setLoading(true);
             setError(null);
             try {
                 const page = await api.listWorkspaceAudit(workspaceId, { beforeId, limit: PAGE });
+                if (mine !== latest.current) return;
                 setItems((prev) => (beforeId ? [...prev, ...page.items] : page.items));
                 setMore(page.items.length === PAGE);
             } catch (err) {
-                setError(mapWorkspaceError(err, "audit").message);
+                if (mine === latest.current) setError(mapWorkspaceError(err, "audit").message);
             } finally {
-                setLoading(false);
+                if (mine === latest.current) setLoading(false);
             }
         },
         [workspaceId]

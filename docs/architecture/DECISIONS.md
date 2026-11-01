@@ -4150,3 +4150,5 @@ A developer's local `.env` can therefore fail these suites; run them with CI's e
 **Checked.** Full web suite in one process: 642 passed, 20 skipped (existing skips), 54 suites. New tests cover the request shape, paging from the last id, the download, and a failed export that downloads nothing. `craco build` with `CI=true` compiled successfully.
 
 **Not checked.** Anything against the real API from a browser, screenshots (light/dark, 1440 and 390), and the role-gated tab visibility in a rendered Settings page (no test renders Settings with each role).
+
+**Review follow-up (Codex, P2).** A slow "Load more" could finish after an export had refreshed the list and append its page to the new first page, leaving a gap. Each load now takes a sequence number and only the newest request may update the list or the loading state; a test holds a page-2 request open across a refresh and checks it is discarded.

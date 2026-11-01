@@ -39,3 +39,20 @@ test("export downloads a file; a failure is shown and nothing downloads", async 
     await screen.findByTestId("export-error");
     expect(global.URL.createObjectURL).toHaveBeenCalledTimes(1);
 });
+
+test("a slow Load more that finishes after a refresh is discarded", async () => {
+    let finishPage2;
+    api.listWorkspaceAudit
+        .mockResolvedValueOnce({ items: Array.from({ length: 50 }, (_, i) => ev(100 - i)) })
+        .mockReturnValueOnce(new Promise((r) => { finishPage2 = r; }))
+        .mockResolvedValueOnce({ items: [ev(200)] });
+    api.exportWorkspace.mockResolvedValueOnce({});
+    render(<ActivityTab workspaceId="w1" />);
+    await screen.findByTestId("activity-100");
+    fireEvent.click(screen.getByTestId("activity-more"));
+    fireEvent.click(screen.getByTestId("export-btn"));
+    await screen.findByTestId("activity-200");
+    finishPage2({ items: [ev(5)] });
+    await waitFor(() => expect(screen.queryByTestId("activity-100")).toBeNull());
+    expect(screen.queryByTestId("activity-5")).toBeNull();
+});
