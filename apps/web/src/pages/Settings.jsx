@@ -52,7 +52,8 @@ export default function Settings() {
     const [invitesKey, setInvitesKey] = useState(0);
     const [roleBusy, setRoleBusy] = useState(null);
     const [roleError, setRoleError] = useState(null);
-    const myRole = myMembership?.role;
+    // Lowercased like the row roles below: lib/roles.js compares exact lowercase names.
+    const myRole = myMembership ? String(myMembership.role || "").toLowerCase() : undefined;
 
     const changeRole = async (member, role) => {
         if (roleBusy) return;

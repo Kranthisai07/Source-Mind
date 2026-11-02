@@ -599,7 +599,7 @@ export const mockApi = {
     // The signed-in mock user (usr_01) is the first member, so the demo owner
     // is recognised as one by the owner/admin checks.
     listTeamMembers: () => request(() => ({
-        members: TEAM_MEMBERS.map((m, i) => (i === 0 ? { ...m, id: CURRENT_USER.id } : m)),
+        members: TEAM_MEMBERS.map((m, i) => ({ ...(i === 0 ? { ...m, id: CURRENT_USER.id } : m), role: String(m.role).toLowerCase() })),
     })),
     listContributors: () => request(() => ({ contributors: CONTRIBUTORS })),
 };
