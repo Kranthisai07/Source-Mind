@@ -4152,3 +4152,11 @@ A developer's local `.env` can therefore fail these suites; run them with CI's e
 **Not checked.** Anything against the real API from a browser, screenshots (light/dark, 1440 and 390), and the role-gated tab visibility in a rendered Settings page (no test renders Settings with each role).
 
 **Review follow-up (Codex, P2).** A slow "Load more" could finish after an export had refreshed the list and append its page to the new first page, leaving a gap. Each load now takes a sequence number and only the newest request may update the list or the loading state; a test holds a page-2 request open across a refresh and checks it is discarded.
+
+## D-069 — Settings reads the caller's role in lowercase
+
+**What changed.** `Settings.jsx` now lowercases the signed-in user's role before using it, as the member rows already did. The mock team list also returns lowercase roles, as the real API does. A new test (`pages/settingsRoles.test.js`) renders Settings and checks a founder gets role menus on other members in `owner`, `Owner` and `OWNER`, and a teammate gets none.
+
+**Why.** Found in the real-browser check of the team screens: with the mock's `"Owner"`, the invite dialog's Role dropdown was empty and no member row had a role menu, because `lib/roles.js` compares exact lowercase names. Without the fix, the `Owner` and `OWNER` cases of the new test fail (checked by removing the fix: 2 failed, 2 passed).
+
+**Not taken.** Lowercasing inside `lib/roles.js` (would hide bad data from every caller) and changing `mockData.js` roles (other mock pages show them capitalized). The real API returns lowercase roles, so production is not expected to be affected; that is reasoned from the code, not observed.
