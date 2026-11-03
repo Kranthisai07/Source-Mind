@@ -255,7 +255,8 @@ async function resolveWorkspaceId(explicit) {
 }
 
 // Deterministic palette — used when the backend doesn't include a color.
-const PALETTE = ["#4F7EFF", "#A78BFA", "#34D399", "#F59E0B", "#EF4444", "#60A5FA", "#F472B6", "#2DD4BF"];
+// Categorical series order from the validated dataviz palette (adjacent pairs pass the CVD and normal-vision floors).
+const PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"];
 const colorFor = (key, i = 0) => {
     if (typeof i === "number" && i >= 0) return PALETTE[i % PALETTE.length];
     const s = String(key || "");
@@ -285,19 +286,19 @@ const colorFor = (key, i = 0) => {
 // adaptOverview already reads `a.action || a.type`.
 export const ACTION_COLOR = {
     // Real: AttributionActionType (attribution_edits.action_type)
-    create:            "#4F7EFF",  // sm-blue
-    edit:              "#4F7EFF",  // sm-blue
-    approve:           "#34D399",  // sm-green
-    reject:            "#EF4444",  // sm-red
-    merge:             "#A78BFA",  // sm-purple
+    create:            "#2a78d6",  // sm-blue
+    edit:              "#2a78d6",  // sm-blue
+    approve:           "#0ca30c",  // sm-green
+    reject:            "#d03b3b",  // sm-red
+    merge:             "#6250d6",  // sm-purple
 
     // Mock-only, retained for REACT_APP_USE_MOCKS=true.
-    memory_created:    "#4F7EFF",
-    memory_edited:     "#4F7EFF",
-    conflict_opened:   "#F59E0B",
-    conflict_resolved: "#34D399",
-    connector_synced:  "#34D399",
-    handoff_started:   "#A78BFA",
+    memory_created:    "#2a78d6",
+    memory_edited:     "#2a78d6",
+    conflict_opened:   "#fab219",
+    conflict_resolved: "#0ca30c",
+    connector_synced:  "#0ca30c",
+    handoff_started:   "#6250d6",
 };
 
 class ApiError extends Error {
@@ -468,7 +469,7 @@ function adaptOverview(r) {
     const recent_activity = (r.recent_activity || []).map((a) => ({
         type:        a.action || a.type || "memory_created",
         description: a.description || "",
-        color:       ACTION_COLOR[a.action] || "#4F7EFF",
+        color:       ACTION_COLOR[a.action] || "#2a78d6",
         timestamp:   a.timestamp,
     }));
 

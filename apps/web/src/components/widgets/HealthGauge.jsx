@@ -12,9 +12,9 @@ export default function HealthGauge({ score = 0, size = 160, strokeWidth = 10, l
     const display = Math.max(0, Math.min(100, animated));
     const pct = display / 100;
     const color =
-        display < 50 ? "#EF4444" :
-        display < 75 ? "#F59E0B" :
-        "#34D399";
+        display < 50 ? "#d03b3b" :
+        display < 75 ? "#fab219" :
+        "#0ca30c";
     const rot = `rotate(-90 ${size / 2} ${size / 2})`;
 
     return (

@@ -61,16 +61,13 @@ export default function Handoff() {
             />
             <div className="flex-1 px-8 py-6 space-y-5">
                 {/* Banner */}
-                <div className="rounded-xl border border-sm-blue/30 bg-gradient-to-br from-sm-blue/10 via-sm-purple/5 to-transparent p-6 relative overflow-hidden">
-                    <div className="absolute top-0 right-0 w-64 h-64 rounded-full bg-sm-blue/10 blur-3xl pointer-events-none -translate-y-20 translate-x-20" />
-                    <div className="relative">
-                        <div className="text-[11px] uppercase tracking-[0.18em] text-sm-blue font-semibold mb-2">Knowledge Transfer Center</div>
-                        <h2 className="text-[20px] font-semibold text-sm-text mb-1">Prevent knowledge loss on day one, not day zero.</h2>
-                        <p className="text-[13px] text-sm-text-secondary max-w-2xl">
-                            SourceMind classifies a departing member's memories into three tiers and suggests a best-fit successor for a CRITICAL item when an eligible related contributor is available. Transfer CRITICAL tier before departure.
-                        </p>
-                    </div>
-                </div>
+                <section className="sm-card p-6">
+                    <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-sm-text-muted mb-2">Knowledge transfer center</p>
+                    <h2 className="font-serif text-[24px] font-normal leading-tight text-sm-text mb-2">Prevent knowledge loss on day one, not day zero.</h2>
+                    <p className="text-[13px] text-sm-text-secondary max-w-2xl">
+                        SourceMind classifies a departing member's memories into three tiers and suggests a best-fit successor for a CRITICAL item when an eligible related contributor is available. Transfer CRITICAL tier before departure.
+                    </p>
+                </section>
 
                 <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-4">
                     {/* Initiate form */}
@@ -247,7 +244,7 @@ export function CriticalRow({ mem, byId }) {
 function ActiveHandoffCard({ handoff, byId }) {
     const departing = byId[handoff.departing_user_id] || {
         name: handoff.departing_user_name || "Unknown member",
-        avatarColor: "#4F7EFF",
+        avatarColor: "#2a78d6",
     };
     // Backend returns receiving_user_name directly; may be null on freshly-initiated
     // handoffs that haven't had their first /assign call yet.
@@ -257,7 +254,7 @@ function ActiveHandoffCard({ handoff, byId }) {
         ? {
             name: handoff.receiving_user_name,
             login: receivingContrib?.login,
-            avatarColor: receivingContrib?.avatarColor || "#A78BFA",
+            avatarColor: receivingContrib?.avatarColor || "#6250d6",
         }
         : null;
     const tier1Count = handoff.tier_1_count ?? 0;

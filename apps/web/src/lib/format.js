@@ -25,38 +25,38 @@ export function initials(nameOrLogin = "") {
 
 export function riskColor(level) {
     switch ((level || "").toUpperCase()) {
-        case "HIGH":   return { bg: "#EF444420", text: "#EF4444", border: "#EF444440" };
-        case "MEDIUM": return { bg: "#F59E0B20", text: "#F59E0B", border: "#F59E0B40" };
-        case "LOW":    return { bg: "#34D39920", text: "#34D399", border: "#34D39940" };
-        default:       return { bg: "#8888A820", text: "#8888A8", border: "#8888A840" };
+        case "HIGH":   return { bg: "#d03b3b20", text: "#d03b3b", border: "#d03b3b40" };
+        case "MEDIUM": return { bg: "#fab21920", text: "#fab219", border: "#fab21940" };
+        case "LOW":    return { bg: "#0ca30c20", text: "#0ca30c", border: "#0ca30c40" };
+        default:       return { bg: "#7D847920", text: "#7D8479", border: "#7D847940" };
     }
 }
 
 export function statusColor(status) {
     const s = (status || "").toLowerCase();
-    if (s === "active" || s === "resolved" || s === "success" || s === "done") return "#34D399";
-    if (s === "syncing" || s === "running" || s === "under_review")             return "#4F7EFF";
-    if (s === "partial" || s === "initiated" || s === "open")                   return "#F59E0B";
-    if (s === "error" || s === "failed")                                        return "#EF4444";
-    if (s === "deferred" || s === "pending")                                    return "#8888A8";
-    if (s === "assigned")                                                       return "#A78BFA";
-    return "#8888A8";
+    if (s === "active" || s === "resolved" || s === "success" || s === "done") return "#0ca30c";
+    if (s === "syncing" || s === "running" || s === "under_review")             return "#2a78d6";
+    if (s === "partial" || s === "initiated" || s === "open")                   return "#fab219";
+    if (s === "error" || s === "failed")                                        return "#d03b3b";
+    if (s === "deferred" || s === "pending")                                    return "#7D8479";
+    if (s === "assigned")                                                       return "#6250d6";
+    return "#7D8479";
 }
 
 export function severityColor(sev) {
     const s = (sev || "").toLowerCase();
-    if (s === "critical" || s === "high") return "#EF4444";
-    if (s === "medium")                    return "#F59E0B";
-    if (s === "low")                       return "#34D399";
-    return "#8888A8";
+    if (s === "critical" || s === "high") return "#d03b3b";
+    if (s === "medium")                    return "#fab219";
+    if (s === "low")                       return "#0ca30c";
+    return "#7D8479";
 }
 
 export function tierColor(tier) {
     const t = (tier || "").toUpperCase();
-    if (t === "CRITICAL")  return "#EF4444";
-    if (t === "IMPORTANT") return "#F59E0B";
-    if (t === "STANDARD")  return "#4F7EFF";
-    return "#8888A8";
+    if (t === "CRITICAL")  return "#d03b3b";
+    if (t === "IMPORTANT") return "#fab219";
+    if (t === "STANDARD")  return "#2a78d6";
+    return "#7D8479";
 }
 
 export function daysUntil(iso) {

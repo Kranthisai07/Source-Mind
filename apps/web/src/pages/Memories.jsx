@@ -133,7 +133,7 @@ export default function Memories() {
                 ) : loading ? (
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4" role="status" aria-label="Searching">
                         {Array.from({ length: 6 }).map((_, index) => (
-                            <div key={index} className="sm-card p-5 h-[200px] shimmer rounded-xl" />
+                            <div key={index} className="sm-card p-5 h-[200px] shimmer rounded-lg" />
                         ))}
                     </div>
                 ) : results.length === 0 ? (
@@ -171,7 +171,7 @@ export default function Memories() {
 function SearchError({ error, onRetry }) {
     return (
         <div className="sm-card py-20 flex flex-col items-center text-center" data-testid="error-state">
-            <div className="w-12 h-12 rounded-xl bg-sm-red/10 border border-sm-red/20 flex items-center justify-center mb-4 text-sm-red">!</div>
+            <div className="w-12 h-12 rounded-lg bg-sm-red/10 border border-sm-red/20 flex items-center justify-center mb-4 text-sm-red">!</div>
             <h3 className="text-[16px] font-semibold text-sm-text mb-2">{error.title}</h3>
             <p className="text-[13px] text-sm-text-secondary max-w-md mb-5">{error.detail}</p>
             <Button data-testid="error-retry" onClick={onRetry} variant="outline" className="border-sm-border text-sm-text">
@@ -185,7 +185,7 @@ function EmptyState({ query, onIngest }) {
     const hasQuery = Boolean(query.trim());
     return (
         <div className="sm-card py-24 flex flex-col items-center text-center" data-testid="memories-empty">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-sm-blue/20 to-sm-purple/20 border border-sm-border flex items-center justify-center mb-5">
+            <div className="w-16 h-16 rounded-lg bg-sm-surface-2 border border-sm-border flex items-center justify-center mb-5">
                 <Search className="w-7 h-7 text-sm-blue" strokeWidth={1.8} />
             </div>
             <h3 className="text-[16px] font-semibold text-sm-text mb-2">{hasQuery ? "No matches yet" : "Type to search memories"}</h3>
@@ -392,7 +392,7 @@ function IngestPanel({ open, onOpenChange, pilotMode }) {
         <Sheet open={open} onOpenChange={(value) => { onOpenChange(value); if (!value) reset(); }}>
             <SheetContent
                 side="right"
-                className="sm:max-w-[480px] w-[480px] bg-sm-surface border-l border-sm-border text-sm-text p-0 overflow-y-auto"
+                className="sm:max-w-[520px] w-[520px] bg-sm-surface border-l border-sm-border text-sm-text p-0 overflow-y-auto"
                 data-testid="ingest-panel"
             >
                 <SheetHeader className="p-6 border-b border-sm-border">

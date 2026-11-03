@@ -80,10 +80,10 @@ function AnalyticsContent() {
                             <section className="sm-card p-6">
                                 <h3 className="text-[15px] font-semibold text-sm-text mb-5">Health Breakdown</h3>
                                 <div className="space-y-4">
-                                    <BigBar label="Coverage"     weight="30%" value={overview?.health_breakdown.coverage ?? 0}             color="#4F7EFF" desc="What % of your codebase/team activity is reflected in memories" />
-                                    <BigBar label="Freshness"    weight="30%" value={overview?.health_breakdown.freshness ?? 0}            color="#A78BFA" desc="How recently memories have been updated or reviewed" />
-                                    <BigBar label="Conflict Ratio" weight="25%" value={overview?.health_breakdown.conflict_ratio ?? 0}       color="#34D399" desc="Inverse of unresolved conflicts per active memory" />
-                                    <BigBar label="Attribution"  weight="15%" value={overview?.health_breakdown.attribution_coverage ?? 0} color="#F59E0B" desc="% of memories with high-confidence author attribution" />
+                                    <BigBar label="Coverage"     weight="30%" value={overview?.health_breakdown.coverage ?? 0}             color="#2a78d6" desc="What % of your codebase/team activity is reflected in memories" />
+                                    <BigBar label="Freshness"    weight="30%" value={overview?.health_breakdown.freshness ?? 0}            color="#6250d6" desc="How recently memories have been updated or reviewed" />
+                                    <BigBar label="Conflict Ratio" weight="25%" value={overview?.health_breakdown.conflict_ratio ?? 0}       color="#0ca30c" desc="Inverse of unresolved conflicts per active memory" />
+                                    <BigBar label="Attribution"  weight="15%" value={overview?.health_breakdown.attribution_coverage ?? 0} color="#fab219" desc="% of memories with high-confidence author attribution" />
                                 </div>
                             </section>
                         </div>}
@@ -127,7 +127,7 @@ function AnalyticsContent() {
                                     <div className="h-[100px]">
                                         <ResponsiveContainer width="100%" height="100%">
                                             <LineChart data={searchSeries}>
-                                                <Line dataKey="searches" stroke="#34D399" strokeWidth={2} dot={false} />
+                                                <Line dataKey="searches" stroke="#0ca30c" strokeWidth={2} dot={false} />
                                             </LineChart>
                                         </ResponsiveContainer>
                                     </div>

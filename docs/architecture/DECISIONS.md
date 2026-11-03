@@ -4174,3 +4174,15 @@ A developer's local `.env` can therefore fail these suites; run them with CI's e
 **Not checked.** 390px mobile width, the real API, and dark-mode contrast numbers (judged by eye only).
 
 **Review follow-up (Codex, P2).** In dark mode the accent is light sage, but fallback avatars (no image, no colour in the data) kept white initials: about 1.75:1 contrast, unreadable. The `.dark [class~="bg-sm-blue"]` fix only covers the class, not the inline background these avatars use. `ContributorAvatar` and the sidebar user avatar now use the theme's on-accent text colour when they fall back to the accent, and keep white when the data supplies its own colour. Two tests cover both cases. The contrast is judged from the colours (dark sage on light sage), not measured.
+
+## D-071 — Data colours use the validated dataviz palette; page polish
+
+**What changed.** The ad-hoc hexes left in the app (old blue, purple, mint, amber, red, navy greys, in 13 files plus mock data) now come from two documented sets. Series and avatars use the validated categorical order (blue, orange, aqua, yellow, magenta, green, violet, red: `#2a78d6 #eb6834 #1baf7a #eda100 #e87ba4 #008300 #6250d6 #e34948`), applied to `PALETTE` in `realApi.js` and `WhoWouldKnow.jsx` and the mock contributors. State colours (status, severity, tier, pipeline, health bars) use the fixed status palette (good `#0ca30c`, warning `#fab219`, critical `#d03b3b`) and a neutral `#7D8479`. The Handoff gradient banner is a plain card with the landing's eyebrow and serif heading. Memories' empty state loses its blue-purple tile, the Memories side panel is 520px like Connectors, and `rounded-xl`/`2xl` in pages became `rounded-lg` (the 6px token).
+
+**Why this approach.** The palette is the dataviz skill's documented, validated default; its adjacent-pair colour-blind and normal-vision checks were already run for that order, and I did not alter any value, so I did not re-run the validator. My own earlier sage-based candidate set failed the chroma and separation checks in both modes, which is why I did not brand the series colours. Status colours are kept separate from series colours so a status never reads as a series.
+
+**Not done.** Shared `PageHeader`, `SectionCard` and `EmptyState` components (pages still use their own markup), a single heading scale across every card, and per-page layout work: I judged the colour and shape unification more valuable first and did not do these. Some series colours on a light surface are under 3:1 contrast (magenta, yellow, aqua); the palette's rule is to pair them with labels, which these screens already do, but I did not audit each chart.
+
+**Checked.** Full web suite and build; screenshots of Dashboard, Analytics, Conflicts, Handoff and Memories in light and dark. The only test change: critical severity red moved from `#EF4444` to `#d03b3b`.
+
+**Not checked.** 390px mobile, the real API, the Connectors and Memory detail screens visually after the recolour.

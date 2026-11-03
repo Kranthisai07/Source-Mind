@@ -219,7 +219,7 @@ export default function Settings() {
                     </TabsContent>
 
                     <TabsContent value="danger" className="mt-0">
-                        <section data-testid="danger-zone" className="rounded-xl border border-sm-red/40 bg-sm-red/5 p-6 max-w-2xl">
+                        <section data-testid="danger-zone" className="rounded-lg border border-sm-red/40 bg-sm-red/5 p-6 max-w-2xl">
                             <h3 className="text-[15px] font-semibold text-sm-red mb-2">Delete Workspace</h3>
                             <p className="text-[13px] text-sm-text-secondary mb-4">
                                 Workspace deletion isn't exposed by the API yet. No deletion will be simulated.

@@ -76,9 +76,9 @@ export default function AddConnectorFlow({ callback, onCreated, onClose }) {
                 <div className="p-6 space-y-3">
                     <div className="grid grid-cols-2 gap-3">
                         <TypeCard icon={Github} name="GitHub" desc="PR and issue text, reviews, comments, commit messages" color="#E8E8F0" onClick={() => setPhase("explain")} testId="type-github" />
-                        <TypeCard disabled icon={MessageSquare} name="Discord" desc="Coming soon" color="#8888A8" testId="type-discord" />
-                        <TypeCard disabled icon={MessageSquare} name="Slack" desc="Coming soon" color="#8888A8" testId="type-slack" />
-                        <TypeCard disabled icon={FileText} name="Notion" desc="Coming soon" color="#8888A8" testId="type-notion" />
+                        <TypeCard disabled icon={MessageSquare} name="Discord" desc="Coming soon" color="#7D8479" testId="type-discord" />
+                        <TypeCard disabled icon={MessageSquare} name="Slack" desc="Coming soon" color="#7D8479" testId="type-slack" />
+                        <TypeCard disabled icon={FileText} name="Notion" desc="Coming soon" color="#7D8479" testId="type-notion" />
                     </div>
                 </div>
             )}
