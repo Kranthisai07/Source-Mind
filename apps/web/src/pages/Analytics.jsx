@@ -103,14 +103,14 @@ function AnalyticsContent() {
                                         <AreaChart data={series} margin={{ top: 5, right: 10, bottom: 0, left: -20 }}>
                                             <defs>
                                                 <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
-                                                    <stop offset="0%" stopColor="#4F7EFF" stopOpacity={0.5} />
-                                                    <stop offset="100%" stopColor="#4F7EFF" stopOpacity={0} />
+                                                    <stop offset="0%" stopColor="rgb(var(--sm-blue-rgb))" stopOpacity={0.5} />
+                                                    <stop offset="100%" stopColor="rgb(var(--sm-blue-rgb))" stopOpacity={0} />
                                                 </linearGradient>
                                             </defs>
-                                            <XAxis dataKey="day" tick={{ fill: "#8888A8", fontSize: 11, fontFamily: "JetBrains Mono" }} axisLine={{ stroke: "#1E1E2E" }} tickLine={false} interval={4} />
-                                            <YAxis tick={{ fill: "#8888A8", fontSize: 11, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
-                                            <Tooltip contentStyle={{ background: "#12121A", border: "1px solid #1E1E2E", borderRadius: 8, fontSize: 12 }} labelStyle={{ color: "#8888A8" }} itemStyle={{ color: "#E8E8F0" }} />
-                                            <Area dataKey="count" stroke="#4F7EFF" fill="url(#g1)" strokeWidth={2} dot={false} activeDot={{ r: 4, stroke: "#4F7EFF", fill: "#0A0A0F", strokeWidth: 2 }} />
+                                            <XAxis dataKey="day" tick={{ fill: "var(--sm-text-secondary)", fontSize: 11, fontFamily: "JetBrains Mono" }} axisLine={{ stroke: "var(--sm-border)" }} tickLine={false} interval={4} />
+                                            <YAxis tick={{ fill: "var(--sm-text-secondary)", fontSize: 11, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
+                                            <Tooltip contentStyle={{ background: "var(--sm-surface)", border: "1px solid var(--sm-border)", borderRadius: 6, fontSize: 12 }} labelStyle={{ color: "var(--sm-text-secondary)" }} itemStyle={{ color: "var(--sm-text)" }} />
+                                            <Area dataKey="count" stroke="rgb(var(--sm-blue-rgb))" fill="url(#g1)" strokeWidth={2} dot={false} activeDot={{ r: 4, stroke: "rgb(var(--sm-blue-rgb))", fill: "var(--sm-bg)", strokeWidth: 2 }} />
                                         </AreaChart>
                                     </ResponsiveContainer>
                                 </div>}
@@ -162,7 +162,7 @@ function AnalyticsContent() {
                                             fill: c.avatarColor,
                                         }))}
                                         dataKey="size"
-                                        stroke="#0A0A0F"
+                                        stroke="var(--sm-bg)"
                                         content={<TreemapNode />}
                                     />
                                 </ResponsiveContainer>

@@ -2,6 +2,7 @@ import React, { useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@clerk/clerk-react";
 import { Button } from "../components/ui/button";
+import StandaloneFrame from "../components/brand/StandaloneFrame";
 import api, { useMocks } from "../lib/api";
 import { INVITE_TOKEN_RE } from "../lib/inviteToken";
 import { roleLabel } from "../lib/roles";
@@ -68,17 +69,17 @@ export default function InviteAccept() {
     } else if (state.phase === "done") {
         body = (
             <>
-                <h1 data-testid="invite-accepted" className="text-[18px] font-semibold text-sm-text">You've joined the workspace</h1>
+                <h1 data-testid="invite-accepted" className="font-serif text-[26px] font-normal leading-tight text-sm-text">You've joined the workspace</h1>
                 <p className="mt-2 text-[13px] text-sm-text-secondary">
                     {state.role ? `You're a ${roleLabel(state.role)}.` : "Your access is ready."}
                 </p>
-                <Button type="button" onClick={() => navigate("/memories")} data-testid="invite-open" className="mt-4 bg-sm-blue text-white">Open workspace</Button>
+                <Button type="button" onClick={() => navigate("/dashboard")} data-testid="invite-open" className="mt-4 bg-sm-blue text-white">Open workspace</Button>
             </>
         );
     } else {
         body = (
             <>
-                <h1 className="text-[18px] font-semibold text-sm-text">Join this workspace</h1>
+                <h1 className="font-serif text-[26px] font-normal leading-tight text-sm-text">Join this workspace</h1>
                 <p className="mt-2 text-[13px] text-sm-text-secondary">
                     You were invited to a SourceMind workspace. Accepting works only if you're signed in with the email address that was invited.
                 </p>
@@ -93,8 +94,14 @@ export default function InviteAccept() {
     }
 
     return (
-        <div className="min-h-screen bg-sm-bg text-sm-text flex items-start justify-center px-6 pt-24" data-testid="invite-page">
-            <section className="sm-card p-6 w-full max-w-md">{body}</section>
-        </div>
+        <StandaloneFrame testId="invite-page">
+            <section className="sm-card p-6">
+                <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-sm-text-muted mb-3 flex items-center gap-2">
+                    <span aria-hidden="true" className="inline-block w-1.5 h-1.5" style={{ background: "var(--sm-purple)" }} />
+                    SourceMind / Invitation
+                </p>
+                {body}
+            </section>
+        </StandaloneFrame>
     );
 }

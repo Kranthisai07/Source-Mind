@@ -19,7 +19,7 @@ const OPTIONS = [
     { key: "kept_b", label: "Accept B", hint: "Keeps memory B; retires memory A.", color: "#4F7EFF" },
     { key: "merged", label: "Merge both", hint: "Replaces both with one combined memory.", color: "#A78BFA" },
     { key: "split", label: "Split by tag", hint: "Keeps both and adds one tag to each.", color: "#F59E0B" },
-    { key: "deferred", label: "Defer", hint: "Revisit later; the conflict stays open.", color: "#8888A8" },
+    { key: "deferred", label: "Defer", hint: "Revisit later; the conflict stays open.", color: "#7D8479" },
 ];
 
 const STAGES = ["open", "under_review", "resolved"];
@@ -97,6 +97,7 @@ export default function ConflictDetail() {
     return (
         <>
             <TopBar
+                crumbs={[{ label: "Conflicts", to: "/conflicts" }]}
                 title={<span className="font-mono text-[14px]">{conflict.id}</span>}
                 subtitle={(
                     <span className="inline-flex flex-wrap items-center gap-1.5">

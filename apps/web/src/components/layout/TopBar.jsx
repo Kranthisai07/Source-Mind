@@ -1,15 +1,27 @@
 import React from "react";
+import { Link } from "react-router-dom";
 
 import ThemeToggle from "@/components/widgets/ThemeToggle";
 
-export default function TopBar({ title, subtitle, actions }) {
+/** `crumbs`: [{ label, to }] shown above the title on detail pages. */
+export default function TopBar({ title, subtitle, actions, crumbs }) {
     return (
         <header
             data-testid="topbar"
-            className="h-16 shrink-0 sticky top-0 z-20 flex items-center justify-between px-8 border-b border-sm-border bg-sm-bg/80 backdrop-blur-xl"
+            className="min-h-16 py-2 shrink-0 sticky top-0 z-20 flex items-center justify-between px-8 border-b border-sm-border bg-sm-bg/80 backdrop-blur-xl"
         >
             <div className="min-w-0">
-                <h1 data-testid="page-title" className="text-[18px] font-semibold text-sm-text leading-tight tracking-tight">
+                {crumbs?.length > 0 && (
+                    <nav aria-label="Breadcrumb" data-testid="breadcrumbs" className="font-mono text-[10px] uppercase tracking-[0.14em] text-sm-text-muted mb-0.5 flex items-center gap-1.5">
+                        {crumbs.map((c, i) => (
+                            <React.Fragment key={c.label}>
+                                {i > 0 && <span aria-hidden="true">/</span>}
+                                <Link to={c.to} className="hover:text-sm-text transition-colors">{c.label}</Link>
+                            </React.Fragment>
+                        ))}
+                    </nav>
+                )}
+                <h1 data-testid="page-title" className="font-serif text-[22px] font-normal text-sm-text leading-tight">
                     {title}
                 </h1>
                 {subtitle && (

@@ -1,3 +1,4 @@
+import StandaloneFrame from "../brand/StandaloneFrame";
 import React, { useState } from "react";
 import { Outlet } from "react-router-dom";
 import Sidebar from "./Sidebar";
@@ -23,17 +24,17 @@ function Shell() {
 
     if (status === "loading") {
         return (
-            <div className="min-h-screen bg-sm-bg text-sm-text p-8">
+            <StandaloneFrame testId="workspaces-loading-frame" width="max-w-xl">
                 <PageLoading label="Loading your workspaces" testId="workspaces-loading" />
-            </div>
+            </StandaloneFrame>
         );
     }
     if (status === "error") {
         // A failed lookup is shown as a failure, never as "no workspaces".
         return (
-            <div className="min-h-screen bg-sm-bg text-sm-text p-8 max-w-xl mx-auto">
+            <StandaloneFrame testId="workspaces-error-frame" width="max-w-xl">
                 <PageLoadError error={error} onRetry={reload} testId="workspaces-error" />
-            </div>
+            </StandaloneFrame>
         );
     }
     if (status === "empty") return <NoWorkspaceState />;

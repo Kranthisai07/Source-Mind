@@ -29,11 +29,11 @@ module.exports = {
                     text: 'var(--sm-text)',
                     'text-secondary': 'var(--sm-text-secondary)',
                     'text-muted': 'var(--sm-text-muted)',
-                    blue: '#4F7EFF',
+                    blue: 'rgb(var(--sm-blue-rgb) / <alpha-value>)',
                     green: '#34D399',
                     amber: '#F59E0B',
                     red: '#EF4444',
-                    purple: '#A78BFA',
+                    purple: 'rgb(var(--sm-purple-rgb) / <alpha-value>)',
                 },
                 // shadcn tokens
                 background: 'hsl(var(--background))',

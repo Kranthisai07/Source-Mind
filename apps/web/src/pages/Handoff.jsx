@@ -311,7 +311,7 @@ function ActiveHandoffCard({ handoff, byId }) {
                     <div
                         key={s}
                         className="flex-1 h-1.5 rounded-full transition-colors"
-                        style={{ background: i <= stageIdx ? "#4F7EFF" : "#1E1E2E" }}
+                        style={{ background: i <= stageIdx ? "rgb(var(--sm-blue-rgb))" : "var(--sm-border)" }}
                     />
                 ))}
             </div>

@@ -365,6 +365,7 @@ function MemoryDetailView({ id }) {
     return (
         <>
             <TopBar
+                crumbs={[{ label: "Memories", to: "/memories" }]}
                 title={<span className="font-mono text-[14px] text-sm-text-secondary">{memoryId}</span>}
                 subtitle={subtitle}
                 actions={
@@ -504,7 +505,7 @@ function MemoryDetailView({ id }) {
                                             outerRadius={80}
                                             startAngle={90}
                                             endAngle={-270}
-                                            stroke="#12121A"
+                                            stroke="var(--sm-surface)"
                                             strokeWidth={2}
                                         >
                                             {attribution.map((a, i) => (
