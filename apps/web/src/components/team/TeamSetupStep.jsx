@@ -2,7 +2,8 @@ import React, { useRef, useState } from "react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
-import InviteLink from "./InviteLink";
+import StepIndicator from "./StepIndicator";
+import InviteLink, { OneTimeNotice } from "./InviteLink";
 import api from "../../lib/api";
 import { ALL_ROLES, ROLE_SUMMARIES, roleLabel } from "../../lib/roles";
 import { MAX_SETUP_INVITES, buildInvitePlan } from "../../lib/teamSetup";
@@ -79,7 +80,7 @@ export default function TeamSetupStep({ workspace, onFinish }) {
                     </p>
                 ))}
                 {failed.length > 0 && <p className="text-[11.5px] text-sm-text-muted">You can invite the others again from Settings, Team.</p>}
-                <p className="text-[11.5px] text-sm-text-muted">These links are shown only now. Copy them before you continue.</p>
+                <OneTimeNotice>These links are shown only now. Copy them before you continue.</OneTimeNotice>
                 <div className="flex justify-end">
                     <Button type="button" onClick={onFinish} data-testid="team-setup-done" className="bg-sm-blue text-white">Continue to {workspace.name}</Button>
                 </div>
@@ -90,6 +91,7 @@ export default function TeamSetupStep({ workspace, onFinish }) {
     const label = "block text-[12px] text-sm-text-secondary mb-1.5 font-medium";
     return (
         <form onSubmit={submit} noValidate className="space-y-4" data-testid="team-setup-form">
+            <StepIndicator step={2} />
             <p className="text-[13px] text-sm-text-secondary">
                 <strong className="text-sm-text">{workspace.name}</strong> is ready and you are a founder. Set up who else is on the team now, or skip and do it later in Settings.
             </p>
@@ -97,11 +99,11 @@ export default function TeamSetupStep({ workspace, onFinish }) {
                 <span className={label}>Who holds admin?</span>
                 <div className="space-y-2">
                     <label className="flex items-center gap-2 text-[13px] text-sm-text">
-                        <input type="radio" name="admin-mode" checked={adminMode === "me"} onChange={() => setAdminMode("me")} data-testid="admin-me" />
+                        <input type="radio" className="accent-[color:var(--sm-blue)]" name="admin-mode" checked={adminMode === "me"} onChange={() => setAdminMode("me")} data-testid="admin-me" />
                         I'll hold admin myself
                     </label>
                     <label className="flex items-center gap-2 text-[13px] text-sm-text">
-                        <input type="radio" name="admin-mode" checked={adminMode === "other"} onChange={() => setAdminMode("other")} data-testid="admin-other" />
+                        <input type="radio" className="accent-[color:var(--sm-blue)]" name="admin-mode" checked={adminMode === "other"} onChange={() => setAdminMode("other")} data-testid="admin-other" />
                         Someone else
                     </label>
                     {adminMode === "other" && (
@@ -126,7 +128,7 @@ export default function TeamSetupStep({ workspace, onFinish }) {
                 <label htmlFor="setup-teammates" className={label}>Teammates (optional)</label>
                 <Textarea id="setup-teammates" data-testid="setup-teammates" value={teammates} onChange={(e) => setTeammates(e.target.value)} rows={3} placeholder="One email per line. They add and read the team's memory." className="bg-sm-bg/60 border-sm-border text-sm-text resize-none" />
             </div>
-            <dl className="rounded-lg border border-sm-border bg-sm-bg/40 p-3 space-y-1.5" data-testid="role-guide">
+            <dl className="rounded border border-sm-border bg-sm-bg/40 p-3 space-y-1.5" data-testid="role-guide">
                 {ALL_ROLES.map((r) => (
                     <div key={r} className="flex gap-2 text-[12px]">
                         <dt className="w-16 shrink-0 font-medium text-sm-text">{roleLabel(r)}</dt>

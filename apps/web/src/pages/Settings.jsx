@@ -79,12 +79,12 @@ export default function Settings() {
             />
             <div className="flex-1 px-8 py-6">
                 <Tabs defaultValue="workspace" className="w-full">
-                    <TabsList className="bg-sm-surface border border-sm-border p-1 h-10 mb-6" data-testid="settings-tabs">
-                        <TabsTrigger value="workspace" data-testid="tab-workspace" className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">Workspace</TabsTrigger>
-                        <TabsTrigger value="team" data-testid="tab-team" className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">Team</TabsTrigger>
-                        {canAdd && <TabsTrigger value="activity" data-testid="tab-activity" className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">Activity</TabsTrigger>}
-                        <TabsTrigger value="api" data-testid="tab-api" className="data-[state=active]:bg-sm-blue/15 data-[state=active]:text-sm-blue text-sm-text-secondary">API Keys</TabsTrigger>
-                        <TabsTrigger value="danger" data-testid="tab-danger" className="data-[state=active]:bg-sm-red/15 data-[state=active]:text-sm-red text-sm-text-secondary">Danger Zone</TabsTrigger>
+                    <TabsList className="bg-transparent border-b border-sm-border p-0 h-auto mb-6 w-full justify-start gap-6 rounded-none overflow-x-auto" data-testid="settings-tabs">
+                        <TabsTrigger value="workspace" data-testid="tab-workspace" className="text-sm-text-secondary rounded-none border-b-2 border-transparent px-1 pb-2.5 pt-1 data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-sm-text data-[state=active]:text-sm-text">Workspace</TabsTrigger>
+                        <TabsTrigger value="team" data-testid="tab-team" className="text-sm-text-secondary rounded-none border-b-2 border-transparent px-1 pb-2.5 pt-1 data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-sm-text data-[state=active]:text-sm-text">Team</TabsTrigger>
+                        <TabsTrigger value="activity" data-testid="tab-activity" disabled={!canAdd} title={canAdd ? undefined : "Only founders and admins can see activity"} className="text-sm-text-secondary rounded-none border-b-2 border-transparent px-1 pb-2.5 pt-1 data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-sm-text data-[state=active]:text-sm-text">Activity</TabsTrigger>
+                        <TabsTrigger value="api" data-testid="tab-api" className="text-sm-text-secondary rounded-none border-b-2 border-transparent px-1 pb-2.5 pt-1 data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-sm-text data-[state=active]:text-sm-text">API Keys</TabsTrigger>
+                        <TabsTrigger value="danger" data-testid="tab-danger" className="text-sm-text-secondary rounded-none border-b-2 border-transparent px-1 pb-2.5 pt-1 data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-sm-red data-[state=active]:text-sm-red">Danger Zone</TabsTrigger>
                     </TabsList>
 
                     <TabsContent value="workspace" className="mt-0">
@@ -121,14 +121,14 @@ export default function Settings() {
 
                     <TabsContent value="team" className="mt-0">
                         <section className="sm-card p-6">
-                            <div className="flex items-center justify-between mb-5">
+                            <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
                                 <div>
                                     <h3 className="text-[15px] font-semibold text-sm-text">Team Members</h3>
                                     <p className="text-[12.5px] text-sm-text-secondary mt-0.5">
                                         {membersResource.loading ? "Loading members…" : `${members.length} member${members.length === 1 ? "" : "s"} in this workspace`}
                                     </p>
                                 </div>
-                                <span title={canAdd ? undefined : addMemberHint} className="flex gap-2">
+                                <span title={canAdd ? undefined : addMemberHint} className="flex flex-wrap gap-2">
                                     <Button
                                         type="button"
                                         variant="outline"
@@ -184,7 +184,7 @@ export default function Settings() {
                                         const role = String(membership.role || "member").toLowerCase();
                                         const displayName = member.display_name || member.name || member.id;
                                         return (
-                                            <div key={member.id} data-testid={`member-${member.id}`} className="grid grid-cols-[auto_minmax(0,1fr)_100px_100px_110px] items-center gap-3 p-3 rounded-lg border border-sm-border bg-sm-bg/40">
+                                            <div key={member.id} data-testid={`member-${member.id}`} className="grid grid-cols-[auto_minmax(0,1fr)] sm:grid-cols-[auto_minmax(0,1fr)_110px_100px_110px] items-center gap-3 p-3 rounded border border-sm-border bg-sm-bg/40">
                                                 {member.avatar_url ? <img src={member.avatar_url} alt="" className="w-9 h-9 rounded-full object-cover" /> : <ContributorAvatar contributor={{ name: displayName }} size={36} />}
                                                 <div className="min-w-0">
                                                     <div className="text-[13px] text-sm-text font-medium truncate">{displayName}</div>
@@ -197,8 +197,8 @@ export default function Settings() {
                                                     busy={roleBusy === member.id}
                                                     onChange={(next) => changeRole(member, next)}
                                                 />
-                                                <span className="text-[12px] text-sm-text-secondary">{ACCESS_BY_ROLE[role] || "—"}</span>
-                                                <span className="font-mono text-[10.5px] text-sm-text-secondary text-right">{membership.joined_at ? formatDate(membership.joined_at) : "—"}</span>
+                                                <span className="hidden sm:block text-[12px] text-sm-text-secondary">{ACCESS_BY_ROLE[role] || "—"}</span>
+                                                <span className="hidden sm:block font-mono text-[10.5px] text-sm-text-secondary text-right">{membership.joined_at ? formatDate(membership.joined_at) : "—"}</span>
                                             </div>
                                         );
                                     })}
@@ -237,7 +237,7 @@ export default function Settings() {
 
 function RoleCell({ member, role, options, busy, onChange }) {
     if (options.length === 0) {
-        return <span title={ROLE_SUMMARIES[role]} className="font-mono text-[10.5px] uppercase text-sm-text">{roleLabel(role)}</span>;
+        return <span title={ROLE_SUMMARIES[role]} className="col-start-2 sm:col-start-auto font-mono text-[10.5px] uppercase text-sm-text">{roleLabel(role)}</span>;
     }
     return (
         <select
@@ -246,7 +246,7 @@ function RoleCell({ member, role, options, busy, onChange }) {
             value=""
             disabled={busy}
             onChange={(e) => e.target.value && onChange(e.target.value)}
-            className="h-8 rounded-md bg-sm-bg/60 border border-sm-border text-sm-text text-[11px] px-1"
+            className="col-start-2 sm:col-start-auto justify-self-start h-8 rounded-md bg-sm-bg/60 border border-sm-border text-sm-text text-[11px] px-1"
         >
             <option value="">{roleLabel(role)} ▾</option>
             {options.map((r) => <option key={r} value={r}>Make {roleLabel(r)}</option>)}

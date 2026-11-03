@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
-import InviteLink from "./InviteLink";
+import InviteLink, { OneTimeNotice } from "./InviteLink";
 import api from "../../lib/api";
 import { roleLabel, ROLE_SUMMARIES, invitableRoles } from "../../lib/roles";
 import { mapWorkspaceError } from "../../lib/workspaceErrors";
@@ -63,7 +63,7 @@ export default function InviteDialog({ open, onOpenChange, workspaceId, callerRo
                 {created ? (
                     <div className="space-y-3">
                         <InviteLink email={created.email} role={roleLabel(created.role)} acceptPath={created.accept_path} />
-                        <p className="text-[11.5px] text-sm-text-muted">This link is shown only now. Copy it before you close this window; if you lose it, invite them again to get a new one.</p>
+                        <OneTimeNotice>This link is shown only now. Copy it before you close this window; if you lose it, invite them again to get a new one.</OneTimeNotice>
                         <DialogFooter>
                             <Button type="button" onClick={() => onOpenChange(false)} data-testid="invite-done" className="bg-sm-blue text-white">Done</Button>
                         </DialogFooter>

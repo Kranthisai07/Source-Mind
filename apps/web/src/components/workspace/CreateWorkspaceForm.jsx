@@ -6,6 +6,7 @@ import api from "../../lib/api";
 import { slugify, validateWorkspaceForm } from "../../lib/slug";
 import { mapWorkspaceError } from "../../lib/workspaceErrors";
 import TeamSetupStep from "../team/TeamSetupStep";
+import StepIndicator from "../team/StepIndicator";
 
 /**
  * Name + URL name (+ optional description) for a new workspace.
@@ -97,6 +98,7 @@ export default function CreateWorkspaceForm({ onCreated, onCancel, idPrefix = "c
     const err = "mt-1 text-[11.5px] text-sm-red";
     return (
         <form onSubmit={submit} noValidate className="space-y-4" data-testid="create-workspace-form">
+            {teamSetup && <StepIndicator step={1} />}
             <div>
                 <label htmlFor={`${idPrefix}-name`} className={label}>Workspace name</label>
                 <Input

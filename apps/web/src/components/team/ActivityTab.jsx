@@ -1,14 +1,36 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Download } from "lucide-react";
+import { Download, Mail, MailCheck, MailX, ShieldCheck, UserMinus, UserPlus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../ui/button";
 import { PageLoading } from "../widgets/PageLoadState";
 import api from "../../lib/api";
-import { describeAuditEvent } from "../../lib/auditEvents";
+import { dayLabel, describeAuditEvent } from "../../lib/auditEvents";
 import { formatDate } from "../../lib/format";
 import { mapWorkspaceError } from "../../lib/workspaceErrors";
 
 const PAGE = 50;
+
+const EVENT_ICONS = {
+    member_added: UserPlus,
+    member_removed: UserMinus,
+    role_changed: ShieldCheck,
+    invitation_created: Mail,
+    invitation_revoked: MailX,
+    invitation_accepted: MailCheck,
+    workspace_exported: Download,
+};
+
+/** Consecutive events on the same day share one heading. Input order (newest first) is kept. */
+function groupByDay(items) {
+    const groups = [];
+    for (const e of items) {
+        const label = dayLabel(e.at);
+        const last = groups[groups.length - 1];
+        if (last && last.label === label) last.events.push(e);
+        else groups.push({ label, events: [e] });
+    }
+    return groups;
+}
 
 function download(data, workspaceId) {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
@@ -96,14 +118,25 @@ export default function ActivityTab({ workspaceId }) {
             ) : items.length === 0 && !error ? (
                 <div data-testid="activity-empty" className="py-6 text-center text-[12.5px] text-sm-text-secondary">No activity yet.</div>
             ) : (
-                <ul className="space-y-2">
-                    {items.map((e) => (
-                        <li key={e.id} data-testid={`activity-${e.id}`} className="flex items-baseline justify-between gap-3 p-3 rounded-lg border border-sm-border bg-sm-bg/40">
-                            <span className="text-[13px] text-sm-text">{describeAuditEvent(e)}</span>
-                            <span className="font-mono text-[10.5px] text-sm-text-secondary shrink-0">{formatDate(e.at)}</span>
-                        </li>
+                <div className="space-y-4">
+                    {groupByDay(items).map((g) => (
+                        <div key={g.label + g.events[0].id}>
+                            <h4 data-testid="activity-day" className="font-mono text-[10px] uppercase tracking-[0.14em] text-sm-text-muted mb-2">{g.label}</h4>
+                            <ul className="space-y-2">
+                                {g.events.map((e) => {
+                                    const Icon = EVENT_ICONS[e.event] || Mail;
+                                    return (
+                                        <li key={e.id} data-testid={`activity-${e.id}`} className="flex items-center gap-3 p-3 rounded border border-sm-border bg-sm-bg/40">
+                                            <Icon aria-hidden="true" className="w-4 h-4 shrink-0 text-sm-text-secondary" strokeWidth={2} />
+                                            <span className="flex-1 min-w-0 text-[13px] text-sm-text">{describeAuditEvent(e)}</span>
+                                            <span className="font-mono text-[10.5px] text-sm-text-secondary shrink-0">{formatDate(e.at)}</span>
+                                        </li>
+                                    );
+                                })}
+                            </ul>
+                        </div>
                     ))}
-                </ul>
+                </div>
             )}
             {more && (
                 <Button type="button" variant="outline" disabled={loading} onClick={() => load(items[items.length - 1].id)} data-testid="activity-more" className="mt-3 h-8 border-sm-border text-sm-text">

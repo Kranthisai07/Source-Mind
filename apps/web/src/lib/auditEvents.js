@@ -1,5 +1,16 @@
 import { roleLabel } from "./roles";
 
+/** Day heading for a group of events: Today, Yesterday, or the date. */
+export function dayLabel(iso, now = new Date()) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "Earlier";
+    const start = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    const days = Math.round((start(now) - start(d)) / 86400000);
+    if (days === 0) return "Today";
+    if (days === 1) return "Yesterday";
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
 const who = (name, id) => name || (id ? "A former member" : "Someone");
 
 /** One plain sentence per audit event; mirrors the server's event names (D-067). */

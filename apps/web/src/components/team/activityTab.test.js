@@ -56,3 +56,19 @@ test("a slow Load more that finishes after a refresh is discarded", async () => 
     await waitFor(() => expect(screen.queryByTestId("activity-100")).toBeNull());
     expect(screen.queryByTestId("activity-5")).toBeNull();
 });
+
+test("events are grouped under one heading per day", async () => {
+    const today = new Date().toISOString();
+    const old = new Date(2020, 0, 5, 12).toISOString();
+    api.listWorkspaceAudit.mockResolvedValueOnce({ items: [
+        { id: 3, event: "member_added", actor_name: "Ana", target_name: "Bo", role_after: "member", at: today },
+        { id: 2, event: "role_changed", actor_name: "Ana", target_name: "Bo", role_before: "member", role_after: "admin", at: today },
+        { id: 1, event: "workspace_exported", actor_name: "Ana", at: old },
+    ] });
+    render(<ActivityTab workspaceId="w1" />);
+    await screen.findByTestId("activity-3");
+    const days = screen.getAllByTestId("activity-day").map((h) => h.textContent);
+    expect(days).toHaveLength(2);
+    expect(days[0]).toBe("Today");
+    expect(days[1]).toMatch(/2020/);
+});
