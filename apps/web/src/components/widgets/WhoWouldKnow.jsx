@@ -106,7 +106,7 @@ export default function WhoWouldKnow({ workspaceId }) {
             <div className="flex items-center gap-2.5">
                 <div
                     className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-                    style={{ background: "#2a78d618", color: "#2a78d6" }}
+                    style={{ background: "#2a78d618", color: "var(--tag-1-text)" }}
                 >
                     <Users className="w-4 h-4" strokeWidth={2} />
                 </div>
@@ -219,7 +219,7 @@ export default function WhoWouldKnow({ workspaceId }) {
                                         {idx === 0 && (
                                             <span
                                                 className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full flex-shrink-0 flex items-center gap-0.5"
-                                                style={{ background: "#2a78d618", color: "#2a78d6" }}
+                                                style={{ background: "#2a78d618", color: "var(--tag-1-text)" }}
                                             >
                                                 <Zap className="w-2.5 h-2.5" /> Best match
                                             </span>

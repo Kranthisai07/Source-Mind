@@ -4186,3 +4186,5 @@ A developer's local `.env` can therefore fail these suites; run them with CI's e
 **Checked.** Full web suite and build; screenshots of Dashboard, Analytics, Conflicts, Handoff and Memories in light and dark. The only test change: critical severity red moved from `#EF4444` to `#d03b3b`.
 
 **Not checked.** 390px mobile, the real API, the Connectors and Memory detail screens visually after the recolour.
+
+**Review follow-up (Codex, P2).** My recolour mapped the old pale tag text colours (made for dark mode) straight to the saturated series hexes, so dark-mode memory tags lost contrast (violet about 2.8:1, blue about 3.6:1). The pale greens, yellows and reds that stayed were wrong the other way in light mode. Tag and badge text now reads `--tag-1..5-text` tokens, darker in light and lighter in dark, while the tinted backgrounds stay on the categorical colours. Contrast computed against the card surface (the 9% tint barely moves it): light 6.4, 8.2, 7.5, 7.1, 7.0 and dark 8.5, 8.3, 9.2, 10.5, 7.3 to 1, all above 4.5. The same blue badge text in `WhoWouldKnow` uses the token. Not screenshot-checked after the change.

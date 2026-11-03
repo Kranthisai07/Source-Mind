@@ -7,11 +7,11 @@ import { relativeTime, stripMarkdown } from "../../lib/format";
 import { isPilotMode } from "../../lib/pilotMode";
 
 const TAG_COLORS = [
-    { bg: "#2a78d618", text: "#2a78d6", border: "#2a78d633" },
-    { bg: "#6250d618", text: "#6250d6", border: "#6250d633" },
-    { bg: "#0ca30c18", text: "#6EE7B7", border: "#0ca30c33" },
-    { bg: "#fab21918", text: "#FCD34D", border: "#fab21933" },
-    { bg: "#d03b3b18", text: "#FCA5A5", border: "#d03b3b33" },
+    { bg: "#2a78d618", text: "var(--tag-1-text)", border: "#2a78d633" },
+    { bg: "#6250d618", text: "var(--tag-2-text)", border: "#6250d633" },
+    { bg: "#0ca30c18", text: "var(--tag-3-text)", border: "#0ca30c33" },
+    { bg: "#fab21918", text: "var(--tag-4-text)", border: "#fab21933" },
+    { bg: "#d03b3b18", text: "var(--tag-5-text)", border: "#d03b3b33" },
 ];
 
 const hashTag = (value) => {
