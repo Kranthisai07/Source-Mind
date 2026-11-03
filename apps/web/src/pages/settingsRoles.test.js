@@ -45,3 +45,14 @@ test("a teammate gets no role menu", async () => {
     await screen.findByTestId("member-ann");
     expect(screen.queryByTestId("role-select-ann")).toBeNull();
 });
+
+test("the Activity tab is present but disabled for a teammate, enabled for a founder", async () => {
+    await open("member");
+    expect(screen.getByTestId("tab-activity").disabled).toBe(true);
+});
+
+test("the Activity tab is enabled for a founder", async () => {
+    await open("owner");
+    await screen.findByTestId("role-select-ann");
+    expect(screen.getByTestId("tab-activity").disabled).toBe(false);
+});

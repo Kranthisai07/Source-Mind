@@ -16,7 +16,8 @@ export default function AppLayout() {
 }
 
 function Shell() {
-    const [collapsed, setCollapsed] = useState(false);
+    // A 220px sidebar leaves a phone no room for the page: start collapsed under 768px.
+    const [collapsed, setCollapsed] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
     const { status, error, reload } = useWorkspaces();
     // Moves on every workspace switch. Keying the page outlet on it discards
     // the previous workspace's page state, timers and refs wholesale.

@@ -51,3 +51,12 @@ test("export errors are plain", () => {
     expect(mapWorkspaceError({ status: 429, retryAfterSeconds: 60 }, "export").message).toMatch(/60 seconds/);
     expect(mapWorkspaceError({ status: 500 }, "export").message).toMatch(/nothing was downloaded/);
 });
+
+test("day labels: Today, Yesterday, then the date", () => {
+    const { dayLabel } = require("./auditEvents");
+    const now = new Date(2026, 10, 3, 15, 0, 0);
+    expect(dayLabel(new Date(2026, 10, 3, 1, 0, 0).toISOString(), now)).toBe("Today");
+    expect(dayLabel(new Date(2026, 10, 2, 23, 0, 0).toISOString(), now)).toBe("Yesterday");
+    expect(dayLabel(new Date(2026, 9, 20, 12, 0, 0).toISOString(), now)).toMatch(/2026/);
+    expect(dayLabel("not a date", now)).toBe("Earlier");
+});

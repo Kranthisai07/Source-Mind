@@ -16,6 +16,7 @@
    .dark is a refined version of the original dark palette.
    ───────────────────────────────────────────────────────────── */
 :root {
+    color-scheme: light;
     /* Brand tokens — LIGHT */
     /* Same palette as the landing and sign-in pages (marketing.css --site-*):
        warm paper, ink, sage accent. "blue" and "purple" keep their names so
@@ -54,6 +55,7 @@
 /* Dark brand tokens — :root.dark has higher specificity than :root so it
    always wins when the .dark class is present on <html>. */
 :root.dark {
+    color-scheme: dark; /* native selects, textareas and scrollbars follow the theme */
     --sm-bg: #111410;
     --sm-surface: #171A16;
     --sm-surface-2: #1A2017;
