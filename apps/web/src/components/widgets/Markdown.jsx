@@ -41,7 +41,7 @@ export default function Markdown({ children, className = "" }) {
                     },
                     pre: ({ node, ...p }) => (
                         <pre
-                            className="my-4 p-4 rounded-lg bg-[#0A0A0F] border border-sm-border overflow-x-auto text-[12.5px] leading-[1.6] font-mono"
+                            className="my-4 p-4 rounded-lg bg-sm-surface-2 border border-sm-border overflow-x-auto text-[12.5px] leading-[1.6] font-mono"
                             {...p}
                         />
                     ),

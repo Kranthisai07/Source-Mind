@@ -17,122 +17,118 @@
    ───────────────────────────────────────────────────────────── */
 :root {
     /* Brand tokens — LIGHT */
-    --sm-bg: #FBFBF9;
+    /* Same palette as the landing and sign-in pages (marketing.css --site-*):
+       warm paper, ink, sage accent. "blue" and "purple" keep their names so
+       existing classes follow the theme: blue is the sage accent, purple the
+       orange secondary. Channels (not hex) so bg-sm-blue/10 still works. */
+    --sm-bg: #FAFBF9;
     --sm-surface: #FFFFFF;
-    --sm-surface-2: #F3F3EE;
-    --sm-border: #E7E7E1;
-    --sm-border-hover: #D4D4CE;
-    --sm-text: #18181B;
-    --sm-text-secondary: #5B5B63;
-    --sm-text-muted: #9A9A9F;
-    --sm-blue: #4F7EFF;
+    --sm-surface-2: #F0F3ED;
+    --sm-border: #DFE3DC;
+    --sm-border-hover: #C6CCC1;
+    --sm-text: #222622;
+    --sm-text-secondary: #636960;
+    --sm-text-muted: #7D8479;
+    --sm-blue-rgb: 56 96 74;
+    --sm-purple-rgb: 195 98 57;
+    --sm-on-accent: #FFFFFF;
+    --sm-blue: rgb(var(--sm-blue-rgb));
     --sm-green: #34D399;
     --sm-amber: #F59E0B;
     --sm-red: #EF4444;
-    --sm-purple: #A78BFA;
+    --sm-purple: rgb(var(--sm-purple-rgb));
 
     /* Theme-aware helpers used in raw CSS below */
     --sm-hover: rgba(0, 0, 0, 0.035);
     --sm-hover-strong: rgba(0, 0, 0, 0.06);
-    --sm-glass: rgba(255, 255, 255, 0.78);
-    --sm-grid: #ECECE6;
-    --sm-card-shadow: 0 1px 2px rgba(24, 24, 27, 0.04);
-    --sm-card-shadow-hover: 0 6px 20px -12px rgba(24, 24, 27, 0.18);
+    --sm-glass: rgba(250, 251, 249, 0.96);
+    --sm-grid: #E6E9E1;
+    --sm-card-shadow: none;
+    --sm-card-shadow-hover: none;
     --sm-graph-node-bg: #FFFFFF;
-    --sm-graph-node-ink: #18181B;
+    --sm-graph-node-ink: #222622;
 }
 
 /* Dark brand tokens — :root.dark has higher specificity than :root so it
    always wins when the .dark class is present on <html>. */
 :root.dark {
-    --sm-bg: #0A0A0F;
-    --sm-surface: #12121A;
-    --sm-surface-2: #17172160;
-    --sm-border: #1E1E2E;
-    --sm-border-hover: #2A2A3E;
-    --sm-text: #E8E8F0;
-    --sm-text-secondary: #8888A8;
-    --sm-text-muted: #4A4A6A;
+    --sm-bg: #111410;
+    --sm-surface: #171A16;
+    --sm-surface-2: #1A2017;
+    --sm-border: #30372C;
+    --sm-border-hover: #434C3E;
+    --sm-text: #EDF0E9;
+    --sm-text-secondary: #ADB4A7;
+    --sm-text-muted: #7D8576;
+    --sm-blue-rgb: 181 202 169;
+    --sm-purple-rgb: 225 153 115;
+    --sm-on-accent: #172113;
 
     --sm-hover: rgba(255, 255, 255, 0.035);
     --sm-hover-strong: rgba(255, 255, 255, 0.06);
-    --sm-glass: rgba(18, 18, 26, 0.72);
-    --sm-grid: #1E1E2E;
+    --sm-glass: rgba(17, 20, 16, 0.96);
+    --sm-grid: #2A3126;
     --sm-card-shadow: none;
-    --sm-card-shadow-hover: 0 8px 28px -12px rgba(79, 126, 255, 0.12);
-    --sm-graph-node-bg: #12121A;
-    --sm-graph-node-ink: #E8E8F0;
+    --sm-card-shadow-hover: none;
+    --sm-graph-node-bg: #171A16;
+    --sm-graph-node-ink: #EDF0E9;
 }
+
+/* Solid accent fills: in dark the accent is light sage, so their text must be dark. */
+.dark [class~="bg-sm-blue"] { color: var(--sm-on-accent); }
 
 @layer base {
     :root {
-        --background: 60 14% 98%;
-        --foreground: 240 6% 10%;
+        --background: 90 14% 98%;
+        --foreground: 120 7% 14%;
         --card: 0 0% 100%;
-        --card-foreground: 240 6% 10%;
+        --card-foreground: 120 7% 14%;
         --popover: 0 0% 100%;
-        --popover-foreground: 240 6% 10%;
-        --primary: 225 100% 66%;
+        --popover-foreground: 120 7% 14%;
+        --primary: 147 26% 30%;
         --primary-foreground: 0 0% 100%;
-        --secondary: 60 9% 95%;
-        --secondary-foreground: 240 6% 10%;
-        --muted: 60 9% 93%;
-        --muted-foreground: 240 5% 45%;
-        --accent: 60 9% 92%;
-        --accent-foreground: 240 6% 10%;
+        --secondary: 90 16% 94%;
+        --secondary-foreground: 120 7% 14%;
+        --muted: 90 16% 94%;
+        --muted-foreground: 105 5% 38%;
+        --accent: 90 16% 94%;
+        --accent-foreground: 120 7% 14%;
         --destructive: 0 84% 60%;
         --destructive-foreground: 0 0% 100%;
-        --border: 48 10% 90%;
-        --input: 48 10% 90%;
-        --ring: 225 100% 66%;
-        --chart-1: 225 100% 66%;
+        --border: 100 10% 88%;
+        --input: 100 10% 88%;
+        --ring: 147 26% 30%;
+        --chart-1: 147 26% 30%;
         --chart-2: 158 64% 52%;
         --chart-3: 38 92% 50%;
         --chart-4: 255 92% 76%;
         --chart-5: 0 84% 60%;
-        --radius: 0.5rem;
+        --radius: 0.375rem;
     }
 
     .dark {
         /* Brand tokens — DARK */
-        --sm-bg: #0A0A0F;
-        --sm-surface: #12121A;
-        --sm-surface-2: #17172160;
-        --sm-border: #1E1E2E;
-        --sm-border-hover: #2A2A3E;
-        --sm-text: #E8E8F0;
-        --sm-text-secondary: #8888A8;
-        --sm-text-muted: #4A4A6A;
-
-        --sm-hover: rgba(255, 255, 255, 0.035);
-        --sm-hover-strong: rgba(255, 255, 255, 0.06);
-        --sm-glass: rgba(18, 18, 26, 0.72);
-        --sm-grid: #1E1E2E;
-        --sm-card-shadow: none;
-        --sm-card-shadow-hover: 0 8px 28px -12px rgba(79, 126, 255, 0.12);
-        --sm-graph-node-bg: #12121A;
-        --sm-graph-node-ink: #E8E8F0;
-
-        --background: 240 22% 5%;
-        --foreground: 240 22% 93%;
-        --card: 240 17% 9%;
-        --card-foreground: 240 22% 93%;
-        --popover: 240 17% 9%;
-        --popover-foreground: 240 22% 93%;
-        --primary: 225 100% 66%;
-        --primary-foreground: 0 0% 100%;
-        --secondary: 240 20% 14%;
-        --secondary-foreground: 240 22% 93%;
-        --muted: 240 20% 12%;
-        --muted-foreground: 240 18% 60%;
-        --accent: 240 20% 15%;
-        --accent-foreground: 240 22% 93%;
+        /* sm tokens for dark live in :root.dark above */
+        --background: 100 12% 7%;
+        --foreground: 95 15% 93%;
+        --card: 105 10% 9%;
+        --card-foreground: 95 15% 93%;
+        --popover: 105 10% 9%;
+        --popover-foreground: 95 15% 93%;
+        --primary: 100 24% 72%;
+        --primary-foreground: 105 25% 10%;
+        --secondary: 100 15% 11%;
+        --secondary-foreground: 95 15% 93%;
+        --muted: 100 15% 11%;
+        --muted-foreground: 100 8% 68%;
+        --accent: 100 15% 14%;
+        --accent-foreground: 95 15% 93%;
         --destructive: 0 84% 60%;
         --destructive-foreground: 0 0% 100%;
-        --border: 240 25% 15%;
-        --input: 240 25% 15%;
-        --ring: 225 100% 66%;
-        --chart-1: 225 100% 66%;
+        --border: 100 12% 20%;
+        --input: 100 12% 20%;
+        --ring: 100 24% 72%;
+        --chart-1: 100 24% 72%;
         --chart-2: 158 64% 52%;
         --chart-3: 38 92% 50%;
         --chart-4: 255 92% 76%;
@@ -169,7 +165,7 @@ code, pre, .font-mono {
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--sm-text-muted); }
 
-::selection { background: #4F7EFF33; color: var(--sm-text); }
+::selection { background: rgb(var(--sm-blue-rgb) / 0.2); color: var(--sm-text); }
 
 /* Subtle background grid used on landing + auth */
 .bg-grid {
@@ -230,7 +226,7 @@ code, pre, .font-mono {
 .sm-card {
     background-color: var(--sm-surface);
     border: 1px solid var(--sm-border);
-    border-radius: 12px;
+    border-radius: 6px;
     box-shadow: var(--sm-card-shadow);
     transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
 }

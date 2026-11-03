@@ -19,9 +19,9 @@ export default function PipelineTracker({ stages = [], currentStage = "receive" 
                 const status = s.status;
                 const color =
                     status === "done"     ? "#34D399" :
-                    status === "running"  ? "#4F7EFF" :
+                    status === "running"  ? "rgb(var(--sm-blue-rgb))" :
                     status === "error"    ? "#EF4444" :
-                                            "#4A4A6A";
+                                            "var(--sm-text-muted)";
                 const Icon =
                     status === "done"    ? Check :
                     status === "running" ? Loader2 :

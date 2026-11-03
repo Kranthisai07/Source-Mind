@@ -1,6 +1,7 @@
 import React from "react";
 import { Brain, Users, TrendingUp, AlertCircle, ArrowRight } from "lucide-react";
 import { Link } from "react-router-dom";
+import GetStarted from "../components/widgets/GetStarted";
 import TopBar from "../components/layout/TopBar";
 import MetricCard from "../components/widgets/MetricCard";
 import HealthGauge from "../components/widgets/HealthGauge";
@@ -47,6 +48,7 @@ export default function Dashboard() {
         <>
             {header}
             <div className="flex-1 px-8 py-6 space-y-5">
+                {data?.total_memories === 0 && <GetStarted />}
                 {/* Row 1 — metrics */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                     <MetricCard
@@ -55,7 +57,7 @@ export default function Dashboard() {
                         label="Total Memories"
                         value={data?.total_memories.toLocaleString() ?? "—"}
                         delta={<span>Across {data?.total_contributors ?? "—"} contributors</span>}
-                        accent="#4F7EFF"
+                        accent="rgb(var(--sm-blue-rgb))"
                     />
                     <MetricCard
                         testId="metric-contributors"
@@ -63,7 +65,7 @@ export default function Dashboard() {
                         label="Active Contributors"
                         value={data?.total_contributors ?? "—"}
                         delta={<span>Current workspace total</span>}
-                        accent="#A78BFA"
+                        accent="rgb(var(--sm-purple-rgb))"
                     />
                     <MetricCard
                         testId="metric-new-last-30-days"

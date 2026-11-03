@@ -4,7 +4,7 @@ import { useClerk, useUser } from "@clerk/clerk-react";
 import {
     Home, Brain, BarChart3, AlertTriangle, ArrowRightLeft,
     Plug, Settings as SettingsIcon, ChevronLeft, ChevronRight, LogOut,
-    ChevronsUpDown, Check, Plus,
+    ChevronsUpDown, Check, Plus, BookOpen, ExternalLink,
 } from "lucide-react";
 import {
     DropdownMenu,
@@ -20,16 +20,26 @@ import { isPilotMode } from "../../lib/pilotMode";
 import { isWorkspacePinned } from "../../lib/realApi";
 import { useWorkspaces } from "../workspace/WorkspaceProvider";
 import CreateWorkspaceDialog from "../workspace/CreateWorkspaceDialog";
+import AppBrand from "../brand/AppBrand";
 
 const NAV = [
-    { to: "/dashboard",  label: "Dashboard",   icon: Home,           testId: "nav-dashboard"  },
-    { to: "/memories",   label: "Memories",    icon: Brain,          testId: "nav-memories"   },
-    { to: "/analytics",  label: "Analytics",   icon: BarChart3,      testId: "nav-analytics"  },
-    { to: "/conflicts",  label: "Conflicts",   icon: AlertTriangle,  testId: "nav-conflicts"  },
-    { to: "/handoff",    label: "Handoff",     icon: ArrowRightLeft, testId: "nav-handoff"    },
-    { to: "/connectors", label: "Connectors",  icon: Plug,           testId: "nav-connectors" },
-    { to: "/settings",   label: "Settings",    icon: SettingsIcon,   testId: "nav-settings"   },
+    { to: "/dashboard",  label: "Dashboard",   icon: Home,           testId: "nav-dashboard",  group: "Knowledge" },
+    { to: "/memories",   label: "Memories",    icon: Brain,          testId: "nav-memories",   group: "Knowledge" },
+    { to: "/analytics",  label: "Analytics",   icon: BarChart3,      testId: "nav-analytics",  group: "Knowledge" },
+    { to: "/conflicts",  label: "Conflicts",   icon: AlertTriangle,  testId: "nav-conflicts",  group: "Review"    },
+    { to: "/handoff",    label: "Handoff",     icon: ArrowRightLeft, testId: "nav-handoff",    group: "Review"    },
+    { to: "/connectors", label: "Connectors",  icon: Plug,           testId: "nav-connectors", group: "Admin"     },
+    { to: "/settings",   label: "Settings",    icon: SettingsIcon,   testId: "nav-settings",   group: "Admin"     },
 ];
+
+/** Neutral initial tile: the workspace is identified by name, the brand sits above it. */
+function WorkspaceTile({ name }) {
+    return (
+        <div aria-hidden="true" className="w-8 h-8 rounded bg-sm-surface-2 border border-sm-border text-sm-text font-semibold text-[13px] flex items-center justify-center shrink-0">
+            {(name || "S").trim().charAt(0).toUpperCase()}
+        </div>
+    );
+}
 
 export default function Sidebar({ collapsed, onToggle }) {
     const pilotMode = isPilotMode();
@@ -54,7 +64,7 @@ export default function Sidebar({ collapsed, onToggle }) {
     const userName = user?.fullName || fallbackUser?.display_name || fallbackUser?.name || "Signed out";
     const userEmail = user?.primaryEmailAddress?.emailAddress || fallbackUser?.email || "";
     const avatarUrl = user?.imageUrl || fallbackUser?.avatar_url || null;
-    const avatarColor = fallbackUser?.avatarColor || "#4F7EFF";
+    const avatarColor = fallbackUser?.avatarColor || "rgb(var(--sm-blue-rgb))";
     const wsName = workspace?.name || "";
     const wsSlug = workspace?.slug || "";
 
@@ -72,8 +82,12 @@ export default function Sidebar({ collapsed, onToggle }) {
             data-testid="sidebar"
             className={`${width} shrink-0 h-screen sticky top-0 z-30 border-r border-sm-border bg-sm-surface/60 backdrop-blur-xl transition-[width] duration-200 flex flex-col`}
         >
-            {/* Logo / workspace */}
-            <div className="h-16 flex items-center px-3 border-b border-sm-border">
+            {/* Brand */}
+            <div className={`h-14 flex items-center border-b border-sm-border ${collapsed ? "justify-center" : "px-4"}`}>
+                <AppBrand compact={collapsed} />
+            </div>
+            {/* Workspace */}
+            <div className="h-14 flex items-center px-3 border-b border-sm-border">
                 {/* modal={false}: the "Create workspace" item opens a Dialog; a modal
                     menu would leave the page inert after handing focus over. */}
                 {pinned ? (
@@ -86,9 +100,7 @@ export default function Sidebar({ collapsed, onToggle }) {
                         title="This build is fixed to one workspace"
                         className="flex items-center gap-2.5 w-full overflow-hidden"
                     >
-                        <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-sm-blue to-sm-purple flex items-center justify-center shrink-0">
-                            <Brain className="w-[18px] h-[18px] text-white" strokeWidth={2.5} />
-                        </div>
+                        <WorkspaceTile name={wsName} />
                         {!collapsed && (
                             <div className="flex-1 text-left overflow-hidden">
                                 <div className="text-[13px] font-semibold text-sm-text truncate leading-tight">{wsName || "SourceMind"}</div>
@@ -103,12 +115,10 @@ export default function Sidebar({ collapsed, onToggle }) {
                             type="button"
                             data-testid="workspace-switcher"
                             aria-label={`Workspace: ${wsName || "none"}. Switch workspace`}
-                            className="flex items-center gap-2.5 w-full overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sm-blue/50"
+                            className="flex items-center gap-2.5 w-full overflow-hidden rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sm-blue/50"
                             title={wsName}
                         >
-                            <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-sm-blue to-sm-purple flex items-center justify-center shrink-0 shadow-[0_0_0_1px_rgba(79,126,255,0.35)_inset]">
-                                <Brain className="w-[18px] h-[18px] text-white" strokeWidth={2.5} />
-                            </div>
+                            <WorkspaceTile name={wsName} />
                             {!collapsed && (
                                 <>
                                     <div className="flex-1 text-left overflow-hidden">
@@ -158,14 +168,17 @@ export default function Sidebar({ collapsed, onToggle }) {
 
             {/* Nav */}
             <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto">
-                {NAV.filter((item) => !pilotMode || ["/memories", "/settings"].includes(item.to)).map((item) => (
+                {NAV.filter((item) => !pilotMode || ["/memories", "/settings"].includes(item.to)).map((item, i, shown) => (
+                    <React.Fragment key={item.to}>
+                    {!collapsed && item.group !== shown[i - 1]?.group && (
+                        <div className="px-3 pt-3 pb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-sm-text-muted">{item.group}</div>
+                    )}
                     <NavLink
-                        key={item.to}
                         to={item.to}
                         data-testid={item.testId}
                         className={({ isActive }) =>
                             [
-                                "group flex items-center gap-3 px-3 h-9 rounded-lg text-[13px] font-medium transition-colors",
+                                "group flex items-center gap-3 px-3 h-9 rounded text-[13px] font-medium transition-colors",
                                 isActive
                                     ? "bg-sm-blue/10 text-sm-text border border-sm-blue/30 shadow-[0_0_0_1px_rgba(79,126,255,0.05)]"
                                     : "text-sm-text-secondary hover:text-sm-text hover:bg-white/[0.03] border border-transparent",
@@ -177,6 +190,7 @@ export default function Sidebar({ collapsed, onToggle }) {
                         <item.icon className="w-4 h-4 shrink-0" strokeWidth={2} />
                         {!collapsed && <span className="truncate">{item.label}</span>}
                     </NavLink>
+                    </React.Fragment>
                 ))}
             </nav>
 
@@ -198,7 +212,7 @@ export default function Sidebar({ collapsed, onToggle }) {
                                 <img src={avatarUrl} alt="" className="w-8 h-8 rounded-full shrink-0 object-cover" />
                             ) : (
                                 <div
-                                    className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold shrink-0 text-white"
+                                    className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold shrink-0 ${fallbackUser?.avatarColor ? "text-white" : "text-[color:var(--sm-on-accent)]"}`}
                                     style={{ background: avatarColor }}
                                 >
                                     {initials(userName)}
@@ -223,6 +237,16 @@ export default function Sidebar({ collapsed, onToggle }) {
                             <div className="text-[12.5px] font-medium truncate">{userName}</div>
                             {userEmail && <div className="text-[11px] text-sm-text-secondary truncate">{userEmail}</div>}
                         </DropdownMenuLabel>
+                        <DropdownMenuSeparator className="bg-sm-border" />
+                        <DropdownMenuItem data-testid="sidebar-settings" onSelect={() => navigate("/settings")} className="cursor-pointer">
+                            <SettingsIcon className="w-4 h-4 mr-2" strokeWidth={2} /> Settings
+                        </DropdownMenuItem>
+                        <DropdownMenuItem data-testid="sidebar-developers" onSelect={() => navigate("/develop")} className="cursor-pointer">
+                            <BookOpen className="w-4 h-4 mr-2" strokeWidth={2} /> Developers
+                        </DropdownMenuItem>
+                        <DropdownMenuItem data-testid="sidebar-home" onSelect={() => navigate("/")} className="cursor-pointer">
+                            <ExternalLink className="w-4 h-4 mr-2" strokeWidth={2} /> Back to site
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator className="bg-sm-border" />
                         <DropdownMenuItem
                             data-testid="sidebar-signout"

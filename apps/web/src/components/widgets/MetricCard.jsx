@@ -1,6 +1,7 @@
 import React from "react";
+import { ACCENT } from "@/lib/theme";
 
-export default function MetricCard({ icon: Icon, label, value, delta, accent = "#4F7EFF", testId }) {
+export default function MetricCard({ icon: Icon, label, value, delta, accent = ACCENT, testId }) {
     return (
         <div
             data-testid={testId}
@@ -16,8 +17,8 @@ export default function MetricCard({ icon: Icon, label, value, delta, accent = "
                 </span>
                 {Icon && (
                     <div
-                        className="w-8 h-8 rounded-lg flex items-center justify-center"
-                        style={{ background: `${accent}18`, color: accent }}
+                        className="w-8 h-8 rounded flex items-center justify-center"
+                        style={{ background: `color-mix(in srgb, ${accent} 10%, transparent)`, color: accent }}
                     >
                         <Icon className="w-4 h-4" strokeWidth={2} />
                     </div>

@@ -25,7 +25,7 @@ const renderAt = (token) =>
         <MemoryRouter initialEntries={[`/invite/${token}`]}>
             <Routes>
                 <Route path="/invite/:token" element={<InviteAccept />} />
-                <Route path="/memories" element={<div data-testid="memories" />} />
+                <Route path="/dashboard" element={<div data-testid="memories" />} />
             </Routes>
         </MemoryRouter>
     );

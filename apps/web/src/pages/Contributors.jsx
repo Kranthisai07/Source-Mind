@@ -92,6 +92,7 @@ export default function Contributors() {
     return (
         <>
             <TopBar
+                crumbs={[{ label: "Connectors", to: "/connectors" }]}
                 title="Contributors"
                 subtitle="Stored GitHub activity from the imported window"
                 actions={

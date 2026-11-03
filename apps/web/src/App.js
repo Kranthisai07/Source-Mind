@@ -56,7 +56,6 @@ export default function App() {
                 </Routes>
             </BrowserRouter>
             <Toaster
-                theme="dark"
                 position="bottom-right"
                 toastOptions={{
                     style: {
