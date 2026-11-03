@@ -18,9 +18,9 @@ export default function PipelineTracker({ stages = [], currentStage = "receive" 
             {stages.map((s, i) => {
                 const status = s.status;
                 const color =
-                    status === "done"     ? "#34D399" :
+                    status === "done"     ? "#0ca30c" :
                     status === "running"  ? "rgb(var(--sm-blue-rgb))" :
-                    status === "error"    ? "#EF4444" :
+                    status === "error"    ? "#d03b3b" :
                                             "var(--sm-text-muted)";
                 const Icon =
                     status === "done"    ? Check :

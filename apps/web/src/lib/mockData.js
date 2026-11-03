@@ -14,18 +14,18 @@ export const CURRENT_USER = {
     name: "Lina Chen",
     email: "lina@acme.dev",
     role: "Owner",
-    avatarColor: "#4F7EFF",
+    avatarColor: "#2a78d6",
 };
 
 export const CONTRIBUTORS = [
-    { id: "c1", login: "lina.chen",     name: "Lina Chen",     count: 142, score: 0.91, last_active: "2h",  avatarColor: "#4F7EFF", top_category: "architecture" },
-    { id: "c2", login: "dmitry.volk",   name: "Dmitry Volkov", count: 118, score: 0.87, last_active: "4h",  avatarColor: "#A78BFA", top_category: "incident"     },
-    { id: "c3", login: "priya.nair",    name: "Priya Nair",    count:  96, score: 0.84, last_active: "1d",  avatarColor: "#34D399", top_category: "decision"     },
-    { id: "c4", login: "marcus.okafor", name: "Marcus Okafor", count:  73, score: 0.79, last_active: "3h",  avatarColor: "#F59E0B", top_category: "onboarding"   },
-    { id: "c5", login: "yuki.tanaka",   name: "Yuki Tanaka",   count:  58, score: 0.72, last_active: "2d",  avatarColor: "#EF4444", top_category: "architecture" },
-    { id: "c6", login: "sara.hofmann",  name: "Sara Hofmann",  count:  41, score: 0.68, last_active: "5h",  avatarColor: "#60A5FA", top_category: "general"      },
-    { id: "c7", login: "raj.patel",     name: "Raj Patel",     count:  33, score: 0.64, last_active: "12d", avatarColor: "#F472B6", top_category: "incident"     },
-    { id: "c8", login: "noah.rivera",   name: "Noah Rivera",   count:  22, score: 0.58, last_active: "1h",  avatarColor: "#2DD4BF", top_category: "decision"     },
+    { id: "c1", login: "lina.chen",     name: "Lina Chen",     count: 142, score: 0.91, last_active: "2h",  avatarColor: "#2a78d6", top_category: "architecture" },
+    { id: "c2", login: "dmitry.volk",   name: "Dmitry Volkov", count: 118, score: 0.87, last_active: "4h",  avatarColor: "#eb6834", top_category: "incident"     },
+    { id: "c3", login: "priya.nair",    name: "Priya Nair",    count:  96, score: 0.84, last_active: "1d",  avatarColor: "#1baf7a", top_category: "decision"     },
+    { id: "c4", login: "marcus.okafor", name: "Marcus Okafor", count:  73, score: 0.79, last_active: "3h",  avatarColor: "#eda100", top_category: "onboarding"   },
+    { id: "c5", login: "yuki.tanaka",   name: "Yuki Tanaka",   count:  58, score: 0.72, last_active: "2d",  avatarColor: "#e87ba4", top_category: "architecture" },
+    { id: "c6", login: "sara.hofmann",  name: "Sara Hofmann",  count:  41, score: 0.68, last_active: "5h",  avatarColor: "#008300", top_category: "general"      },
+    { id: "c7", login: "raj.patel",     name: "Raj Patel",     count:  33, score: 0.64, last_active: "12d", avatarColor: "#6250d6", top_category: "incident"     },
+    { id: "c8", login: "noah.rivera",   name: "Noah Rivera",   count:  22, score: 0.58, last_active: "1h",  avatarColor: "#e34948", top_category: "decision"     },
 ];
 
 const byLogin = (login) => CONTRIBUTORS.find(c => c.login === login) || CONTRIBUTORS[0];
@@ -467,14 +467,14 @@ export const HANDOFFS = [
 ];
 
 export const RECENT_ACTIVITY = [
-    { type: "memory_created",  color: "#4F7EFF", description: "lina.chen ingested 'Postgres RLS for multi-tenant isolation'",          ts_min_ago: 2   },
-    { type: "conflict_opened", color: "#F59E0B", description: "Conflict detected: pgvector HNSW vs. IVFFlat indexing",                  ts_min_ago: 14  },
-    { type: "connector_synced",color: "#34D399", description: "acme/platform synced · 42 new commits, 3 PRs",                           ts_min_ago: 18  },
-    { type: "handoff_started", color: "#A78BFA", description: "Handoff initiated: raj.patel → marcus.okafor (CRITICAL, 23 memories)",   ts_min_ago: 52  },
-    { type: "memory_edited",   color: "#4F7EFF", description: "priya.nair edited 'Attribution signal weights'",                         ts_min_ago: 78  },
-    { type: "conflict_resolved",color:"#34D399", description: "dmitry.volk resolved CFL-504 (deploy freeze window)",                    ts_min_ago: 120 },
-    { type: "memory_created",  color: "#4F7EFF", description: "dmitry.volk ingested 'Incident 2026-01-14 postmortem'",                  ts_min_ago: 180 },
-    { type: "connector_synced",color: "#34D399", description: "Acme Eng — #architecture synced · 89 messages",                          ts_min_ago: 240 },
+    { type: "memory_created",  color: "#2a78d6", description: "lina.chen ingested 'Postgres RLS for multi-tenant isolation'",          ts_min_ago: 2   },
+    { type: "conflict_opened", color: "#fab219", description: "Conflict detected: pgvector HNSW vs. IVFFlat indexing",                  ts_min_ago: 14  },
+    { type: "connector_synced",color: "#0ca30c", description: "acme/platform synced · 42 new commits, 3 PRs",                           ts_min_ago: 18  },
+    { type: "handoff_started", color: "#6250d6", description: "Handoff initiated: raj.patel → marcus.okafor (CRITICAL, 23 memories)",   ts_min_ago: 52  },
+    { type: "memory_edited",   color: "#2a78d6", description: "priya.nair edited 'Attribution signal weights'",                         ts_min_ago: 78  },
+    { type: "conflict_resolved",color:"#0ca30c", description: "dmitry.volk resolved CFL-504 (deploy freeze window)",                    ts_min_ago: 120 },
+    { type: "memory_created",  color: "#2a78d6", description: "dmitry.volk ingested 'Incident 2026-01-14 postmortem'",                  ts_min_ago: 180 },
+    { type: "connector_synced",color: "#0ca30c", description: "Acme Eng — #architecture synced · 89 messages",                          ts_min_ago: 240 },
 ];
 
 // 30-day memory creation series + search activity

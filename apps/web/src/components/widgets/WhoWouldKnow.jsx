@@ -3,7 +3,8 @@ import { Search, Users, Zap, ArrowRight, X } from "lucide-react";
 import { initials, stripMarkdown } from "../../lib/format";
 import api from "../../lib/api";
 
-const PALETTE = ["#4F7EFF", "#A78BFA", "#34D399", "#F59E0B", "#EF4444", "#60A5FA", "#F472B6", "#2DD4BF"];
+// Categorical series order from the validated dataviz palette (adjacent pairs pass the CVD and normal-vision floors).
+const PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"];
 function avatarColor(login = "", idx = 0) {
     let h = 0;
     for (let i = 0; i < login.length; i++) h = (h * 31 + login.charCodeAt(i)) | 0;
@@ -23,7 +24,7 @@ const SUGGESTIONS = [
 
 function ConfidenceBar({ value }) {
     const pct = Math.round((value || 0) * 100);
-    const color = pct >= 80 ? "#34D399" : pct >= 50 ? "#4F7EFF" : "#F59E0B";
+    const color = pct >= 80 ? "#0ca30c" : pct >= 50 ? "#2a78d6" : "#fab219";
     return (
         <div className="flex items-center gap-2 mt-1">
             <div className="flex-1 h-1 rounded-full bg-white/[0.06] overflow-hidden">
@@ -105,7 +106,7 @@ export default function WhoWouldKnow({ workspaceId }) {
             <div className="flex items-center gap-2.5">
                 <div
                     className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-                    style={{ background: "#4F7EFF18", color: "#4F7EFF" }}
+                    style={{ background: "#2a78d618", color: "var(--tag-1-text)" }}
                 >
                     <Users className="w-4 h-4" strokeWidth={2} />
                 </div>
@@ -133,7 +134,7 @@ export default function WhoWouldKnow({ workspaceId }) {
                     onChange={handleChange}
                     onKeyDown={(e) => e.key === "Enter" && runQuery(query)}
                     placeholder="e.g. database migrations, auth middleware…"
-                    className="w-full pl-8 pr-8 py-2.5 rounded-lg bg-white/[0.04] border border-sm-border text-[12.5px] text-sm-text placeholder:text-sm-text-secondary focus:outline-none focus:border-[#4F7EFF]/50 focus:bg-white/[0.06] transition-all"
+                    className="w-full pl-8 pr-8 py-2.5 rounded-lg bg-white/[0.04] border border-sm-border text-[12.5px] text-sm-text placeholder:text-sm-text-secondary focus:outline-none focus:border-[#2a78d6]/50 focus:bg-white/[0.06] transition-all"
                 />
                 {query && (
                     <button
@@ -152,7 +153,7 @@ export default function WhoWouldKnow({ workspaceId }) {
                         <button
                             key={s}
                             onClick={() => handleSuggestion(s)}
-                            className="text-[11px] px-2.5 py-1 rounded-full bg-white/[0.04] border border-sm-border text-sm-text-secondary hover:text-sm-text hover:border-[#4F7EFF]/40 hover:bg-[#4F7EFF]/[0.08] transition-all"
+                            className="text-[11px] px-2.5 py-1 rounded-full bg-white/[0.04] border border-sm-border text-sm-text-secondary hover:text-sm-text hover:border-[#2a78d6]/40 hover:bg-[#2a78d6]/[0.08] transition-all"
                         >
                             {s}
                         </button>
@@ -218,7 +219,7 @@ export default function WhoWouldKnow({ workspaceId }) {
                                         {idx === 0 && (
                                             <span
                                                 className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full flex-shrink-0 flex items-center gap-0.5"
-                                                style={{ background: "#4F7EFF18", color: "#4F7EFF" }}
+                                                style={{ background: "#2a78d618", color: "var(--tag-1-text)" }}
                                             >
                                                 <Zap className="w-2.5 h-2.5" /> Best match
                                             </span>
@@ -241,7 +242,7 @@ export default function WhoWouldKnow({ workspaceId }) {
                                                 {expert.top_memory.category}
                                             </span>
                                         )}
-                                        <span className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 text-[#4F7EFF]">
+                                        <span className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 text-[#2a78d6]">
                                             Ask <ArrowRight className="w-2.5 h-2.5" />
                                         </span>
                                     </div>

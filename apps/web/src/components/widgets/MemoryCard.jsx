@@ -7,11 +7,11 @@ import { relativeTime, stripMarkdown } from "../../lib/format";
 import { isPilotMode } from "../../lib/pilotMode";
 
 const TAG_COLORS = [
-    { bg: "#4F7EFF18", text: "#93B3FF", border: "#4F7EFF33" },
-    { bg: "#A78BFA18", text: "#C4B5FD", border: "#A78BFA33" },
-    { bg: "#34D39918", text: "#6EE7B7", border: "#34D39933" },
-    { bg: "#F59E0B18", text: "#FCD34D", border: "#F59E0B33" },
-    { bg: "#EF444418", text: "#FCA5A5", border: "#EF444433" },
+    { bg: "#2a78d618", text: "var(--tag-1-text)", border: "#2a78d633" },
+    { bg: "#6250d618", text: "var(--tag-2-text)", border: "#6250d633" },
+    { bg: "#0ca30c18", text: "var(--tag-3-text)", border: "#0ca30c33" },
+    { bg: "#fab21918", text: "var(--tag-4-text)", border: "#fab21933" },
+    { bg: "#d03b3b18", text: "var(--tag-5-text)", border: "#d03b3b33" },
 ];
 
 const hashTag = (value) => {
@@ -34,7 +34,7 @@ export default function MemoryCard({ memory, score, rank, matchType, pilotMode =
     const contributor = primary ? {
         name: primary.name || primary.author,
         login: primary.author,
-        avatarColor: primary.color || "#4F7EFF",
+        avatarColor: primary.color || "#2a78d6",
     } : null;
 
     return (

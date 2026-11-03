@@ -174,11 +174,11 @@ function ConflictRow({ conflict, onOpen }) {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-3 items-start mb-4">
-                <ConflictExcerpt text={conflict.memory_a_content} label="MEMORY A" color="#4F7EFF" />
+                <ConflictExcerpt text={conflict.memory_a_content} label="MEMORY A" color="#2a78d6" />
                 <div className="flex items-center justify-center">
                     <span className="font-mono text-[10.5px] text-sm-text-muted uppercase tracking-wider px-2 py-1 rounded bg-sm-border/30">vs</span>
                 </div>
-                <ConflictExcerpt text={conflict.memory_b_content} label="MEMORY B" color="#A78BFA" />
+                <ConflictExcerpt text={conflict.memory_b_content} label="MEMORY B" color="#6250d6" />
             </div>
 
             {conflict.explanation && <p className="text-[12.5px] text-sm-text-secondary leading-snug mb-4">{conflict.explanation}</p>}

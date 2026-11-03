@@ -73,7 +73,7 @@ export default function Dashboard() {
                         label="New Last 30 Days"
                         value={data?.memories_created_last_30_days ?? "—"}
                         delta={<span>Rolling 30-day count</span>}
-                        accent="#34D399"
+                        accent="#0ca30c"
                     />
                     <MetricCard
                         testId="metric-open-conflicts"
@@ -85,7 +85,7 @@ export default function Dashboard() {
                                 ? <Link to="/conflicts" className="text-sm-amber hover:underline">Review now →</Link>
                                 : <span className="text-sm-text-secondary">All clear</span>
                         }
-                        accent={data?.open_conflicts > 0 ? "#F59E0B" : "#34D399"}
+                        accent={data?.open_conflicts > 0 ? "#fab219" : "#0ca30c"}
                     />
                 </div>
 
@@ -102,10 +102,10 @@ export default function Dashboard() {
                         <div className="grid grid-cols-1 md:grid-cols-[auto_1fr] gap-8 items-center">
                             <HealthGauge score={data?.knowledge_health_score ?? 0} size={180} />
                             <div className="space-y-3.5 min-w-0">
-                                <HealthBar label="Coverage"            weight="30%" value={data?.health_breakdown.coverage ?? 0}             color="#4F7EFF" />
-                                <HealthBar label="Freshness"           weight="30%" value={data?.health_breakdown.freshness ?? 0}            color="#A78BFA" />
-                                <HealthBar label="Conflict Ratio"      weight="25%" value={data?.health_breakdown.conflict_ratio ?? 0}       color="#34D399" />
-                                <HealthBar label="Attribution"         weight="15%" value={data?.health_breakdown.attribution_coverage ?? 0} color="#F59E0B" />
+                                <HealthBar label="Coverage"            weight="30%" value={data?.health_breakdown.coverage ?? 0}             color="#2a78d6" />
+                                <HealthBar label="Freshness"           weight="30%" value={data?.health_breakdown.freshness ?? 0}            color="#6250d6" />
+                                <HealthBar label="Conflict Ratio"      weight="25%" value={data?.health_breakdown.conflict_ratio ?? 0}       color="#0ca30c" />
+                                <HealthBar label="Attribution"         weight="15%" value={data?.health_breakdown.attribution_coverage ?? 0} color="#fab219" />
                             </div>
                         </div>
                     </section>

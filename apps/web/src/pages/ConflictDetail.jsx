@@ -15,10 +15,10 @@ import { buildResolutionPayload, validateResolution } from "../lib/conflictResol
 import { relativeTime, severityColor } from "../lib/format";
 
 const OPTIONS = [
-    { key: "kept_a", label: "Accept A", hint: "Keeps memory A; retires memory B.", color: "#34D399" },
-    { key: "kept_b", label: "Accept B", hint: "Keeps memory B; retires memory A.", color: "#4F7EFF" },
-    { key: "merged", label: "Merge both", hint: "Replaces both with one combined memory.", color: "#A78BFA" },
-    { key: "split", label: "Split by tag", hint: "Keeps both and adds one tag to each.", color: "#F59E0B" },
+    { key: "kept_a", label: "Accept A", hint: "Keeps memory A; retires memory B.", color: "#0ca30c" },
+    { key: "kept_b", label: "Accept B", hint: "Keeps memory B; retires memory A.", color: "#2a78d6" },
+    { key: "merged", label: "Merge both", hint: "Replaces both with one combined memory.", color: "#6250d6" },
+    { key: "split", label: "Split by tag", hint: "Keeps both and adds one tag to each.", color: "#fab219" },
     { key: "deferred", label: "Defer", hint: "Revisit later; the conflict stays open.", color: "#7D8479" },
 ];
 
@@ -127,7 +127,7 @@ export default function ConflictDetail() {
 
             <div className="flex-1 px-8 py-6 grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-4">
                 <section className="space-y-4">
-                    <ExcerptCard label="Memory A" memory={conflict.memory_a} color="#4F7EFF" />
+                    <ExcerptCard label="Memory A" memory={conflict.memory_a} color="#2a78d6" />
                     <div className="flex items-center gap-3">
                         <div className="flex-1 h-px bg-sm-border" />
                         <span className="font-mono text-[10.5px] uppercase tracking-wider text-sm-text-muted px-2 py-0.5 rounded-md border border-sm-border bg-sm-surface">
@@ -135,7 +135,7 @@ export default function ConflictDetail() {
                         </span>
                         <div className="flex-1 h-px bg-sm-border" />
                     </div>
-                    <ExcerptCard label="Memory B" memory={conflict.memory_b} color="#A78BFA" />
+                    <ExcerptCard label="Memory B" memory={conflict.memory_b} color="#6250d6" />
 
                     {conflict.explanation && (
                         <div className="sm-card p-5">

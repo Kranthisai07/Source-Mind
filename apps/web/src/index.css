@@ -32,6 +32,8 @@
     --sm-blue-rgb: 56 96 74;
     --sm-purple-rgb: 195 98 57;
     --sm-on-accent: #FFFFFF;
+    /* Text on the tinted tag/badge fills: darker in light, lighter in dark (>= 4.5:1 on the card). */
+    --tag-1-text: #1d5fae; --tag-2-text: #4b3bb0; --tag-3-text: #006300; --tag-4-text: #7a5000; --tag-5-text: #a82828;
     --sm-blue: rgb(var(--sm-blue-rgb));
     --sm-green: #34D399;
     --sm-amber: #F59E0B;
@@ -63,6 +65,7 @@
     --sm-blue-rgb: 181 202 169;
     --sm-purple-rgb: 225 153 115;
     --sm-on-accent: #172113;
+    --tag-1-text: #8bb8f0; --tag-2-text: #b3a9f2; --tag-3-text: #6fd16f; --tag-4-text: #f2c14e; --tag-5-text: #f08a8a;
 
     --sm-hover: rgba(255, 255, 255, 0.035);
     --sm-hover-strong: rgba(255, 255, 255, 0.06);
