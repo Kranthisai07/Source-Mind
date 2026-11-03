@@ -6,12 +6,16 @@ export default function ContributorAvatar({ contributor, size = 28, showTooltip 
     const fields = typeof contributor === "object" ? contributor : {};
     const name = fields.name || fields.login || String(contributor);
     const login = fields.login || null;
-    const color = fields.avatarColor || fields.color || "rgb(var(--sm-blue-rgb))";
+    const explicit = fields.avatarColor || fields.color;
+    // The theme accent is light sage in dark mode, so its initials use the on-accent colour;
+    // a colour supplied with the data keeps white.
+    const color = explicit || "rgb(var(--sm-blue-rgb))";
+    const ink = explicit ? "text-white" : "text-[color:var(--sm-on-accent)]";
     const avatarUrl = fields.avatarUrl || fields.avatar_url || null;
     return (
         <div
             data-testid="contributor-avatar"
-            className="rounded-full flex items-center justify-center text-white font-semibold shrink-0 select-none"
+            className={`rounded-full flex items-center justify-center font-semibold shrink-0 select-none ${ink}`}
             style={{
                 width: size, height: size,
                 background: color,

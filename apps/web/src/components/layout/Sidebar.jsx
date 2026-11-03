@@ -212,7 +212,7 @@ export default function Sidebar({ collapsed, onToggle }) {
                                 <img src={avatarUrl} alt="" className="w-8 h-8 rounded-full shrink-0 object-cover" />
                             ) : (
                                 <div
-                                    className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold shrink-0 text-white"
+                                    className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold shrink-0 ${fallbackUser?.avatarColor ? "text-white" : "text-[color:var(--sm-on-accent)]"}`}
                                     style={{ background: avatarColor }}
                                 >
                                     {initials(userName)}

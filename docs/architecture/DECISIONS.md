@@ -4172,3 +4172,5 @@ A developer's local `.env` can therefore fail these suites; run them with CI's e
 **Not done on purpose (next PR).** Data and series colours that still use the old blue and purple hexes (health bars, activity dots, handoff badges, conflict A/B, avatar and chart palettes, status colours in `lib/format.js`). They are meaning-colours and need a validated palette. Page-level layout polish. Team screens.
 
 **Not checked.** 390px mobile width, the real API, and dark-mode contrast numbers (judged by eye only).
+
+**Review follow-up (Codex, P2).** In dark mode the accent is light sage, but fallback avatars (no image, no colour in the data) kept white initials: about 1.75:1 contrast, unreadable. The `.dark [class~="bg-sm-blue"]` fix only covers the class, not the inline background these avatars use. `ContributorAvatar` and the sidebar user avatar now use the theme's on-accent text colour when they fall back to the accent, and keep white when the data supplies its own colour. Two tests cover both cases. The contrast is judged from the colours (dark sage on light sage), not measured.
