@@ -20,10 +20,13 @@ pinned to a commit with autodeploy **off** (D-052). This rollout adds four servi
 Flags: `FF_KAFKA_EVENTS` and `FF_NEO4J_ATTRIBUTION`, always set together (the boot guard in `core/config.py` refuses one
 without the other in production, a non-default `NEO4J_AUTH`, and any localhost URI).
 
-**This is a release, not just a flag.** The running revision is `468d7b8`. Shipping the graph ships everything merged
-since: four migrations (`20261029_0015`, `20261029_0016` and, from the team-setup work, `20261031_0017` workspace invitations and `20261031_0018` the audit trail), the dependency swap PyMuPDF to pypdfium2 and
-python-Levenshtein to rapidfuzz (D-054), the co-authored-commit fix (D-055), and the graph code itself with the flags
-off. Review the commit list for the pinned SHA before you start and smoke-test PDF ingestion and connector sync (step 5).
+**This is a release, not just a flag.** The running revision (API and worker, read from Railway on 2026-11-03) is
+`2332805b871b7348bf3c65ad40af26a329dee351` (PR #39, the dependency swap PyMuPDF to pypdfium2 and python-Levenshtein to
+rapidfuzz, D-054, so that swap is already live). Shipping the graph ships everything merged since: four migrations
+(`20261029_0015`, `20261029_0016` and, from the team-setup work, `20261031_0017` workspace invitations and `20261031_0018`
+the audit trail), the co-authored-commit fix (D-055), the team-setup API (roles, invitations, audit, export; D-064, D-065, D-067),
+and the graph code itself with the flags off. (Earlier versions of this runbook named `468d7b8` as the running revision. That was
+the deploy before it; rolling back to it would also undo D-054.) Review the commit list for the pinned SHA before you start and smoke-test PDF ingestion and connector sync (step 5).
 
 Why the order is safe: with both flags on, a workspace is answered from PostgreSQL until **all** of these hold
 (`_graph_fresh`): it has a published cursor, the projector has applied up to it, it has no dead-letter gap, and **a
@@ -42,8 +45,9 @@ when a workspace is created, or a periodic job) is a follow-up; until then inclu
    from the next request; no events are written.
 2. Stop `graph-relay` and `graph-projector`. Nothing is lost: unpublished outbox rows wait in PostgreSQL.
 3. Neo4j and Redpanda data are disposable: the graph is rebuilt from PostgreSQL by the backfill.
-4. If the release itself misbehaves, re-pin the API and worker to `468d7b8`. The two migrations are additive (new tables
-   only), so the old code runs against the new schema.
+4. If the release itself misbehaves, re-pin the API and worker to `2332805b871b7348bf3c65ad40af26a329dee351`. `0015`, `0016` and `0018` only add tables.
+   `0017` also adds three policies on `workspace_members` (`sm_workspace_members_invite_*`); they only widen access for the
+   invitation flow, which the old code never uses, so it should run against the new schema. That has not been tested.
 5. Downgrading the migrations is a separate, deliberate act. `0015` refuses while the outbox holds rows.
 
 ## Steps
@@ -51,7 +55,10 @@ when a workspace is created, or a periodic job) is a follow-up; until then inclu
 Each step names who acts, what to check before moving on, and what undoes it.
 
 ### 0. Agree the release and the window
-- Pick one `main` commit SHA and record it here. Read `git log 468d7b8..<sha>`.
+- Pick one `main` commit SHA and record it here. Read `git log 2332805..<sha>`.
+- **Chosen 2026-11-04 (owner's go-ahead): `main` at `033d9d4bbbaa51e8ff486a8f8a13eb9ae166d538`** (merge of PR #56). If `main` has
+  moved when the window opens, choose again and update this line; do not ship an unrecorded commit.
+- Window: not yet agreed.
 - Record the current state read-only: deployed commit, start commands, variable **names** (never values), regions.
 - Keep autodeploy off. Independent services cannot enforce migration order.
 
@@ -179,7 +186,7 @@ Undo: the downgrade (separate, deliberate; see Rollback).
    - relay only: `GRAPH_RELAY_DATABASE_URL` (the relay role; a secret)
 5. Verify from their logs: `graph.topic_created` (or already existing), `graph.relay_started`, `graph.projector_started`,
    `neo4j.connected`, then `graph.relay_lag pending=0`. With the flags still off they idle.
-Undo: re-pin to `468d7b8`; delete the two new services.
+Undo: re-pin to `2332805b871b7348bf3c65ad40af26a329dee351`; delete the two new services.
 
 ### 6. Enable
 Set `FF_KAFKA_EVENTS=true` and `FF_NEO4J_ATTRIBUTION=true` together, plus `NEO4J_URI`, `NEO4J_AUTH` and
