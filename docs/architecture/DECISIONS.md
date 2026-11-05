@@ -4198,3 +4198,13 @@ A developer's local `.env` can therefore fail these suites; run them with CI's e
 **Checked.** Full web suite 653 passed, 20 skipped (new tests: day grouping, `dayLabel`, tab disabled for a teammate and enabled for a founder); build compiles. Real-browser screenshots (mock API) of Team and the invite dialog in light, the setup wizard and Team in dark, Team at 390px wide, Activity after an export. At 390px the Add member button ends inside the viewport (measured: right edge 263 of 390).
 
 **Not done.** The invite dialog's role field is still a native select (a shared select component would change its test hooks for no visible gain). Page padding is still `px-8` on most pages, so a phone gets less room than it could. The mock API returns no audit events, so the Activity grouping and icons were checked by test and not by eye with data. Real API, real Clerk sign-in, and the invite page at phone width were not exercised.
+
+## D-073 — Graph rollout: release commit chosen, rollback target corrected
+
+**What changed.** `GRAPH_ROLLOUT.md` now records the commit to ship, `main` at `033d9d4bbbaa51e8ff486a8f8a13eb9ae166d538` (owner's go-ahead, 2026-11-04), and the rollback target is `2332805b871b7348bf3c65ad40af26a329dee351`, not `468d7b8`.
+
+**Why.** Read-only check of Railway on 2026-11-03: both `Source-Mind` and `Source-Mind-Worker` run `2332805b871b7348bf3c65ad40af26a329dee351` (PR #39, D-054). `468d7b8` was the previous deploy, so rolling back to it would also have undone the dependency swap. The runbook also called the migrations additive; `0017` adds three policies to the existing `workspace_members` table. I judged they cannot affect old code (they only widen access for the invitation flow), but did not test the old code against the new schema, and the runbook now says so.
+
+**Not done.** Nothing in production changed: no variables, services, migrations or deploys. The window, the backup (step 1), `GRAPH_RELAY_PASSWORD` and the relay role (step 3) are still owner steps.
+
+**Correction.** In my first report of this check I wrote the live commit with the wrong trailing characters. The correct full SHA, from `git rev-parse 2332805b871b`, is the one above.
