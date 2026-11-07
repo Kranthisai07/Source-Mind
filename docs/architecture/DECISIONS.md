@@ -4283,6 +4283,18 @@ A developer's local `.env` can therefore fail these suites; run them with CI's e
 
 **Not verified.** Other screens in the new theme (Analytics, Conflicts, Handoff, Memory detail) and the invite flow, the 390px layout, dark mode, and the invitation accept page against production data. Creating or accepting an invitation was not exercised (it writes data). Clerk is on a development instance for both site and API; that is a separate readiness question.
 
+## D-080 — Three phone-width layout fixes found on the live site at 390px
+
+**What changed.** `TopBar.jsx`, `PendingInvitations.jsx` and `ActivityTab.jsx` (all under `apps/web/src/components`) use wrapping flex layouts so they hold up at 390px. Test: `components/layout/phoneLayout.test.js`.
+
+**Why.** After the frontend was published (D-079), a signed-in check of the live site at 390px found three defects, each reproduced from a screenshot: (1) the Dashboard header subtitle wrapped word by word because the title block and the actions were a single non-wrapping row; (2) in Pending invitations the email column (`minmax(0,1fr)` beside three auto-width columns) shrank to nothing and the Withdraw button ran past the card edge; (3) the Activity header description was squeezed beside Export, and in event rows a long email, which has no break points, ran into the date.
+
+**Fix.** The top bar row wraps and its title block has a `basis-[14rem]` so the actions drop below when they do not fit. A pending invitation is a wrapping flex row: the email takes its own line on a phone and everything is one row from `sm` up. Activity rows wrap, the text uses `overflow-wrap:anywhere`, and the date moves to its own line on a phone. Desktop layout is intended to be unchanged.
+
+**Why this approach over the alternatives.** Class changes inside the three components, not a new shared header component or a `px-4` on phones: D-072 deliberately left shared components and phone padding out, and these three defects do not need them. A media-query-only fix was rejected because the existing code is Tailwind utility classes throughout.
+
+**Verified.** 24 tests pass across `components/layout`, `components/team` and `pages/settingsRoles.test.js`. **Not verified:** the result in a browser. jsdom does not lay anything out, so the new tests pin the class contract only. A local production build twice failed on this machine for lack of memory (about 143 MB free), so the before and after screenshots at 390px have not been taken; CI's production build compiles it. The fix is not visible on the live site until the frontend is published again (D-079 procedure).
+
 ## D-081 — A revocation that loses the owner-revocation race gets a clean 403 or a retryable 503, not a 500
 
 **What failed.** After #60 (docs only) merged, the `Migration Round-Trip (PostgreSQL 18)` job on `main` at `39649c87` failed in the `restored` phase of the concurrent owner-revocation regression (run `42349886943`): `test_concurrent_owner_revocations_preserve_one_active_owner` asserted `isinstance(failures[0], DBAPIError)` and got `StaleDataError("UPDATE statement on table 'workspace_members' expected to update 1 row(s); 0 were matched.")`. The same job had passed on the previous 29 runs. Re-running the failed job once on the same commit passed (attempt 2), so it is timing-dependent, not deterministic.
