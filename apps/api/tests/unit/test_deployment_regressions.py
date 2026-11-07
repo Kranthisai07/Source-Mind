@@ -176,6 +176,26 @@ def test_railway_cache_mounts_use_each_service_namespace() -> None:
     )
 
 
+@pytest.mark.unit
+def test_graph_services_build_a_dockerfile_without_cache_mounts() -> None:
+    """D-074: Railway rejects a cache-mount id that carries another service's id."""
+    graph = (API_ROOT / "Dockerfile.graph").read_text(encoding="utf-8")
+    worker = (API_ROOT / "Dockerfile.worker").read_text(encoding="utf-8")
+
+    assert "--mount=type=cache" not in graph
+    assert API_SERVICE_ID not in graph and WORKER_SERVICE_ID not in graph
+
+    # Line 1 is the `# syntax=` directive; lines 2-6 are this file's own header.
+    mount = re.compile(r"RUN --mount=type=cache,[^\n]*\\\n")
+    graph_lines, worker_lines = graph.splitlines(), mount.sub("RUN \\\n", worker).splitlines()
+    assert graph_lines[0] == worker_lines[0]
+    assert graph_lines[6:] == worker_lines[1:]
+
+    for name in ("railway.relay.json", "railway.projector.json"):
+        config = json.loads((API_ROOT / name).read_text())
+        assert config["build"]["dockerfilePath"] == "Dockerfile.graph"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # BUG 2 — Alembic must never connect without a timeout
 # ─────────────────────────────────────────────────────────────────────────────

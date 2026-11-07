@@ -58,13 +58,24 @@ Each step names who acts, what to check before moving on, and what undoes it.
 - Pick one `main` commit SHA and record it here. Read `git log 2332805..<sha>`.
 - **Chosen 2026-11-04 (owner's go-ahead): `main` at `033d9d4bbbaa51e8ff486a8f8a13eb9ae166d538`** (merge of PR #56). If `main` has
   moved when the window opens, choose again and update this line; do not ship an unrecorded commit.
-- Window: not yet agreed.
+- **2026-11-07: the commit above cannot be built by the new services** (D-074: Railway rejects `Dockerfile.worker`'s
+  cache-mount ids for any service but the worker). The release commit becomes the merge of the PR that adds
+  `apps/api/Dockerfile.graph`; record its full SHA here when it is merged. Its code and migrations equal `033d9d4`.
+- Window: owner's go-ahead 2026-11-07, started; paused at step 4 until the new SHA exists.
+- **The live database is `sourcemind_release_0009`, not `railway`.** `$POSTGRES_DB` on the Postgres service is `railway`, a stale
+  copy (alembic `20250817_0005`, 16 tables, no row-level security). Observed 2026-11-07: `sourcemind_runtime` holds the live
+  connections, to `sourcemind_release_0009` (alembic `20261016_0014`, 27 tables). Use it in every command below, and read
+  `pg_stat_activity` again before step 4 in case that changed.
 - Record the current state read-only: deployed commit, start commands, variable **names** (never values), regions.
 - Keep autodeploy off. Independent services cannot enforce migration order.
 
 ### 1. Back up PostgreSQL
 Take a fresh encrypted logical backup (and a Railway volume snapshot) as in the D-021 rollout; confirm it restores
 somewhere disposable. Do not continue without one: step 4 changes the production schema.
+Dump `sourcemind_release_0009` (`pg_dump -U "$POSTGRES_USER" -d sourcemind_release_0009 -Fc`), not `$POSTGRES_DB`. The
+restore test needs the `pgvector/pgvector:pg18` image (stock `postgres:18` has no `vector`) and a `sourcemind_runtime` role.
+Done 2026-11-07: restored with `--exit-on-error`, identical row counts on all 27 tables; the encrypted copy and the volume
+snapshot are the owner's.
 
 ### 2. Provision the storage tier (flags still off, nothing connected yet)
 Create both as **image services** in the same environment, region `us-west2` (next to the API; the database is in `sfo`),
@@ -133,6 +144,9 @@ GRANT CONNECT ON DATABASE <the database name> TO sourcemind_graph_relay;
 GRANT USAGE ON SCHEMA public TO sourcemind_graph_relay;
 ```
 
+The two `GRANT`s are per database, so run them while connected to `sourcemind_release_0009` (`psql -d sourcemind_release_0009`),
+not the default database. On 2026-11-07 they were first run against `railway` by mistake and had to be repeated.
+
 
 The role gets no policy bypass. The migration in step 4 grants it `SELECT` and `UPDATE (published_at)` on `graph_outbox`
 and `SELECT` plus `INSERT`/`UPDATE (published_seq, updated_at)` on `graph_publication_cursor`, and nothing else.
@@ -143,7 +157,9 @@ Undo: `DROP ROLE sourcemind_graph_relay` (after step 4 is undone).
 Do not put the owner credential on the API or worker. Two ways, both keep it inside Railway's network:
 
 - **Recommended: a temporary one-shot service `graph-migrate`**, built from the pinned `main` SHA (root `/apps/api`,
-  Dockerfile `Dockerfile.worker`), with `DATABASE_URL=${{Postgres.DATABASE_URL}}` (a reference, so nobody reads it) or the
+  Dockerfile `Dockerfile.graph`, **not** `Dockerfile.worker`: D-074), with
+  `DATABASE_URL=postgresql://${{Postgres.POSTGRES_USER}}:${{Postgres.POSTGRES_PASSWORD}}@postgres.railway.internal:5432/sourcemind_release_0009`
+  (references, so nobody reads them; `${{Postgres.DATABASE_URL}}` names the stale `railway` database) or the
   dedicated owner role's URL, the two role variables below, restart policy NEVER, and the start command
   `sh -c 'alembic current && alembic upgrade head && alembic current'`. It runs once; read its deploy log for the two
   `alembic current` lines and the new head; then delete the service. It also needs the settings-validation variables
@@ -178,7 +194,8 @@ Undo: the downgrade (separate, deliberate; see Rollback).
 1. Re-pin the API and worker to the agreed SHA and redeploy, worker first, then API, as in the security rollout.
 2. Verify `/health`, a normal authenticated request, and the authorization matrix are unchanged.
 3. Exercise what the dependency swap touched: ingest a PDF, run one connector sync.
-4. Create `graph-relay` and `graph-projector` from the same SHA using `railway.relay.json` / `railway.projector.json`.
+4. Create `graph-relay` and `graph-projector` from the same SHA using `railway.relay.json` / `railway.projector.json`
+   (both build `Dockerfile.graph`; set each service's `dockerfilePath` to `/apps/api/Dockerfile.graph` too).
    Give each the worker's production variable set (they load the same settings, so the production validators apply to
    them too) plus:
    - `NEO4J_URI=bolt://neo4j.railway.internal:7687`, `NEO4J_AUTH=${{neo4j.NEO4J_AUTH}}`
