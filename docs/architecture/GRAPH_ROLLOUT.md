@@ -119,7 +119,10 @@ Verify: both deployments healthy; from the API service, a TCP connect to `neo4j.
 `redpanda.railway.internal:9092` succeeds; neither has a public address.
 Undo: delete the two services and their volumes.
 
-**Provisioned so far (2026-10-31, production project `welcoming-motivation`, flags off, nothing running against it):**
+****Step 6 done 2026-11-07 (D-085):** `FF_KAFKA_EVENTS` and `FF_NEO4J_ATTRIBUTION` are `true` together on the worker (first, as a canary) and the API,
+the commit is unchanged (`98d5d06b27b7549df6ec809a2cfb52309e0f5704`), reads still come from PostgreSQL for every workspace (none is backfilled). Steps 7 and 8 not started.
+
+Provisioned so far (2026-10-31, production project `welcoming-motivation`, flags off, nothing running against it):**
 `neo4j` and `redpanda` are running (private network only); `graph-relay` and `graph-projector` exist with their settings and
 variables but **no source attached, so they are not running**; `NEO4J_URI`, `NEO4J_AUTH` and `KAFKA_BOOTSTRAP_SERVERS` are set
 on the API and worker without a redeploy. Attach the relay and projector sources only after steps 3, 4 and 5.
