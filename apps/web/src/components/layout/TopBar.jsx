@@ -8,9 +8,10 @@ export default function TopBar({ title, subtitle, actions, crumbs }) {
     return (
         <header
             data-testid="topbar"
-            className="min-h-16 py-2 shrink-0 sticky top-0 z-20 flex items-center justify-between px-8 border-b border-sm-border bg-sm-bg/80 backdrop-blur-xl"
+            className="min-h-16 py-2 shrink-0 sticky top-0 z-20 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-8 border-b border-sm-border bg-sm-bg/80 backdrop-blur-xl"
         >
-            <div className="min-w-0">
+            {/* basis keeps the title block wide enough to read; when the actions do not fit beside it they wrap below */}
+            <div className="min-w-0 flex-1 basis-[14rem]">
                 {crumbs?.length > 0 && (
                     <nav aria-label="Breadcrumb" data-testid="breadcrumbs" className="font-mono text-[10px] uppercase tracking-[0.14em] text-sm-text-muted mb-0.5 flex items-center gap-1.5">
                         {crumbs.map((c, i) => (
