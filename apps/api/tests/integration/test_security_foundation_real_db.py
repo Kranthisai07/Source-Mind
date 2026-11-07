@@ -29,6 +29,7 @@ from sourcemind.core.dependencies import (
 )
 from sourcemind.core.exceptions import (
     MemoryNotFoundError,
+    ServiceUnavailableError,
     WorkspaceAccessDeniedError,
     WorkspaceMemberExistsError,
     WorkspaceNotFoundError,
@@ -606,8 +607,14 @@ async def test_concurrent_owner_revocations_preserve_one_active_owner(
     assert sum(outcome is None for outcome in outcomes) == 1
     failures = [outcome for outcome in outcomes if outcome is not None]
     assert len(failures) == 1
-    assert isinstance(failures[0], DBAPIError)
-    assert "last active workspace owner" in str(failures[0])
+    # Which way the loser fails depends on timing: stopped by the migration-0009 trigger ("last
+    # active workspace owner", 403), losing its own access to row-level security (403), or finding
+    # its rows already changed by the winner (StaleDataError, 503 retry). All three are correct;
+    # what must hold is one success and one active owner left (D-081). Migration 0008 still fails
+    # the two assertions above, which is what the round-trip gate expects of that phase.
+    assert isinstance(
+        failures[0], (WorkspaceAccessDeniedError, ServiceUnavailableError)
+    ), failures[0]
 
     surviving_owner_id = (
         data.owner_id if outcomes[0] is None else data.backup_owner_id
