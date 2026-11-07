@@ -1,6 +1,7 @@
 # Graph projection: production rollout runbook
 
-Status: written 2026-10-30 for D-063. Nothing here has been executed in production. Read it with
+Status: written 2026-10-30 for D-063; executed in production on 2026-11-07: steps 0 to 6 are done (D-073 to D-085) and steps 7 and 8
+remain. The steps below also record what was observed. Read it with
 [GRAPH_PROJECTION.md](GRAPH_PROJECTION.md) (design) and
 [SECURITY_FOUNDATION_ROLLOUT.md](SECURITY_FOUNDATION_ROLLOUT.md) (the conventions this follows).
 
@@ -70,7 +71,9 @@ Each step names who acts, what to check before moving on, and what undoes it.
   `apps/api/sourcemind`, `alembic`, `pyproject.toml` and `uv.lock` shows that one file only: no migration, no dependency change.
   API CI, Web CI, the PostgreSQL 18 round-trip and the drift check passed on that exact SHA before it was deployed.
 - Window: owner's go-ahead 2026-11-07. **Step 4 done 2026-11-07** (D-076); **step 5 done 2026-11-07** (D-077, D-082, D-084): API, worker, `graph-relay`
-  and `graph-projector` all run `98d5d06b27b7549df6ec809a2cfb52309e0f5704` with the flags off and `ENVIRONMENT=production` (D-083); steps 6 to 8 not started.
+  and `graph-projector` all run `98d5d06b27b7549df6ec809a2cfb52309e0f5704` with `ENVIRONMENT=production` (D-083). **Step 6 done 2026-11-07** (D-085):
+  `FF_KAFKA_EVENTS` and `FF_NEO4J_ATTRIBUTION` are `true` together on the worker (first, as a canary) and the API; reads still come from
+  PostgreSQL for every workspace (none is backfilled). Steps 7 and 8 not started.
 - **The live database is `sourcemind_release_0009`, not `railway`.** `$POSTGRES_DB` on the Postgres service is `railway`, a stale
   copy (alembic `20250817_0005`, 16 tables, no row-level security). Observed 2026-11-07: `sourcemind_runtime` holds the live
   connections, to `sourcemind_release_0009` (alembic `20261016_0014`, 27 tables). Use it in every command below, and read
@@ -125,10 +128,10 @@ Verify: both deployments healthy; from the API service, a TCP connect to `neo4j.
 `redpanda.railway.internal:9092` succeeds; neither has a public address.
 Undo: delete the two services and their volumes.
 
-**Provisioned so far (2026-10-31, production project `welcoming-motivation`, flags off, nothing running against it):**
-`neo4j` and `redpanda` are running (private network only); `graph-relay` and `graph-projector` exist with their settings and
-variables but **no source attached, so they are not running**; `NEO4J_URI`, `NEO4J_AUTH` and `KAFKA_BOOTSTRAP_SERVERS` are set
-on the API and worker without a redeploy. Attach the relay and projector sources only after steps 3, 4 and 5.
+**Provisioned 2026-10-31** (production project `welcoming-motivation`, flags off, nothing running against it): `neo4j` and `redpanda` were
+running (private network only); `graph-relay` and `graph-projector` existed with their settings and variables but no source attached, so they
+were not running; `NEO4J_URI`, `NEO4J_AUTH` and `KAFKA_BOOTSTRAP_SERVERS` were set on the API and worker without a redeploy. The relay and
+projector were attached and started on 2026-11-07 in step 5 (D-084), and the flags were enabled in step 6 (D-085); see the Window line in step 0.
 
 ### 3. Create the relay database role (the owner runs this)
 Postgres has no public address (no TCP proxy), so do this from inside Railway's network; do not open one. The password is
