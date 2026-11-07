@@ -63,8 +63,14 @@ Each step names who acts, what to check before moving on, and what undoes it.
   `6b6b8f4b5a1964dd5bf5daef60f81443cf797339`** (merge of PR #58, which adds `apps/api/Dockerfile.graph`). Its application
   code, migrations and lock are identical to `033d9d4` (`git diff` over `apps/api/sourcemind`, `alembic`, `pyproject.toml`,
   `uv.lock` is empty); API CI, Web CI and the migration round-trip passed on that exact SHA.
-- Window: owner's go-ahead 2026-11-07. **Step 4 done 2026-11-07** (D-076); step 5 partly done (D-077): API and worker
-  run `6b6b8f4b5a1964dd5bf5daef60f81443cf797339` with the flags off; relay and projector not started; steps 6 to 8 not started.
+- **2026-11-07 (owner's go-ahead, "deploy and publish"): the release that shipped is `98d5d06b27b7549df6ec809a2cfb52309e0f5704`**
+  (merge of PR #62), not `6b6b8f4b`. Commit list read (`git log 6b6b8f4..98d5d06`): the only application change is the
+  owner-revocation race fix (PR #63, D-081, `apps/api/sourcemind/api/v1/workspaces.py`); the rest is the phone-width web fixes
+  (PR #62, D-080), the published-frontend drift check (PR #61, D-078) and docs. `git diff 6b6b8f4..98d5d06` over
+  `apps/api/sourcemind`, `alembic`, `pyproject.toml` and `uv.lock` shows that one file only: no migration, no dependency change.
+  API CI, Web CI, the PostgreSQL 18 round-trip and the drift check passed on that exact SHA before it was deployed.
+- Window: owner's go-ahead 2026-11-07. **Step 4 done 2026-11-07** (D-076); **step 5 done 2026-11-07** (D-077, D-082, D-084): API, worker, `graph-relay`
+  and `graph-projector` all run `98d5d06b27b7549df6ec809a2cfb52309e0f5704` with the flags off and `ENVIRONMENT=production` (D-083); steps 6 to 8 not started.
 - **The live database is `sourcemind_release_0009`, not `railway`.** `$POSTGRES_DB` on the Postgres service is `railway`, a stale
   copy (alembic `20250817_0005`, 16 tables, no row-level security). Observed 2026-11-07: `sourcemind_runtime` holds the live
   connections, to `sourcemind_release_0009` (alembic `20261016_0014`, 27 tables). Use it in every command below, and read
@@ -203,7 +209,11 @@ Undo: the downgrade (separate, deliberate; see Rollback).
    them too) plus:
    - `NEO4J_URI=bolt://neo4j.railway.internal:7687`, `NEO4J_AUTH=${{neo4j.NEO4J_AUTH}}`
    - `KAFKA_BOOTSTRAP_SERVERS=redpanda.railway.internal:9092`
-   - relay only: `GRAPH_RELAY_DATABASE_URL` (the relay role; a secret)
+   - relay only: `GRAPH_RELAY_DATABASE_URL` (the relay role; a secret). **The scheme must be `postgresql+asyncpg://`**, e.g.
+     `postgresql+asyncpg://sourcemind_graph_relay:${{shared.GRAPH_RELAY_PASSWORD}}@postgres.railway.internal:5432/sourcemind_release_0009`.
+     `relay.py` passes this value straight to `create_async_engine`, and unlike `DATABASE_URL` nothing converts a bare
+     `postgresql://`, so that scheme selects psycopg2 and the relay crash-loops with "The asyncio extension requires an async
+     driver" (D-084).
 5. Verify from their logs: `graph.topic_created` (or already existing), `graph.relay_started`, `graph.projector_started`,
    `neo4j.connected`, then `graph.relay_lag pending=0`. With the flags still off they idle.
 Undo: re-pin to `2332805b871b7348bf3c65ad40af26a329dee351`; delete the two new services.
