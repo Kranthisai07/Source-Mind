@@ -63,8 +63,8 @@ Each step names who acts, what to check before moving on, and what undoes it.
   `6b6b8f4b5a1964dd5bf5daef60f81443cf797339`** (merge of PR #58, which adds `apps/api/Dockerfile.graph`). Its application
   code, migrations and lock are identical to `033d9d4` (`git diff` over `apps/api/sourcemind`, `alembic`, `pyproject.toml`,
   `uv.lock` is empty); API CI, Web CI and the migration round-trip passed on that exact SHA.
-- Window: owner's go-ahead 2026-11-07. **Step 4 done 2026-11-07** (D-076); step 5 partly done (D-077): API and worker
-  run `6b6b8f4b5a1964dd5bf5daef60f81443cf797339` with the flags off; relay and projector not started; steps 6 to 8 not started.
+- Window: owner's go-ahead 2026-11-07. **Step 4 done 2026-11-07** (D-076); **step 5 done 2026-11-07** (D-077, D-082, D-084): API, worker, `graph-relay`
+  and `graph-projector` all run `98d5d06b27b7549df6ec809a2cfb52309e0f5704` with the flags off and `ENVIRONMENT=production` (D-083); steps 6 to 8 not started.
 - **The live database is `sourcemind_release_0009`, not `railway`.** `$POSTGRES_DB` on the Postgres service is `railway`, a stale
   copy (alembic `20250817_0005`, 16 tables, no row-level security). Observed 2026-11-07: `sourcemind_runtime` holds the live
   connections, to `sourcemind_release_0009` (alembic `20261016_0014`, 27 tables). Use it in every command below, and read
