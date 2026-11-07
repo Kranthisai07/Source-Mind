@@ -47,11 +47,12 @@ export default function PendingInvitations({ workspaceId, refreshKey = 0 }) {
             ) : (
                 <div className="space-y-2">
                     {items.map((invitation) => (
-                        <div key={invitation.id} data-testid={`invitation-${invitation.id}`} className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-3 p-3 rounded-lg border border-sm-border bg-sm-bg/40">
-                            <span className="text-[13px] text-sm-text truncate">{invitation.email}</span>
-                            <span className="font-mono text-[10.5px] uppercase text-sm-text">{roleLabel(invitation.role)}</span>
-                            <span className="font-mono text-[10.5px] text-sm-text-secondary">expires {formatDate(invitation.expires_at)}</span>
-                            <Button type="button" variant="outline" disabled={busy === invitation.id} onClick={() => revoke(invitation)} data-testid={`revoke-${invitation.id}`} className="h-8 border-sm-border text-sm-text">
+                        <div key={invitation.id} data-testid={`invitation-${invitation.id}`} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 p-3 rounded-lg border border-sm-border bg-sm-bg/40">
+                            {/* Phone: the email gets its own line, then role, expiry and the button. From sm up it is one row. */}
+                            <span data-testid={`invitation-email-${invitation.id}`} className="min-w-0 basis-full truncate text-[13px] text-sm-text sm:flex-1 sm:basis-0">{invitation.email}</span>
+                            <span className="shrink-0 font-mono text-[10.5px] uppercase text-sm-text">{roleLabel(invitation.role)}</span>
+                            <span className="shrink-0 font-mono text-[10.5px] text-sm-text-secondary">expires {formatDate(invitation.expires_at)}</span>
+                            <Button type="button" variant="outline" disabled={busy === invitation.id} onClick={() => revoke(invitation)} data-testid={`revoke-${invitation.id}`} className="ml-auto h-8 shrink-0 border-sm-border text-sm-text sm:ml-0">
                                 {busy === invitation.id ? "Withdrawing..." : "Withdraw"}
                             </Button>
                         </div>

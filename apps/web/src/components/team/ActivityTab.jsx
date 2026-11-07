@@ -97,8 +97,8 @@ export default function ActivityTab({ workspaceId }) {
 
     return (
         <section className="sm-card p-6" data-testid="activity-tab">
-            <div className="flex items-start justify-between gap-4 mb-4">
-                <div>
+            <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3 mb-4">
+                <div className="min-w-0 flex-1 basis-[14rem]">
                     <h3 className="text-[15px] font-semibold text-sm-text">Activity</h3>
                     <p className="text-[12.5px] text-sm-text-secondary mt-0.5">Changes to members, roles and invitations, and data exports. Newest first.</p>
                 </div>
@@ -126,10 +126,12 @@ export default function ActivityTab({ workspaceId }) {
                                 {g.events.map((e) => {
                                     const Icon = EVENT_ICONS[e.event] || Mail;
                                     return (
-                                        <li key={e.id} data-testid={`activity-${e.id}`} className="flex items-center gap-3 p-3 rounded border border-sm-border bg-sm-bg/40">
+                                        <li key={e.id} data-testid={`activity-${e.id}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 p-3 rounded border border-sm-border bg-sm-bg/40">
                                             <Icon aria-hidden="true" className="w-4 h-4 shrink-0 text-sm-text-secondary" strokeWidth={2} />
-                                            <span className="flex-1 min-w-0 text-[13px] text-sm-text">{describeAuditEvent(e)}</span>
-                                            <span className="font-mono text-[10.5px] text-sm-text-secondary shrink-0">{formatDate(e.at)}</span>
+                                            {/* [overflow-wrap:anywhere]: a long email has no break points and would run into the date. */}
+                                            <span className="min-w-0 flex-1 basis-[10rem] text-[13px] text-sm-text [overflow-wrap:anywhere]">{describeAuditEvent(e)}</span>
+                                            {/* Phone: the date drops to its own line under the text (pl-7 = icon width + gap). */}
+                                            <span className="shrink-0 basis-full pl-7 font-mono text-[10.5px] text-sm-text-secondary sm:basis-auto sm:pl-0">{formatDate(e.at)}</span>
                                         </li>
                                     );
                                 })}
