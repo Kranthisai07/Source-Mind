@@ -90,6 +90,14 @@ git push --force-with-lease=refs/heads/gh-pages:<NEW_SHA> origin $PREV:refs/head
 
 `$PREV` must exist locally (section 1 tags it). Then repeat the Pages build check.
 
+## Staying current
+
+Because publishing is manual, the site can fall behind `main` without anyone noticing (on 2026-11-07 it was 12 web commits and 8 days behind; D-078).
+The workflow `.github/workflows/web-publish-drift.yml` reads the commit named in the `gh-pages` head message (`Publish <sha12> ...`) and counts the `apps/web` commits on `main` since.
+It warns on every push that touches `apps/web`, and it fails on its weekly run (Mondays) and when run by hand if an unpublished web commit is more than 7 days old, so GitHub notifies the owner.
+Keep the `Publish <sha12> (main, PR #<n>): <summary>` message form in section 3: the check parses it, and fails loudly if it cannot.
+To check by hand: `git fetch origin main gh-pages && bash .github/scripts/check_web_publish_drift.sh`.
+
 ## 6. Caching
 
 GitHub Pages sends `Cache-Control: max-age=600`. After a publish, `index.html` may be served from cache for up to ten minutes and then point at the previous hashed bundle, which no longer exists
