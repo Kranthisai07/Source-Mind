@@ -4209,6 +4209,20 @@ A developer's local `.env` can therefore fail these suites; run them with CI's e
 
 **Correction.** In my first report of this check I wrote the live commit with the wrong trailing characters. The correct full SHA, from `git rev-parse 2332805b871b`, is the one above.
 
+## D-074 — Graph rollout: new services build `Dockerfile.graph`; the live database is not `$POSTGRES_DB`
+
+**What changed.** Added `apps/api/Dockerfile.graph`, a copy of `Dockerfile.worker` without its two `--mount=type=cache` flags, and pointed `railway.relay.json` and `railway.projector.json` at it. A test (`test_graph_services_build_a_dockerfile_without_cache_mounts`) keeps the two files identical apart from those flags. `GRAPH_ROLLOUT.md` records the release commit as pending, the real database name, and the new Dockerfile.
+
+**Why.** Step 4 created the one-shot service `graph-migrate` from `033d9d4bbbaa51e8ff486a8f8a13eb9ae166d538` with `Dockerfile.worker`. The build (deployment `129974f9-7616-4899-9d0f-fefbab313d00`) failed at Dockerfile parse: "flag '--mount=type=cache,id=s/45ede657-…' is missing the cacheKey prefix from its id at Line 72" (and 108). D-053 hard-coded each service's id into its Dockerfile because Railway only takes `id=s/<service id>-…` and the id cannot use variables. `Dockerfile.worker` therefore only builds on `Source-Mind-Worker`. `graph-relay` and `graph-projector` would have failed the same way when their sources were attached. No database command ran; the schema was untouched.
+
+**Why this approach over the alternatives.** (1) One Dockerfile per new service with its own id: three near-identical files that drift, for a cache that matters little on three small services. (2) Reusing `Dockerfile` or `Dockerfile.worker` on the existing services to run the migration: needs the owner credential on the API or worker, which the runbook forbids. (3) Dropping the mounts from `Dockerfile.worker` itself: changes the live worker's build. A separate file with no mounts changes nothing that exists.
+
+**Found on the way: the live database is `sourcemind_release_0009`.** `$POSTGRES_DB` is `railway`, which is stale (alembic `20250817_0005`, 16 tables, 106 MB, no forced row-level security). `pg_stat_activity` on 2026-11-07 showed `sourcemind_runtime` connected to `sourcemind_release_0009` (alembic `20261016_0014`, 27 tables, 11 MB). The first backup (`railway`) was therefore of the wrong database and was set aside; a second dump of `sourcemind_release_0009` restored cleanly with identical row counts on all 27 tables. The relay role's `GRANT CONNECT` and `GRANT USAGE ON SCHEMA public` were first run against `railway` and repeated against `sourcemind_release_0009`.
+
+**Not verified.** That `${{Postgres.DATABASE_URL}}` points at `railway` (inferred from `$POSTGRES_DB`; Railway hides values). That the full image builds from `Dockerfile.graph` on Railway (`docker build --check` passed locally; no full build was run). Whether `graph-relay`'s existing `GRAPH_RELAY_DATABASE_URL` names `sourcemind_release_0009`; the owner should check the database name in it before step 5.
+
+**State left in production.** The service `graph-migrate` exists with a failed first deployment and its variables set by reference; it needs the new SHA. The role `sourcemind_graph_relay` exists with a password and `CONNECT` on `sourcemind_release_0009`. No migration has run.
+
 ## D-075 — The parallel-reservation test keeps at most one call per pool connection in flight
 
 **What changed.** `test_parallel_reservations_never_exceed_the_limit` still makes 40 reservations against a limit of 10, but a semaphore of `redis_pool_size` (20) keeps no more than 20 in flight at once.
