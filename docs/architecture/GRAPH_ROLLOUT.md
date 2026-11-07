@@ -59,9 +59,12 @@ Each step names who acts, what to check before moving on, and what undoes it.
 - **Chosen 2026-11-04 (owner's go-ahead): `main` at `033d9d4bbbaa51e8ff486a8f8a13eb9ae166d538`** (merge of PR #56). If `main` has
   moved when the window opens, choose again and update this line; do not ship an unrecorded commit.
 - **2026-11-07: the commit above cannot be built by the new services** (D-074: Railway rejects `Dockerfile.worker`'s
-  cache-mount ids for any service but the worker). The release commit becomes the merge of the PR that adds
-  `apps/api/Dockerfile.graph`; record its full SHA here when it is merged. Its code and migrations equal `033d9d4`.
-- Window: owner's go-ahead 2026-11-07, started; paused at step 4 until the new SHA exists.
+  cache-mount ids for any service but the worker). **The release commit is now
+  `6b6b8f4b5a1964dd5bf5daef60f81443cf797339`** (merge of PR #58, which adds `apps/api/Dockerfile.graph`). Its application
+  code, migrations and lock are identical to `033d9d4` (`git diff` over `apps/api/sourcemind`, `alembic`, `pyproject.toml`,
+  `uv.lock` is empty); API CI, Web CI and the migration round-trip passed on that exact SHA.
+- Window: owner's go-ahead 2026-11-07. **Step 4 done 2026-11-07** (D-076); step 5 partly done (D-077): API and worker
+  run `6b6b8f4b5a1964dd5bf5daef60f81443cf797339` with the flags off; relay and projector not started; steps 6 to 8 not started.
 - **The live database is `sourcemind_release_0009`, not `railway`.** `$POSTGRES_DB` on the Postgres service is `railway`, a stale
   copy (alembic `20250817_0005`, 16 tables, no row-level security). Observed 2026-11-07: `sourcemind_runtime` holds the live
   connections, to `sourcemind_release_0009` (alembic `20261016_0014`, 27 tables). Use it in every command below, and read
