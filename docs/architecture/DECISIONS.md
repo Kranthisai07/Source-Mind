@@ -4208,3 +4208,13 @@ A developer's local `.env` can therefore fail these suites; run them with CI's e
 **Not done.** Nothing in production changed: no variables, services, migrations or deploys. The window, the backup (step 1), `GRAPH_RELAY_PASSWORD` and the relay role (step 3) are still owner steps.
 
 **Correction.** In my first report of this check I wrote the live commit with the wrong trailing characters. The correct full SHA, from `git rev-parse 2332805b871b`, is the one above.
+
+## D-075 — The parallel-reservation test keeps at most one call per pool connection in flight
+
+**What changed.** `test_parallel_reservations_never_exceed_the_limit` still makes 40 reservations against a limit of 10, but a semaphore of `redis_pool_size` (20) keeps no more than 20 in flight at once.
+
+**Why.** The `security-acceptance` job on PR #58 failed this one test twice (316 of 317 passed, `redis.exceptions.MaxConnectionsError: Too many connections`), though #58 changed no application code and nothing relevant had changed since the last green run on 2026-10-31. The job installs unpinned dependencies: its log shows `redis-8.1.0` and `hiredis-3.5.0`, while `uv.lock` pins `redis` 6.4.0. Reproduced locally against a disposable Redis with the same pool settings (20 connections, 40 concurrent `incrby` calls): redis-py 8.1.0 raised exactly 20 `MaxConnectionsError`s in each of three runs; 6.4.0 raised none. With the semaphore, 8.1.0 raised none and the counter ended at the limit (10 succeeded, 10 in the counter) under both versions.
+
+**Why this approach over the alternatives.** The owner chose to fix the test. A smaller batch would also pass but stop contending the counter; the semaphore keeps 20 reservations contending at once and all 40 attempted. `BlockingConnectionPool` in `redis_client.py` would make the pool wait instead of raise, which is the sturdier fix for any burst of more than 20 concurrent calls, but it changes production code and was not asked for. Making the job install from `uv.lock` would stop the drift for every test, and is also a separate change.
+
+**Not verified.** The real test was not run locally: its harness requires port 56379, which Windows reserves on this machine, and I did not weaken that guard. The pattern was verified in a script, not in the suite; PR CI is the check. Production builds with `uv sync --locked`, so it runs redis 6.4.0 and is unaffected today. If the lock moves to redis 8.x, any code path that has more concurrent Redis calls than `redis_pool_size` will hit the same error.
