@@ -228,6 +228,11 @@ A state of `gap: run the backfill` means an event was dead-lettered; `not baseli
 backfill has been applied yet. Either way, run the backfill again for that workspace. Nothing is wrong in the meantime:
 that workspace is simply answered from PostgreSQL.
 
+### 7b. Publish the frontend (last)
+The deployed site is a manual publish (`docs/FRONTEND_PUBLISH.md`, D-028) and is not touched by any step above. After the API and worker run the release
+commit and the graph is verified, publish `apps/web` from the same SHA, then run `bash .github/scripts/check_web_publish_drift.sh` and expect
+"Frontend is current". Skipping it is how the site ended up 12 web commits behind on 2026-11-07 (D-078). The weekly `Web publish drift` workflow fails if it is skipped for over 7 days.
+
 ### 8. Observe for 24 hours
 Watch `graph.relay_lag` (pending and oldest seconds), the projector batch lines and any `graph.dead_lettered`, Neo4j memory,
 the share of graph versus PostgreSQL answers, and endpoint latency (the graph read ceiling is `NEO4J_QUERY_TIMEOUT_SECONDS`,
