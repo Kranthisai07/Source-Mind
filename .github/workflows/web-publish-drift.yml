@@ -1,0 +1,49 @@
+# Says when the published frontend has fallen behind the web code on main.
+#
+# Publishing apps/web to GitHub Pages is a manual release step on purpose
+# (docs/FRONTEND_PUBLISH.md, D-028): the bundle goes out last, after the API runs the
+# matching commit. That policy has no signal of its own, so on 2026-11-07 the live site
+# was found 12 web commits and 8 days behind main (D-078). This job is the signal. It
+# publishes nothing and changes nothing.
+#
+#   push to main touching apps/web   a warning annotation and a summary line
+#   weekly, or run by hand           fails when an unpublished web commit is older than
+#                                    MAX_AGE_DAYS (7), so GitHub notifies the repository owner
+
+name: Web publish drift
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/web/**"
+      - ".github/scripts/check_web_publish_drift.sh"
+      - ".github/workflows/web-publish-drift.yml"
+  pull_request:
+    paths:
+      - ".github/scripts/check_web_publish_drift.sh"
+      - ".github/workflows/web-publish-drift.yml"
+  schedule:
+    - cron: "17 14 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch the published branch
+        run: git fetch origin gh-pages:refs/remotes/origin/gh-pages
+
+      - name: Compare the published commit with main
+        env:
+          MAX_AGE_DAYS: "7"
+          FAIL_WHEN_STALE: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '1' || '0' }}
+        run: bash .github/scripts/check_web_publish_drift.sh
