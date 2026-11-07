@@ -19,6 +19,7 @@ import structlog
 from fastapi import APIRouter, status
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 
 from sourcemind.core.config import get_settings
 from sourcemind.core.database import set_rls_workspace_context
@@ -630,13 +631,60 @@ async def revoke_workspace_member(
     current_user: CurrentUser,
     idempotency_key: IdempotencyKey,
 ) -> None:
-    """Soft-revoke an active member without deleting audit history."""
+    """Soft-revoke an active member without deleting audit history.
+
+    Concurrency: two owners revoking each other at once cannot leave the workspace with none
+    (migration 0009 serializes the check), but the one that loses used to surface as an unhandled
+    500. It now gets the same answers the role-change route gives (D-081): a retryable 503 when
+    the rows changed under it or the database asked for a retry, 403 when it was the last founder
+    or lost its own access.
+    """
     caller_role = await require_workspace_permission(
         db,
         current_user.user_id,
         workspace_id,
         WorkspacePermission.ADMINISTER,
     )
+    try:
+        await _revoke_member(workspace_id, user_id, db, current_user, caller_role)
+    except StaleDataError as exc:
+        # The winner committed first, so row-level security hid the target from this request and
+        # its UPDATE matched no rows. Nothing was changed by this request.
+        await db.rollback()
+        logger.bind(workspace_id=str(workspace_id), actor_id=str(current_user.user_id)).warning(
+            "workspace.member_revoke_retryable_conflict", reason="stale_data"
+        )
+        raise ServiceUnavailableError(
+            "The membership changed concurrently. Please retry.",
+            details={"reason": "concurrent_update_retry"},
+        ) from exc
+    except DBAPIError as exc:
+        await db.rollback()
+        if _pg_sqlstate(exc) in _RETRYABLE_SQLSTATES or "deadlock detected" in str(exc):
+            logger.bind(workspace_id=str(workspace_id), actor_id=str(current_user.user_id)).warning(
+                "workspace.member_revoke_retryable_conflict", sqlstate=_pg_sqlstate(exc)
+            )
+            raise ServiceUnavailableError(
+                "The membership changed concurrently. Please retry.",
+                details={"reason": "concurrent_update_retry"},
+            ) from exc
+        if "last active workspace owner" in str(exc):
+            raise WorkspaceAccessDeniedError(
+                "The last active workspace owner cannot be revoked."
+            ) from exc
+        if _is_rls_denial(exc):
+            raise WorkspaceAccessDeniedError(ADMIN_REQUIRED) from exc
+        raise
+
+
+async def _revoke_member(
+    workspace_id: UUID,
+    user_id: UUID,
+    db: DBSession,
+    current_user: CurrentUser,
+    caller_role: str,
+) -> None:
+    """The revocation itself; the caller's ADMINISTER check has already passed (see the route)."""
     result = await db.execute(
         select(WorkspaceMember)
         .where(
