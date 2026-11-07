@@ -93,6 +93,15 @@ async def test_parallel_reservations_never_exceed_the_limit() -> None:
     await init_redis()
     ws = uuid.uuid4()
     limit = 10
-    results = await asyncio.gather(*[_reserve_budget(ws, 1, limit) for _ in range(40)])
+    # Newer redis-py raises MaxConnectionsError instead of queueing when more calls than the
+    # pool holds are in flight at once. Keep 40 reservations but never more than one per
+    # connection in flight (D-075); the counter is still contended by pool-size tasks at a time.
+    gate = asyncio.Semaphore(get_settings().redis_pool_size)
+
+    async def reserve() -> bool:
+        async with gate:
+            return await _reserve_budget(ws, 1, limit)
+
+    results = await asyncio.gather(*[reserve() for _ in range(40)])
     assert sum(results) == limit
     assert await _counter(ws) == limit  # refused reservations were refunded
