@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import orjson
+import sentry_sdk
 import structlog
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -34,6 +35,7 @@ from sourcemind.core.middleware import (
     SecurityHeadersMiddleware,
     TimingMiddleware,
 )
+from sourcemind.core.observability import init_sentry
 from sourcemind.core.redis_client import close_redis, init_redis
 from sourcemind.core.runtime_state import ProcessRuntimeState
 
@@ -116,6 +118,7 @@ def create_app() -> FastAPI:
     Separated from module-level instantiation to allow clean test fixtures.
     """
     settings = get_settings()
+    init_sentry(settings)  # before FastAPI(...) so the integration patches this app
 
     app = FastAPI(
         title="SourceMind API",
@@ -260,6 +263,9 @@ async def _unhandled_exception_handler(
     settings = get_settings()
     request_id = getattr(request.state, "request_id", "unknown")
 
+    # Reported explicitly: this catch-all turns the error into a response, so it may never
+    # reach Sentry's own middleware hook.
+    sentry_sdk.capture_exception(exc)
     logger.error(
         "request.unhandled_exception",
         error_type=type(exc).__name__,
