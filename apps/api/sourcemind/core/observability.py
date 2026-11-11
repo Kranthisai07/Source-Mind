@@ -10,6 +10,7 @@ import os
 from typing import Any
 
 import sentry_sdk
+from sentry_sdk.integrations.logging import LoggingIntegration
 
 from sourcemind.core.config import Settings
 
@@ -44,6 +45,10 @@ def init_sentry(settings: Settings, transport: Any = None) -> bool:
         send_default_pii=False,
         # Frame locals hold the whole request (headers, cookies, text) and bypass the scrubber.
         include_local_variables=False,
+        # Log lines are kept out entirely: as events they duplicate the error the Starlette
+        # integration already reports, and as breadcrumbs their text (tracebacks with request
+        # locals) is not scrubbed.
+        integrations=[LoggingIntegration(level=None, event_level=None)],
         before_send=scrub_event,
         transport=transport,
     )

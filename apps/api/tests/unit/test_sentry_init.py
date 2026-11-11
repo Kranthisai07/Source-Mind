@@ -11,6 +11,7 @@ from sentry_sdk.transport import Transport
 
 from sourcemind.core.config import Settings, get_settings
 from sourcemind.core.exceptions import SourceMindError
+from sourcemind.core.logging import configure_logging
 from sourcemind.core.observability import init_sentry
 from sourcemind.main import create_app
 
@@ -41,6 +42,7 @@ def _app_with_routes(transport: _Collect, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         "sourcemind.main.init_sentry", lambda s: init_sentry(s, transport=transport)
     )
+    configure_logging()  # as in the lifespan: errors are also logged through stdlib logging
     app = create_app()
 
     @app.get("/boom")
