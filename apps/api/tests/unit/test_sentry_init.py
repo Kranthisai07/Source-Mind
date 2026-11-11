@@ -51,7 +51,11 @@ def _app_with_routes(transport: _Collect, monkeypatch: pytest.MonkeyPatch):
 
     @app.get("/expected")
     async def expected() -> None:
-        raise SourceMindError("expected")  # type: ignore[call-arg]
+        raise SourceMindError("expected", http_status=404)  # type: ignore[call-arg]
+
+    @app.get("/domain500")
+    async def domain500() -> None:
+        raise SourceMindError("db down")  # type: ignore[call-arg]  # default status is 500
 
     return TestClient(app, raise_server_exceptions=False)
 
@@ -82,3 +86,11 @@ def test_expected_errors_are_not_reported(monkeypatch: pytest.MonkeyPatch) -> No
     client.get("/expected")
     sentry_sdk.flush()
     assert transport.events == []
+
+
+def test_server_side_domain_errors_are_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport = _Collect()
+    client = _app_with_routes(transport, monkeypatch)
+    assert client.get("/domain500").status_code == 500
+    sentry_sdk.flush()
+    assert len(transport.events) == 1

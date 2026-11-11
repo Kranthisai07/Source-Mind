@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import orjson
+import sentry_sdk
 import structlog
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -195,6 +196,10 @@ async def _sourcemind_exception_handler(
       { error: { code, message, details, request_id } }
     """
     request_id = getattr(request.state, "request_id", "unknown")
+
+    # Handled here, so Sentry's own hook never sees it. Expected 4xx errors stay unreported.
+    if exc.http_status >= 500:
+        sentry_sdk.capture_exception(exc)
 
     logger.warning(
         "request.domain_error",
