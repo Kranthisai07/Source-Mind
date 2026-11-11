@@ -1,7 +1,7 @@
 # Graph projection: production rollout runbook
 
-Status: written 2026-10-30 for D-063; executed in production on 2026-11-07: steps 0 to 6 are done (D-073 to D-085) and steps 7 and 8
-remain. The steps below also record what was observed. Read it with
+Status: written 2026-10-30 for D-063; executed in production on 2026-11-07: steps 0 to 7 are done (D-073 to D-086) and step 8
+(the 24 hour observation) is in progress. The steps below also record what was observed. Read it with
 [GRAPH_PROJECTION.md](GRAPH_PROJECTION.md) (design) and
 [SECURITY_FOUNDATION_ROLLOUT.md](SECURITY_FOUNDATION_ROLLOUT.md) (the conventions this follows).
 
@@ -73,7 +73,7 @@ Each step names who acts, what to check before moving on, and what undoes it.
 - Window: owner's go-ahead 2026-11-07. **Step 4 done 2026-11-07** (D-076); **step 5 done 2026-11-07** (D-077, D-082, D-084): API, worker, `graph-relay`
   and `graph-projector` all run `98d5d06b27b7549df6ec809a2cfb52309e0f5704` with `ENVIRONMENT=production` (D-083). **Step 6 done 2026-11-07** (D-085):
   `FF_KAFKA_EVENTS` and `FF_NEO4J_ATTRIBUTION` are `true` together on the worker (first, as a canary) and the API; reads still come from
-  PostgreSQL for every workspace (none is backfilled). Steps 7 and 8 not started.
+  PostgreSQL for every workspace (none is backfilled). Step 7 done (D-086): both workspaces are backfilled and trusted; step 8 in progress.
 - **The live database is `sourcemind_release_0009`, not `railway`.** `$POSTGRES_DB` on the Postgres service is `railway`, a stale
   copy (alembic `20250817_0005`, 16 tables, no row-level security). Observed 2026-11-07: `sourcemind_runtime` holds the live
   connections, to `sourcemind_release_0009` (alembic `20261016_0014`, 27 tables). Use it in every command below, and read
@@ -243,6 +243,19 @@ equal their PostgreSQL answers (the parity the tests assert).
 A state of `gap: run the backfill` means an event was dead-lettered; `not baselined: run the backfill` means no completed
 backfill has been applied yet. Either way, run the backfill again for that workspace. Nothing is wrong in the meantime:
 that workspace is simply answered from PostgreSQL.
+
+**What running it showed (D-086).**
+- Run the backfill inside the worker container (it has the runtime `DATABASE_URL` and the flags):
+  `railway ssh -p <project> -e production -s Source-Mind-Worker "python -m sourcemind.events.backfill --workspace-id <uuid> --as-user <uuid>"`.
+  It writes only `graph_outbox` rows.
+- A workspace with no active owner needs `--as-user <an active member>`; the owner lookup finds nobody.
+- Compare the emitted count with the workspace's memory rows (old versions included). A lower count means row-level security hid memories from
+  `--as-user`, and the graph would look trusted while incomplete.
+- `status` cannot run as configured: it needs `GRAPH_RELAY_DATABASE_URL` and the Neo4j settings together and no service has both. The same rule
+  was applied read-only instead: the relay cursor and unpublished count from Postgres, and the workspace watermark from Neo4j
+  (`MATCH (w:Workspace {key: "<uuid>"}) RETURN w.applied_seq, w.gap_seq, w.baseline_seq` through `cypher-shell` in the `neo4j` container), then
+  `classify` in `events/status.py`. A failed read must stop the check and never be classified: an SSH timeout once gave empty output that a
+  first version of the script reported as "not in the graph yet".
 
 ### 7b. Publish the frontend (last)
 The deployed site is a manual publish (`docs/FRONTEND_PUBLISH.md`, D-028) and is not touched by any step above. After the API and worker run the release
