@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import orjson
+import sentry_sdk
 import structlog
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -34,6 +35,7 @@ from sourcemind.core.middleware import (
     SecurityHeadersMiddleware,
     TimingMiddleware,
 )
+from sourcemind.core.observability import init_sentry
 from sourcemind.core.redis_client import close_redis, init_redis
 from sourcemind.core.runtime_state import ProcessRuntimeState
 
@@ -116,6 +118,7 @@ def create_app() -> FastAPI:
     Separated from module-level instantiation to allow clean test fixtures.
     """
     settings = get_settings()
+    init_sentry(settings)  # before FastAPI(...) so the integration patches this app
 
     app = FastAPI(
         title="SourceMind API",
@@ -193,6 +196,10 @@ async def _sourcemind_exception_handler(
       { error: { code, message, details, request_id } }
     """
     request_id = getattr(request.state, "request_id", "unknown")
+
+    # Handled here, so Sentry's own hook never sees it. Expected 4xx errors stay unreported.
+    if exc.http_status >= 500:
+        sentry_sdk.capture_exception(exc)
 
     logger.warning(
         "request.domain_error",
